@@ -11,9 +11,11 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.100.1",
     "axios": "^1.16.1",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "openai": "^6.41.0"
+    "openai": "^6.41.0",
+    "pg": "^8.21.0"
   }
 }
