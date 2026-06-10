@@ -36,11 +36,58 @@ app.get('/webhook', (req, res) => {
 });
 
 // ============================================================
+// DEBUG — ring buffer of recent webhook events + outcomes
+// ============================================================
+const lastEvents = [];
+function logEvent(entry) {
+  lastEvents.push({ at: new Date().toISOString(), ...entry });
+  while (lastEvents.length > 30) lastEvents.shift();
+}
+
+function debugAuth(req, res) {
+  if (req.query.key !== process.env.ZALO_WEBHOOK_TOKEN) {
+    res.status(403).json({ error: 'forbidden' });
+    return false;
+  }
+  return true;
+}
+
+// GET /debug/events?key=... — recent webhook activity
+app.get('/debug/events', (req, res) => {
+  if (!debugAuth(req, res)) return;
+  res.json({ count: lastEvents.length, events: lastEvents });
+});
+
+// GET /debug/test-ai?key=...&text=... — test Claude pipeline only
+app.get('/debug/test-ai', async (req, res) => {
+  if (!debugAuth(req, res)) return;
+  try {
+    const { text: reply, tokensUsed } = await aiAgent.respond('debug_user', req.query.text || 'Xin chào');
+    res.json({ ok: true, reply, tokensUsed });
+  } catch (e) {
+    res.json({ ok: false, error: e.message, stack: e.stack?.split('\n').slice(0, 3) });
+  }
+});
+
+// GET /debug/test-send?key=...&uid=...&text=... — test Zalo send only
+app.get('/debug/test-send', async (req, res) => {
+  if (!debugAuth(req, res)) return;
+  try {
+    const result = await zaloService.sendTextMessage(req.query.uid, req.query.text || 'Test từ Dốc Mơ Farm bot 🌿');
+    res.json({ ok: !!result, zalo_response: result });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// ============================================================
 // ZALO WEBHOOK — Message Handler (POST)
 // ============================================================
 app.post('/webhook', async (req, res) => {
   // Respond immediately to Zalo (< 5s required)
   res.status(200).json({ message: 'ok' });
+
+  logEvent({ type: 'incoming', event_name: req.body?.event_name || (req.body?.events ? 'batch' : 'unknown'), body: req.body });
 
   try {
     // Verify signature
@@ -56,10 +103,15 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    const events = req.body.events || [];
+    // Zalo OA sends ONE event per POST at top level: {event_name, sender, message, ...}
+    // Support both shapes just in case.
+    const events = Array.isArray(req.body.events) ? req.body.events : [req.body];
 
     for (const event of events) {
-      if (event.event_name !== 'user_send_text') continue;
+      if (event.event_name !== 'user_send_text') {
+        logEvent({ type: 'skipped', event_name: event.event_name });
+        continue;
+      }
 
       const senderId   = event.sender.id;
       const userMsg    = event.message.text;
@@ -83,11 +135,13 @@ app.post('/webhook', async (req, res) => {
       });
 
       // Send back to Zalo
-      await zaloService.sendTextMessage(senderId, aiReply);
+      const sendResult = await zaloService.sendTextMessage(senderId, aiReply);
       console.log(`✓ Replied [${tokensUsed} tokens]: ${aiReply.substring(0, 80)}...`);
+      logEvent({ type: 'replied', to: senderId, reply: aiReply.substring(0, 120), tokensUsed, send_ok: !!sendResult });
     }
   } catch (error) {
     console.error('Webhook processing error:', error);
+    logEvent({ type: 'error', error: error.message });
   }
 });
 
