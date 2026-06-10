@@ -24,6 +24,66 @@ app.get('/', (req, res) => {
 });
 
 // ============================================================
+// ZALO OAUTH — one-click token grant
+// 1. OA admin opens GET /zalo/oauth/login  → redirected to Zalo
+// 2. Grants permission → Zalo calls /zalo/oauth/callback?code=...
+// 3. Server exchanges code for access+refresh tokens, activates them
+// ============================================================
+const OAUTH_CALLBACK = 'https://docmofarm.com/zalo/oauth/callback';
+
+app.get('/zalo/oauth/login', (req, res) => {
+  const url =
+    'https://oauth.zaloapp.com/v4/oa/permission' +
+    `?app_id=${process.env.ZALO_APP_ID}` +
+    `&redirect_uri=${encodeURIComponent(OAUTH_CALLBACK)}` +
+    '&state=dmf_setup';
+  res.redirect(url);
+});
+
+app.get('/zalo/oauth/callback', async (req, res) => {
+  const { code, oa_id } = req.query;
+  if (!code) return res.status(400).send('Missing ?code from Zalo. Grant may have failed.');
+  try {
+    const axios = require('axios');
+    const r = await axios.post(
+      'https://oauth.zaloapp.com/v4/oa/access_token',
+      new URLSearchParams({
+        code,
+        app_id: process.env.ZALO_APP_ID,
+        grant_type: 'authorization_code',
+      }).toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          secret_key: process.env.ZALO_APP_SECRET,
+        },
+      }
+    );
+    if (!r.data?.access_token) {
+      console.error('OAuth exchange failed:', r.data);
+      return res.status(500).send('<h2>❌ Token exchange failed</h2><pre>' + JSON.stringify(r.data, null, 2) + '</pre>');
+    }
+    zaloService.setTokens(r.data.access_token, r.data.refresh_token);
+    console.log('✅ New Zalo tokens activated via OAuth (oa_id:', oa_id, ')');
+    res.send(`
+      <h2>✅ Bot connected to Zalo OA thành công!</h2>
+      <p>Tokens are active NOW (in memory). To survive server restarts, copy these into Railway → Variables:</p>
+      <p><b>ZALO_ACCESS_TOKEN</b></p><textarea rows="5" cols="80">${r.data.access_token}</textarea>
+      <p><b>ZALO_REFRESH_TOKEN</b></p><textarea rows="5" cols="80">${r.data.refresh_token}</textarea>
+    `);
+  } catch (e) {
+    console.error('OAuth callback error:', e.response?.data || e.message);
+    res.status(500).send('<h2>❌ OAuth error</h2><pre>' + JSON.stringify(e.response?.data || e.message, null, 2) + '</pre>');
+  }
+});
+
+// GET /debug/tokens?key=... — current in-memory tokens (for Railway env sync)
+app.get('/debug/tokens', (req, res) => {
+  if (!debugAuth(req, res)) return;
+  res.json(zaloService.getTokens());
+});
+
+// ============================================================
 // ZALO WEBHOOK — Verification (GET)
 // ============================================================
 app.get('/webhook', (req, res) => {

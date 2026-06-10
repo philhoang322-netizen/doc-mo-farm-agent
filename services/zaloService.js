@@ -5,8 +5,18 @@ const ZALO_API_BASE = 'https://openapi.zalo.me/v3.0';
 const ZALO_OAUTH_URL = 'https://oauth.zaloapp.com/v4/oa/access_token';
 const MAX_MSG_LEN = 2000; // Zalo text limit
 
-// In-memory token (starts from env, can be refreshed at runtime)
+// In-memory tokens (start from env, can be set/refreshed at runtime)
 let accessToken = process.env.ZALO_ACCESS_TOKEN || null;
+let refreshToken = process.env.ZALO_REFRESH_TOKEN || null;
+
+function setTokens(newAccess, newRefresh) {
+  if (newAccess) accessToken = newAccess;
+  if (newRefresh) refreshToken = newRefresh;
+}
+
+function getTokens() {
+  return { accessToken, refreshToken };
+}
 
 const zaloAPI = axios.create({
   baseURL: ZALO_API_BASE,
@@ -27,16 +37,16 @@ function verifyWebhookSignature(data, signature, token) {
 // printed to logs — copy it into the ZALO_REFRESH_TOKEN env var.
 // ------------------------------------------------------------
 async function refreshAccessToken() {
-  const { ZALO_REFRESH_TOKEN, ZALO_APP_ID, ZALO_APP_SECRET } = process.env;
-  if (!ZALO_REFRESH_TOKEN || !ZALO_APP_ID || !ZALO_APP_SECRET) {
-    console.error('❌ Cannot refresh Zalo token: missing ZALO_REFRESH_TOKEN / ZALO_APP_ID / ZALO_APP_SECRET');
+  const { ZALO_APP_ID, ZALO_APP_SECRET } = process.env;
+  if (!refreshToken || !ZALO_APP_ID || !ZALO_APP_SECRET) {
+    console.error('❌ Cannot refresh Zalo token: missing refresh token / ZALO_APP_ID / ZALO_APP_SECRET');
     return false;
   }
   try {
     const res = await axios.post(
       ZALO_OAUTH_URL,
       new URLSearchParams({
-        refresh_token: ZALO_REFRESH_TOKEN,
+        refresh_token: refreshToken,
         app_id: ZALO_APP_ID,
         grant_type: 'refresh_token',
       }).toString(),
@@ -49,6 +59,7 @@ async function refreshAccessToken() {
     );
     if (res.data?.access_token) {
       accessToken = res.data.access_token;
+      if (res.data.refresh_token) refreshToken = res.data.refresh_token;
       console.log('🔄 Zalo access token refreshed OK.');
       console.log('⚠️  NEW REFRESH TOKEN (update ZALO_REFRESH_TOKEN env var!):', res.data.refresh_token);
       return true;
@@ -145,4 +156,6 @@ module.exports = {
   sendQuickReply,
   getUserProfile,
   refreshAccessToken,
+  setTokens,
+  getTokens,
 };
