@@ -348,8 +348,45 @@ async function initDB() {
       return;
     }
 
-    console.log('⚠️  New schema not found. Please run: psql $DATABASE_URL < supabase/migrations/001_full_schema.sql');
-    console.log('   Or apply it via Supabase dashboard SQL editor.');
+    // ---- Auto-apply the migration on a fresh database ----
+    const fs = require('fs');
+    const path = require('path');
+    const sqlPath = path.join(__dirname, '..', 'supabase', 'migrations', '001_full_schema.sql');
+
+    if (!fs.existsSync(sqlPath)) {
+      console.error('❌ Migration file not found:', sqlPath);
+      return;
+    }
+
+    console.log('🔧 Fresh database detected — applying schema...');
+    let sql = fs.readFileSync(sqlPath, 'utf8');
+
+    // Extensions are environment-dependent (Railway Postgres has no pgvector).
+    // Try them individually; adapt the script to whatever is available.
+    sql = sql.replace(/CREATE EXTENSION IF NOT EXISTS\s+"?[\w-]+"?\s*;/gi, '');
+
+    let hasUuidOssp = false;
+    try {
+      await client.query('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"');
+      hasUuidOssp = true;
+    } catch (e) {
+      console.warn('⚠️  uuid-ossp unavailable → using built-in gen_random_uuid()');
+    }
+    if (!hasUuidOssp) {
+      sql = sql.replace(/uuid_generate_v4\(\)/g, 'gen_random_uuid()');
+    }
+
+    try {
+      await client.query('CREATE EXTENSION IF NOT EXISTS vector');
+    } catch (e) {
+      // pgvector not present — schema has no vector columns, safe to skip.
+    }
+
+    await client.query(sql);
+    console.log('✅ Schema applied — persistent memory, orders and analytics are live.');
+  } catch (err) {
+    console.error('❌ DB init failed:', err.message);
+    console.error('   Bot keeps running without persistence.');
   } finally {
     client.release();
   }
@@ -357,6 +394,7 @@ async function initDB() {
 
 module.exports = {
   pool,
+  DB_ENABLED,
   initDB,
   // Customer
   getCustomerByZaloId,

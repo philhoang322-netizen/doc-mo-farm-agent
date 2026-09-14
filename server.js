@@ -151,6 +151,17 @@ app.get('/debug/test-send', async (req, res) => {
   }
 });
 
+// GET /debug/knowledge?key=...&q=... — inspect the product knowledge base
+app.get('/debug/knowledge', (req, res) => {
+  if (!debugAuth(req, res)) return;
+  const knowledge = require('./services/knowledge');
+  res.json({
+    stats: knowledge.stats(),
+    db_enabled: db.DB_ENABLED,
+    result: req.query.q ? knowledge.search(req.query.q) : undefined,
+  });
+});
+
 // ============================================================
 // ZALO BOT API (free channel — no OA Tier Package required)
 // ============================================================

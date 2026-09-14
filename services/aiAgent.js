@@ -1,6 +1,7 @@
 require('dotenv').config();
 const Anthropic = require('@anthropic-ai/sdk');
 const db = require('./database');
+const knowledge = require('./knowledge');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -58,11 +59,15 @@ NGUYÊN TẮC GIAO TIẾP:
 - Dùng emoji nhẹ nhàng khi phù hợp 🌿
 
 ${productCatalog}
-${customerCtx}${memoriesCtx}${ordersCtx}${prefsCtx}
+${customerCtx}${memoriesCtx}${ordersCtx}${prefsCtx}${knowledge.systemPromptBlock()}
 
 KHI KHÁCH ĐẶT HÀNG: Gọi tool create_order để tạo đơn hàng.
 KHI KHÁCH HỎI SẢN PHẨM: Gọi tool search_products để tìm.
-KHI BIẾT THÔNG TIN MỚI VỀ KHÁCH (tên, số điện thoại, địa chỉ, sở thích): Gọi tool save_memory.`;
+KHI KHÁCH HỎI CHI TIẾT (thành phần, cách dùng, bảo quản, ai dùng được, vì sao có cặn...): Gọi tool search_knowledge.
+KHI BIẾT THÔNG TIN MỚI VỀ KHÁCH (tên, số điện thoại, địa chỉ, sở thích): Gọi tool save_memory.
+
+QUAN TRỌNG: Chỉ nói những gì có trong tài liệu trên. Không tự nghĩ ra công dụng,
+thành phần hay con số. Không hứa chữa bệnh. Nếu không biết, nói thật là sẽ hỏi lại farm.`;
 }
 
 // ============================================================
@@ -76,6 +81,18 @@ const tools = [
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Tên hoặc loại sản phẩm cần tìm' }
+      },
+      required: ['query']
+    }
+  },
+  {
+    name: 'search_knowledge',
+    description:
+      'Tra cứu tài liệu sản phẩm của farm (FAQ, thành phần, cách dùng, bảo quản, đối tượng phù hợp). Dùng khi khách hỏi chi tiết vượt ngoài bảng giá.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Nội dung cần tra cứu, vd: "bảo quản lạnh", "có đường không"' }
       },
       required: ['query']
     }
@@ -146,6 +163,10 @@ const tools = [
 async function executeTool(toolName, toolInput, customer) {
   try {
     if (toolName === 'search_products') {
+      if (!db.DB_ENABLED) {
+        // No database yet — fall back to the catalog already in the prompt.
+        return 'Dùng bảng giá trong hệ thống (chưa kết nối database sản phẩm).';
+      }
       const result = await db.pool.query(
         `SELECT name_vi, base_price, unit, is_available
          FROM products
@@ -160,6 +181,10 @@ async function executeTool(toolName, toolInput, customer) {
       return result.rows.map(p =>
         `${p.name_vi}: ${Number(p.base_price).toLocaleString('vi')}đ/${p.unit}`
       ).join('\n');
+    }
+
+    if (toolName === 'search_knowledge') {
+      return knowledge.search(toolInput.query);
     }
 
     if (toolName === 'create_order') {
