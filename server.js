@@ -628,13 +628,19 @@ async function handleOwnerCommand(text, reply) {
         '/mo <id> — mở lại bot cho khách\n' +
         '/dung <id> — tạm dừng bot cho khách\n' +
         '/tinhtrang — kiểm tra hệ thống\n' +
-        '/baocao — báo cáo kinh doanh hôm nay'
+        '/baocao — báo cáo kinh doanh hôm nay\n' +
+        '/khach — khách đã hỏi mà chưa mua (tuần này)'
       );
       return true;
     }
 
     if (cmd === '/baocao' || cmd === '/report') {
       await reply(await selfCheck.dailyReportText());
+      return true;
+    }
+
+    if (cmd === '/khach' || cmd === '/leads') {
+      await reply(await selfCheck.weeklyLeadsText());
       return true;
     }
   } catch (e) {

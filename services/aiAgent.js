@@ -108,6 +108,21 @@ function buildCustomerPrompt(customer, memories, recentOrders, preferences) {
   if (customer) {
     out += `Khách hàng: ${customer.display_name || customer.full_name || 'Khách'}`;
     if (customer.customer_tier !== 'new') out += ` | Hạng: ${customer.customer_tier}`;
+
+    // A returning customer greeted with "chào bạn, farm bán gì?" has just been
+    // told they are a stranger. Give the agent the facts it needs to open with
+    // something that only makes sense for this person.
+    const gap = customer.last_seen_at
+      ? Math.floor((Date.now() - new Date(customer.last_seen_at).getTime()) / 86400000)
+      : null;
+    if (gap !== null && gap >= 1) {
+      out += `\nKhách đã vắng ${gap} ngày.`;
+      if (gap >= 30) out += ' Khá lâu rồi — chào hỏi ấm áp, đừng làm như mới gặp lần đầu.';
+    }
+    if (recentOrders?.length) {
+      out += `\nĐây là KHÁCH CŨ đã từng mua. Mở lời bằng điều cụ thể: hỏi thăm lần dùng trước` +
+             ` có hợp không, rồi mới tư vấn tiếp. Không chào như người lạ.`;
+    }
   }
   // What the conversation has already established, including turns that have
   // scrolled out of the verbatim history.

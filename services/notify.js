@@ -28,20 +28,40 @@ function money(n) {
   return Number(n || 0).toLocaleString('vi') + 'đ';
 }
 
-/** A customer asked for a human — the farm needs to step in. */
+/**
+ * A customer asked for a human — the farm needs to step in.
+ *
+ * This is a handover card, not an alert. Whoever picks it up should be able to
+ * answer without scrolling back through the thread or asking the customer to
+ * repeat themselves, which is the fastest way to lose someone who was already
+ * unhappy enough to ask for a person.
+ */
 async function handoff(info, customer, lastMessage) {
   const flag = info.urgency === 'high' ? '🔴 GẤP' : '🟡';
   const name = customer?.display_name || customer?.full_name || 'Khách';
+  const call = customer?.gender === 'male' ? 'anh'
+    : customer?.gender === 'female' ? 'chị' : '';
+
   const lines = [
     `${flag} Khách cần gặp người thật`,
     '',
-    `👤 ${name}${customer?.phone ? ` · ${customer.phone}` : ''}`,
-    `💬 "${String(lastMessage || '').slice(0, 200)}"`,
-    `📌 Lý do: ${info.reason}`,
-    '',
-    'Bot đã tạm dừng với khách này.',
-    `Trả lời xong, nhắn: /mo ${info.externalId}`,
+    `👤 ${call ? call + ' ' : ''}${name}${customer?.phone ? ` · ${customer.phone}` : ' · chưa có số'}`,
   ];
+
+  if (customer?.customer_tier && customer.customer_tier !== 'new') {
+    lines.push(`⭐ Hạng: ${customer.customer_tier}`);
+  }
+  if (customer?.full_address) lines.push(`📍 ${customer.full_address}`);
+
+  lines.push('', `💬 Khách vừa nhắn:`, `"${String(lastMessage || '').slice(0, 250)}"`);
+
+  // Everything the conversation already established — the point of the card.
+  if (customer?.convo_summary) {
+    lines.push('', '📋 Đã trao đổi:', customer.convo_summary.slice(0, 600));
+  }
+
+  lines.push('', `📌 Lý do chuyển: ${info.reason}`);
+  lines.push('', 'Bot đã tạm dừng với khách này.', `Trả lời xong, nhắn: /mo ${info.externalId}`);
   return send(lines.join('\n'));
 }
 

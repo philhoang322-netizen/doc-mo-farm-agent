@@ -224,6 +224,77 @@ async function dailyReportText() {
   return L.join('\n');
 }
 
+/**
+ * Weekly lead digest.
+ *
+ * The daily report says how business went. This says who is still worth a
+ * phone call: people who talked to the farm this week, showed real interest,
+ * and did not buy. Without it they sit in the database and quietly go cold.
+ */
+async function weeklyLeadsText() {
+  if (!db.DB_ENABLED) return 'Chưa kết nối database nên chưa có số liệu ạ.';
+  const q = async (sql, p = []) => (await db.pool.query(sql, p)).rows;
+
+  const leads = await q(`
+    SELECT c.id, c.display_name, c.full_name, c.phone, c.gender,
+           c.convo_summary, c.last_seen_at, c.bot_paused, c.followup_stage,
+           (SELECT COUNT(*)::int FROM messages m WHERE m.customer_id = c.id) AS msgs,
+           (SELECT i.external_id FROM customer_identities i
+             WHERE i.customer_id = c.id ORDER BY i.created_at LIMIT 1) AS ext
+    FROM customers c
+    WHERE c.last_seen_at > NOW() - INTERVAL '7 days'
+      AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)
+      AND (SELECT COUNT(*) FROM messages m WHERE m.customer_id = c.id) >= 3
+    ORDER BY c.last_seen_at DESC
+    LIMIT 20`);
+
+  const [won] = await q(`
+    SELECT COUNT(DISTINCT o.customer_id)::int AS buyers,
+           COUNT(*)::int AS orders,
+           COALESCE(SUM(o.total_amount),0) AS revenue
+    FROM orders o
+    WHERE o.created_at > NOW() - INTERVAL '7 days'
+      AND o.status NOT IN ('cancelled','refunded')`);
+
+  const [talked] = await q(`
+    SELECT COUNT(DISTINCT customer_id)::int AS n FROM messages
+    WHERE created_at > NOW() - INTERVAL '7 days'`);
+
+  const money = n => Number(n || 0).toLocaleString('vi') + 'đ';
+  const rate = talked.n > 0 ? Math.round((won.buyers / talked.n) * 100) : 0;
+
+  const L = [
+    '📊 Dốc Mơ Farm — khách tiềm năng tuần này',
+    '',
+    `Đã trò chuyện: ${talked.n} khách`,
+    `Đã mua: ${won.buyers} khách · ${won.orders} đơn · ${money(won.revenue)}`,
+    `Tỉ lệ chốt: ${rate}%`,
+  ];
+
+  if (leads.length === 0) {
+    L.push('', 'Không có khách nào đang bỏ ngỏ. Tuần sạch ✅');
+    return L.join('\n');
+  }
+
+  L.push('', `🙋 ${leads.length} khách đã hỏi mà chưa mua:`, '');
+  leads.forEach((c, i) => {
+    const call = c.gender === 'male' ? 'anh ' : c.gender === 'female' ? 'chị ' : '';
+    const days = Math.floor((Date.now() - new Date(c.last_seen_at).getTime()) / 86400000);
+    L.push(`${i + 1}. ${call}${c.display_name || c.full_name || 'Khách'}` +
+           `${c.phone ? ` · ${c.phone}` : ' · chưa có số'}`);
+    L.push(`   ${c.msgs} tin · ${days === 0 ? 'hôm nay' : days + ' ngày trước'}` +
+           `${c.bot_paused ? ' · ĐANG CHỜ NGƯỜI THẬT' : ''}` +
+           `${c.followup_stage >= 2 ? ' · đã nhắc 2 lần' : ''}`);
+    if (c.convo_summary) {
+      L.push(`   ${c.convo_summary.split('\n')[0].slice(0, 110)}`);
+    }
+    L.push('');
+  });
+
+  L.push('Khách có số điện thoại thì gọi trực tiếp thường ăn hơn nhắn tin.');
+  return L.join('\n');
+}
+
 /** Fire the morning report once per day, at REPORT_HOUR local time. */
 function startDailyReport() {
   if (process.env.DAILY_REPORT_ENABLED === 'false') return;
@@ -243,6 +314,15 @@ function startDailyReport() {
       try {
         await notifyOwner(await dailyReportText());
         console.log('📬 Daily report sent');
+
+        // Monday also gets the lead digest — sent second so it lands under
+        // the daily numbers rather than competing with them.
+        const weekday = new Intl.DateTimeFormat('en-GB', { timeZone: tz, weekday: 'short' })
+          .format(new Date());
+        if (weekday === 'Mon') {
+          await notifyOwner(await weeklyLeadsText());
+          console.log('📊 Weekly lead digest sent');
+        }
       } catch (e) {
         console.error('Daily report failed:', e.message);
       }
@@ -271,4 +351,6 @@ function getLastReport() {
   return lastReport;
 }
 
-module.exports = { start, run, gather, getLastReport, notifyOwner, dailyReportText };
+module.exports = {
+  start, run, gather, getLastReport, notifyOwner, dailyReportText, weeklyLeadsText,
+};
