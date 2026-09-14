@@ -12,6 +12,80 @@ const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // SYSTEM PROMPT BUILDER
 // Injects customer memory + context into every conversation
 // ============================================================
+/**
+ * The system prompt is split in two so Anthropic can cache the expensive half.
+ *
+ * Block A is identical for every customer — role, rules, price list, FAQ. It
+ * is by far the largest part, and it only changes when the farm edits
+ * something. Marked with cache_control, a repeat call reads it from cache at
+ * roughly a tenth of the price instead of paying full input rate every message.
+ *
+ * Block B is this customer's context, which differs every time and must stay
+ * outside the cached prefix — putting it first would invalidate the cache on
+ * every single message and make caching worthless.
+ */
+function buildStaticPrompt() {
+  return `Bạn là trợ lý bán hàng thân thiện của Doc Mo Farm - một eco-farm sản xuất sản phẩm organic thủ công.
+
+NGUYÊN TẮC GIAO TIẾP:
+- Luôn xưng "dạ", gọi khách theo hướng dẫn xưng hô bên dưới
+- Trả lời ngắn gọn, dễ đọc trên Zalo (không quá 3-4 dòng mỗi đoạn)
+- Thân thiện, ấm áp như người bán hàng tại chợ, không máy móc
+- Không hứa hẹn điều trị bệnh
+- Dùng emoji nhẹ nhàng khi phù hợp 🌿
+${catalog.promptBlock()}
+${knowledge.systemPromptBlock()}${knowledge.taughtPromptBlock()}
+
+KHI KHÁCH ĐẶT HÀNG: Gọi tool create_order để tạo đơn hàng.
+
+QUY TẮC SẮT VỀ ĐƠN HÀNG — sai là mất tiền của khách và của farm:
+- create_order CHỈ chứa đúng sản phẩm và số lượng khách vừa yêu cầu TRONG TIN NHẮN NÀY.
+- TUYỆT ĐỐI KHÔNG cộng dồn sản phẩm của đơn cũ, dù lịch sử trò chuyện có nhắc tới.
+  Khách nói "đặt 1 chai nước gừng" thì đơn chỉ có 1 chai nước gừng — không thêm gì khác.
+- Nếu không chắc khách muốn thêm hay đặt đơn mới, HỎI LẠI trước, đừng tự đoán.
+- Đọc kỹ số lượng. "1 chai" là 1, không phải 2.
+- Trước khi gọi create_order, nhẩm lại: tổng tiền = đơn giá × số lượng. Nói đúng con số đó cho khách.
+
+KHI KHÁCH HỎI SẢN PHẨM: Gọi tool search_products để tìm.
+KHI KHÁCH HỎI CHI TIẾT (thành phần, cách dùng, bảo quản, ai dùng được, vì sao có cặn...): Gọi tool search_knowledge.
+KHI BIẾT THÔNG TIN MỚI VỀ KHÁCH (tên, số điện thoại, địa chỉ, sở thích): Gọi tool save_memory.
+SỐ ĐIỆN THOẠI: nếu khách hỏi mua hoặc quan tâm nghiêm túc, hãy hỏi số điện thoại một cách
+tự nhiên (để farm tiện liên hệ và giữ lịch sử đơn). Lưu ngay bằng save_memory với key "so_dien_thoai".
+
+THANH TOÁN: khách hay viết tắt. Tất cả những cách nói sau đều có nghĩa là CHUYỂN KHOẢN —
+đặt payment_method = "bank_transfer" khi tạo đơn:
+"chuyển khoản", "ck", "cknh", "tk", "stk", "số tk", "số tài khoản", "gởi tk",
+"qr", "qr code", "qr-code", "mã qr", "quét mã", "bank", "banking", "atm", "chuyển tiền".
+Chỉ đặt "cod" khi khách nói rõ: trả tiền mặt, thanh toán khi nhận hàng, ship cod.
+Hệ thống sẽ TỰ gửi ảnh mã QR cho khách — bạn chỉ cần nói "farm gửi mã QR ngay nha",
+KHÔNG tự đọc số tài khoản ra, KHÔNG tự bịa số tài khoản.
+
+QUAN TRỌNG: Chỉ nói những gì có trong tài liệu trên. Không tự nghĩ ra công dụng,
+thành phần hay con số. Không hứa chữa bệnh. Nếu không biết, nói thật là sẽ hỏi lại farm.`;
+}
+
+function buildCustomerPrompt(customer, memories, recentOrders, preferences) {
+  let out = '';
+  if (customer) {
+    out += `Khách hàng: ${customer.display_name || customer.full_name || 'Khách'}`;
+    if (customer.customer_tier !== 'new') out += ` | Hạng: ${customer.customer_tier}`;
+  }
+  if (memories?.length) {
+    out += `\nĐiều bạn nhớ về khách này:\n` +
+      memories.map(m => `  - ${m.memory_key}: ${m.memory_value}`).join('\n');
+  }
+  if (recentOrders?.length) {
+    out += `\nĐơn hàng gần đây:\n` +
+      recentOrders.map(o => `  - ${o.order_number || o.id}: ${o.total_amount?.toLocaleString('vi')}đ (${o.status})`).join('\n');
+  }
+  if (preferences?.length) {
+    out += `\nSở thích đã biết:\n` +
+      preferences.map(p => `  - ${p.preference_key}: ${p.preference_value}`).join('\n');
+  }
+  out += honorific.promptBlock(customer);
+  return out.trim() || 'Khách mới, chưa có thông tin gì.';
+}
+
 function buildSystemPrompt(customer, memories, recentOrders, preferences) {
   // Single source of truth: the products table. Editable from /admin.
   const productCatalog = catalog.promptBlock();
@@ -367,12 +441,28 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
   }
 
   // 2. Load recent conversation history (last 10 messages)
-  const history = await db.getConversationHistory(zaloUserId, 10);
-  const messages = history.map(h => ({ role: h.role, content: h.content }));
+  // History is re-sent in full on every message, so it is the second largest
+  // cost after the system prompt. Six turns is enough for a sales chat, and
+  // very long past answers get trimmed — the model needs the gist, not the
+  // whole of a reply it wrote itself.
+  const HISTORY_TURNS = Number(process.env.HISTORY_TURNS || 6);
+  const MAX_TURN_CHARS = 700;
+  const history = await db.getConversationHistory(zaloUserId, HISTORY_TURNS);
+  const messages = history.map(h => ({
+    role: h.role,
+    content: h.content.length > MAX_TURN_CHARS
+      ? h.content.slice(0, MAX_TURN_CHARS) + ' […]'
+      : h.content,
+  }));
   messages.push({ role: 'user', content: userMessage });
 
   // 3. Call Claude with tools
-  const systemPrompt = buildSystemPrompt(customer, memories, recentOrders, preferences);
+  // Static half cached, customer half fresh. Order matters: the cached prefix
+  // must come first and be byte-identical between calls.
+  const systemPrompt = [
+    { type: 'text', text: buildStaticPrompt(), cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: buildCustomerPrompt(customer, memories, recentOrders, preferences) },
+  ];
   let response = await claude.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 1500,
@@ -426,7 +516,15 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
     .join('');
 
   // 6. Track usage
-  const tokensUsed = (response.usage?.input_tokens || 0) + (response.usage?.output_tokens || 0);
+  const u = response.usage || {};
+  const tokensUsed = (u.input_tokens || 0) + (u.output_tokens || 0);
+  // Cache reads are billed at a fraction of input rate — worth seeing in logs.
+  if (u.cache_read_input_tokens || u.cache_creation_input_tokens) {
+    console.log(
+      `💰 cache: đọc ${u.cache_read_input_tokens || 0}, ghi ${u.cache_creation_input_tokens || 0}, ` +
+      `mới ${u.input_tokens || 0}, ra ${u.output_tokens || 0}`
+    );
+  }
 
   // A silent bot looks broken to the customer — never return an empty reply.
   if (!finalText.trim()) {

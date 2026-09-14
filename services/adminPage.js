@@ -306,7 +306,9 @@ async function render(key, flash = null) {
   <h2 id="quytac">Quy tắc chung cho bot</h2>
   ${rulesForm}
 
-  <h2 id="caumau">Câu trả lời mẫu — bot ưu tiên dùng (${lessons.length})</h2>
+  <h2 id="caumau">Câu trả lời mẫu — bot ưu tiên dùng (${lessons.length})
+    <a class="tag" style="text-decoration:none"
+       href="/faq?key=${esc(key)}">Mở trang FAQ đầy đủ →</a></h2>
   <div class="prods">${lessonCards}${newLesson}</div>
 
   <h2>Hội thoại gần nhất — bấm "Dạy lại" dưới câu bot trả lời</h2>

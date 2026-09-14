@@ -15,6 +15,8 @@ const adminPage   = require('./services/adminPage');
 const catalog     = require('./services/catalog');
 const knowledge   = require('./services/knowledge');
 const state       = require('./services/state');
+const faqPage     = require('./services/faqPage');
+const rewrite     = require('./services/rewrite');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -212,6 +214,79 @@ app.post('/admin/product', async (req, res) => {
     return back(`Đã thêm "${req.body.name_vi}"`);
   } catch (e) {
     return back(`Lỗi: ${e.message}`);
+  }
+});
+
+// ============================================================
+// FAQ WORKBENCH
+// ============================================================
+const faqAuth = (req, res) => {
+  const key = req.query.key || req.body.key;
+  if (key !== process.env.ZALO_WEBHOOK_TOKEN) { res.status(403).send('Forbidden'); return null; }
+  return key;
+};
+
+app.get('/faq', async (req, res) => {
+  const key = faqAuth(req, res); if (!key) return;
+  try {
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    res.set('X-Robots-Tag', 'noindex, nofollow');
+    res.send(await faqPage.render(key, { flash: req.query.ok || null }));
+  } catch (e) {
+    res.status(500).send(`<pre>${e.message}</pre>`);
+  }
+});
+
+// POST /faq/save — create, update or delete one FAQ entry.
+app.post('/faq/save', async (req, res) => {
+  const key = faqAuth(req, res); if (!key) return;
+  const back = (msg) => res.redirect(`/faq?key=${encodeURIComponent(key)}&ok=${encodeURIComponent(msg)}`);
+  try {
+    const { id, question, answer, product } = req.body;
+    const active = req.body.is_active === 'on';
+
+    if (id && req.body.delete) {
+      await db.pool.query('DELETE FROM bot_lessons WHERE id=$1', [id]);
+      await knowledge.refreshTaught();
+      return back('Đã xoá câu hỏi');
+    }
+    if (!question?.trim() || !answer?.trim()) return back('Thiếu câu hỏi hoặc câu trả lời');
+
+    if (id) {
+      await db.pool.query(
+        `UPDATE bot_lessons SET question=$2, answer=$3, product=$4, is_active=$5, updated_at=NOW()
+         WHERE id=$1`,
+        [id, question.trim(), answer.trim(), product || 'Chung', active]
+      );
+    } else {
+      await db.pool.query(
+        'INSERT INTO bot_lessons (question, answer, product) VALUES ($1,$2,$3)',
+        [question.trim(), answer.trim(), product || 'Chung']
+      );
+    }
+    await knowledge.refreshTaught();
+    return back('Đã lưu');
+  } catch (e) {
+    return back(`Lỗi: ${e.message}`);
+  }
+});
+
+// POST /faq/rewrite — propose a Thu-voice version. Saves nothing: the farm
+// reads the proposal beside the original and decides.
+app.post('/faq/rewrite', async (req, res) => {
+  const key = faqAuth(req, res); if (!key) return;
+  try {
+    const { id, question, answer } = req.body;
+    const result = await rewrite.toThuVoice(answer, question);
+    if (!result.ok) {
+      return res.redirect(`/faq?key=${encodeURIComponent(key)}&ok=${encodeURIComponent('Viết lại thất bại: ' + result.error)}`);
+    }
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    res.send(await faqPage.render(key, {
+      proposal: { id, text: result.text, tokens: result.tokens, warnings: result.warnings },
+    }));
+  } catch (e) {
+    res.redirect(`/faq?key=${encodeURIComponent(key)}&ok=${encodeURIComponent('Lỗi: ' + e.message)}`);
   }
 });
 

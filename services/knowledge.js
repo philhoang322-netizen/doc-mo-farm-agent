@@ -93,13 +93,9 @@ function systemPromptBlock() {
 
 /** Keyword search across sections. Returns formatted text for a tool result. */
 function search(query, limit = 3) {
-  // Once the FAQ is in the database it is already in the prompt; searching the
-  // stale file would only reintroduce the text the farm edited away.
-  if (mdDisabled) {
-    const hit = lessons.find(l => normalize(l.question).includes(normalize(query)) ||
-                                  normalize(query).includes(normalize(l.question)));
-    return hit ? hit.answer : 'Không có trong tài liệu farm. Hãy nói thật là sẽ hỏi lại farm.';
-  }
+  // Once the FAQ is in the database it is the only source; searching the stale
+  // file would reintroduce exactly the text the farm edited away.
+  if (mdDisabled) return searchLessons(query, limit);
   if (sections.length === 0) return 'Chưa có tài liệu sản phẩm.';
 
   const terms = normalize(query).split(/\s+/).filter(t => t.length > 1);
@@ -146,7 +142,9 @@ async function refreshTaught() {
   if (!db.DB_ENABLED) return;
   try {
     const r = await db.pool.query(
-      'SELECT id, question, answer FROM bot_lessons WHERE is_active = TRUE ORDER BY updated_at DESC LIMIT 200'
+      `SELECT id, question, answer, COALESCE(product, 'Chung') AS product
+       FROM bot_lessons WHERE is_active = TRUE
+       ORDER BY product, sort_order, updated_at DESC LIMIT 600`
     );
     lessons = r.rows;
     rules = (await state.get('bot_rules')) || '';
@@ -162,20 +160,47 @@ function touchTaught() {
   if (Date.now() - taughtAt > TAUGHT_TTL) refreshTaught().catch(() => {});
 }
 
-/** Lessons + house rules, appended after the product FAQ. */
+/**
+ * Lessons + house rules, appended after the product FAQ.
+ *
+ * With ~20 products the FAQ will run to hundreds of answers — far too much to
+ * carry in every prompt. Under the budget we inline everything (fastest, most
+ * accurate). Over it, the agent gets the questions grouped by product and
+ * looks the answer up with search_knowledge, which costs one extra round trip
+ * but keeps each message affordable.
+ */
+const LESSON_BUDGET = 9000; // characters
+
 function taughtPromptBlock() {
   touchTaught();
   const parts = [];
 
   if (lessons.length) {
-    const list = lessons
-      .map(l => `Hỏi: ${l.question}\nTrả lời: ${l.answer}`)
-      .join('\n\n');
-    parts.push(
-      '\n\nCÂU TRẢ LỜI DO FARM SOẠN SẴN — ưu tiên cao nhất.\n' +
-      'Nếu khách hỏi trùng ý với một mục dưới đây, hãy trả lời đúng theo nội dung đó ' +
-      '(được diễn đạt lại cho hợp ngữ cảnh, nhưng KHÔNG đổi thông tin):\n' + list
-    );
+    const full = lessons.map(l => `Hỏi: ${l.question}\nTrả lời: ${l.answer}`).join('\n\n');
+
+    if (full.length <= LESSON_BUDGET) {
+      parts.push(
+        '\n\nCÂU TRẢ LỜI DO FARM SOẠN SẴN — ưu tiên cao nhất.\n' +
+        'Nếu khách hỏi trùng ý với một mục dưới đây, hãy trả lời đúng theo nội dung đó ' +
+        '(được diễn đạt lại cho hợp ngữ cảnh, nhưng KHÔNG đổi thông tin):\n' + full
+      );
+    } else {
+      const byProduct = new Map();
+      for (const l of lessons) {
+        const k = l.product || 'Chung';
+        if (!byProduct.has(k)) byProduct.set(k, []);
+        byProduct.get(k).push(l.question);
+      }
+      const index = [...byProduct.entries()]
+        .map(([p, qs]) => `● ${p}:\n${qs.map(q => `   - ${q}`).join('\n')}`)
+        .join('\n');
+      parts.push(
+        `\n\nFARM ĐÃ SOẠN SẴN ${lessons.length} CÂU TRẢ LỜI CHÍNH THỨC.\n` +
+        'Dưới đây là danh mục câu hỏi. Khi khách hỏi trùng ý với bất kỳ mục nào, ' +
+        'BẮT BUỘC gọi tool search_knowledge để lấy đúng câu trả lời của farm rồi mới trả lời. ' +
+        'Không tự nghĩ ra câu trả lời cho những chủ đề này:\n' + index
+      );
+    }
   }
 
   if (rules && rules.trim()) {
@@ -183,6 +208,46 @@ function taughtPromptBlock() {
   }
 
   return parts.join('');
+}
+
+/**
+ * Score every taught answer against the customer's words.
+ *
+ * Whole-string containment was fine for 20 rows; at several hundred it misses
+ * almost everything, because customers never phrase a question the way the FAQ
+ * writes it. Term overlap on the question, with a smaller weight on the answer
+ * body, handles "để tủ lạnh hông" → "Có cần bảo quản lạnh không?".
+ */
+function searchLessons(query, limit = 3) {
+  touchTaught();
+  if (!lessons.length) return 'Chưa có câu trả lời nào do farm soạn.';
+
+  const STOP = new Set(['co','khong','la','gi','the','nao','duoc','minh','ban','farm','a','voi','va','cho','thi','nhu','nay','o','tai','cua','bao','nhieu']);
+  const terms = normalize(query).split(/\s+/).filter(t => t.length > 1 && !STOP.has(t));
+  if (!terms.length) return 'Câu hỏi quá ngắn để tra cứu.';
+
+  const scored = lessons
+    .map(l => {
+      const q = normalize(l.question);
+      const a = normalize(l.answer);
+      let score = 0;
+      for (const t of terms) {
+        if (q.includes(t)) score += 3;      // the question is what was indexed
+        else if (a.includes(t)) score += 1; // body match is weaker evidence
+      }
+      if (l.product && normalize(l.product) && terms.some(t => normalize(l.product).includes(t))) score += 2;
+      return { l, score };
+    })
+    .filter(x => x.score >= 3)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+
+  if (!scored.length) {
+    return 'Không có trong tài liệu farm. Hãy nói thật là chưa rõ và sẽ hỏi lại farm, đừng tự nghĩ ra câu trả lời.';
+  }
+  return scored
+    .map(x => `[${x.l.product || 'Chung'}] ${x.l.question}\n${x.l.answer}`)
+    .join('\n\n');
 }
 
 function taughtStats() {

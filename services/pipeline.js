@@ -88,6 +88,16 @@ async function handleMessage(p) {
 
       await db.saveMessage(p.externalKey, 'user', p.text);
 
+      // A bare "ok" / "👍" / "cảm ơn" doesn't need a model call. Answering
+      // these locally saves a full prompt every time, and they are common.
+      const quick = quickReply(p.text);
+      if (quick) {
+        await p.send(p.replyTo, quick);
+        await db.saveMessage(p.externalKey, 'assistant', quick);
+        log({ type: 'quick_reply', channel: p.channel, to: p.replyTo });
+        return { ok: true, quick: true };
+      }
+
       const { text: reply, tokensUsed, handoff, newOrder } =
         await aiAgent.respond(p.externalKey, p.text);
 
@@ -168,6 +178,39 @@ async function learnHonorific(customer, p) {
 
   await db.setGender(customer.id, gender, fullName);
   return { ...customer, gender, full_name: fullName || customer.full_name };
+}
+
+/**
+ * Acknowledgements that carry no question. Matched strictly — the whole
+ * message must be one of these — so a real question is never swallowed.
+ */
+const ACKS = new Map([
+  ['ok', 'Dạ vâng ạ 🌿'],
+  ['okie', 'Dạ vâng ạ 🌿'],
+  ['oki', 'Dạ vâng ạ 🌿'],
+  ['okay', 'Dạ vâng ạ 🌿'],
+  ['vâng', 'Dạ 🌿'],
+  ['dạ', 'Dạ 🌿'],
+  ['ừ', 'Dạ 🌿'],
+  ['uh', 'Dạ 🌿'],
+  ['um', 'Dạ 🌿'],
+  ['cảm ơn', 'Dạ farm cảm ơn bạn nhiều ạ 🌿'],
+  ['cám ơn', 'Dạ farm cảm ơn bạn nhiều ạ 🌿'],
+  ['thanks', 'Dạ farm cảm ơn bạn nhiều ạ 🌿'],
+  ['thank you', 'Dạ farm cảm ơn bạn nhiều ạ 🌿'],
+  ['tks', 'Dạ farm cảm ơn bạn nhiều ạ 🌿'],
+  ['thank', 'Dạ farm cảm ơn bạn nhiều ạ 🌿'],
+]);
+const ACK_EMOJI = /^[\p{Emoji_Presentation}\p{Extended_Pictographic}\s]+$/u;
+
+function quickReply(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  if (raw.length <= 8 && ACK_EMOJI.test(raw)) return 'Dạ 🌿';
+
+  const t = raw.toLowerCase().replace(/[.!,~\s]+$/g, '').trim();
+  if (t.length > 20) return null;
+  return ACKS.get(t) || null;
 }
 
 /** Customer asked for our account or a QR but hasn't ordered yet. */
