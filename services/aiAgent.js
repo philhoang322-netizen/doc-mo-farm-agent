@@ -70,6 +70,11 @@ function buildCustomerPrompt(customer, memories, recentOrders, preferences) {
     out += `Khách hàng: ${customer.display_name || customer.full_name || 'Khách'}`;
     if (customer.customer_tier !== 'new') out += ` | Hạng: ${customer.customer_tier}`;
   }
+  // What the conversation has already established, including turns that have
+  // scrolled out of the verbatim history.
+  if (customer?.convo_summary) {
+    out += `\n\nĐÃ NÓI VỚI KHÁCH NÀY TỪ TRƯỚC (nhớ và đừng hỏi lại những điều đã biết):\n${customer.convo_summary}`;
+  }
   if (memories?.length) {
     out += `\nĐiều bạn nhớ về khách này:\n` +
       memories.map(m => `  - ${m.memory_key}: ${m.memory_value}`).join('\n');
@@ -441,16 +446,17 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
   }
 
   // 2. Load recent conversation history (last 10 messages)
-  // History is re-sent in full on every message, so it is the second largest
-  // cost after the system prompt. Six turns is enough for a sales chat, and
-  // very long past answers get trimmed — the model needs the gist, not the
-  // whole of a reply it wrote itself.
-  const HISTORY_TURNS = Number(process.env.HISTORY_TURNS || 6);
-  const MAX_TURN_CHARS = 700;
+  // Recent turns verbatim, plus a rolling summary for everything older (see
+  // services/memory.js). Sixteen turns keeps a real conversation intact — a
+  // customer on their tenth question is still being understood — while the
+  // summary carries the rest, so long memory doesn't mean a long prompt.
+  // Only the agent's own long replies get trimmed; the customer's words never do.
+  const HISTORY_TURNS = Number(process.env.HISTORY_TURNS || 16);
+  const MAX_TURN_CHARS = 1200;
   const history = await db.getConversationHistory(zaloUserId, HISTORY_TURNS);
   const messages = history.map(h => ({
     role: h.role,
-    content: h.content.length > MAX_TURN_CHARS
+    content: (h.role === 'assistant' && h.content.length > MAX_TURN_CHARS)
       ? h.content.slice(0, MAX_TURN_CHARS) + ' […]'
       : h.content,
   }));

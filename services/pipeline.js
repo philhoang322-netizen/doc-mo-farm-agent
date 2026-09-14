@@ -13,6 +13,7 @@ const vietqr = require('./vietqr');
 const kiotviet = require('./kiotviet');
 const honorific = require('./honorific');
 const zaloService = require('./zaloService');
+const memory = require('./memory');
 
 const FALLBACK_REPLY =
   'Dạ farm đang bận xử lý một chút, bạn nhắn lại giúp mình sau ít phút nha 🌿 ' +
@@ -115,6 +116,14 @@ async function handleMessage(p) {
         tokensUsed,
         send_ok: !!sent,
       });
+
+      // Refresh the rolling summary in the background when it falls behind,
+      // so the next turns still know what this conversation is about.
+      if (customer && db.DB_ENABLED) {
+        db.pool.query('SELECT COUNT(*)::int AS n FROM messages WHERE customer_id=$1', [customer.id])
+          .then(r => memory.maybeRefresh(customer, p.externalKey, r.rows[0].n))
+          .catch(() => {});
+      }
 
       // 4. Order follow-through: pay-by-QR for the customer, POS + alert for the farm.
       //    Customers write "ck", "stk", "gởi qr" far more often than
