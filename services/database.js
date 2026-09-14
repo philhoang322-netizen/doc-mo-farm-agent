@@ -8,6 +8,10 @@ const pool = DB_ENABLED
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+      // A hung query must not silently wedge the bot.
+      statement_timeout: 15000,
+      idle_in_transaction_session_timeout: 15000,
+      connectionTimeoutMillis: 10000,
     })
   : {
       query: async () => { throw new Error('Database disabled (no DATABASE_URL)'); },
@@ -100,6 +104,10 @@ async function mergeCustomers(survivorId, mergedId, matchedOn = 'phone') {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // SET LOCAL only applies inside a transaction — must follow BEGIN.
+    // Fail fast instead of blocking forever behind someone else's row lock.
+    await client.query("SET LOCAL lock_timeout = '4s'");
+    await client.query("SET LOCAL statement_timeout = '8s'");
 
     await client.query('UPDATE customer_identities SET customer_id=$1 WHERE customer_id=$2', [survivorId, mergedId]);
     await client.query('UPDATE messages SET customer_id=$1 WHERE customer_id=$2', [survivorId, mergedId]);
