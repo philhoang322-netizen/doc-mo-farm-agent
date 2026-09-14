@@ -77,8 +77,14 @@ async function handleMessage(p) {
       });
 
       // 4. Order follow-through: pay-by-QR for the customer, POS + alert for the farm.
+      //    Customers write "ck", "stk", "gởi qr" far more often than
+      //    "chuyển khoản", so trust the raw text, not only the model.
+      const askedTransfer = vietqr.wantsTransfer(p.text);
+
       if (newOrder) {
-        await afterOrder(newOrder, p, log);
+        await afterOrder(newOrder, p, log, askedTransfer);
+      } else if (askedTransfer && vietqr.configured()) {
+        await sendAccountInfo(p, log);
       }
       if (handoff) await notify.handoff(handoff, customer, p.text);
 
@@ -101,10 +107,25 @@ async function handleMessage(p) {
  * Runs after the reply has already been delivered, and each step is wrapped
  * on its own — a POS outage must not cost the customer their confirmation.
  */
-async function afterOrder(order, p, log) {
-  // a) Payment QR — skip for cash on delivery, it would only confuse.
+/** Customer asked for our account or a QR but hasn't ordered yet. */
+async function sendAccountInfo(p, log) {
   try {
-    const cod = String(order.payment || 'cod').toLowerCase() === 'cod';
+    const url = vietqr.imageUrl(0, '');
+    const text = vietqr.accountInfoMessage();
+    if (p.sendPhoto && url) await p.sendPhoto(p.replyTo, url, text);
+    else await p.send(p.replyTo, `${text}\n\n${url || ''}`.trim());
+    log({ type: 'account_info_sent', channel: p.channel });
+  } catch (e) {
+    console.error('Account info send failed:', e.message);
+  }
+}
+
+async function afterOrder(order, p, log, askedTransfer = false) {
+  // a) Payment QR. Skip only when it's genuinely cash on delivery — if the
+  //    customer said ck/stk/qr in this very message, send it regardless of
+  //    what the model recorded as the payment method.
+  try {
+    const cod = String(order.payment || 'cod').toLowerCase() === 'cod' && !askedTransfer;
     const url = vietqr.imageUrl(order.total, order.order_number);
     if (!cod && url) {
       if (p.sendPhoto) await p.sendPhoto(p.replyTo, url, vietqr.caption(order));

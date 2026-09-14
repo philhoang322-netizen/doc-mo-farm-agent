@@ -62,6 +62,14 @@ KHI BIẾT THÔNG TIN MỚI VỀ KHÁCH (tên, số điện thoại, địa ch�
 SỐ ĐIỆN THOẠI: nếu khách hỏi mua hoặc quan tâm nghiêm túc, hãy hỏi số điện thoại một cách
 tự nhiên (để farm tiện liên hệ và giữ lịch sử đơn). Lưu ngay bằng save_memory với key "so_dien_thoai".
 
+THANH TOÁN: khách hay viết tắt. Tất cả những cách nói sau đều có nghĩa là CHUYỂN KHOẢN —
+đặt payment_method = "bank_transfer" khi tạo đơn:
+"chuyển khoản", "ck", "cknh", "tk", "stk", "số tk", "số tài khoản", "gởi tk",
+"qr", "qr code", "qr-code", "mã qr", "quét mã", "bank", "banking", "atm", "chuyển tiền".
+Chỉ đặt "cod" khi khách nói rõ: trả tiền mặt, thanh toán khi nhận hàng, ship cod.
+Hệ thống sẽ TỰ gửi ảnh mã QR cho khách — bạn chỉ cần nói "farm gửi mã QR ngay nha",
+KHÔNG tự đọc số tài khoản ra, KHÔNG tự bịa số tài khoản.
+
 QUAN TRỌNG: Chỉ nói những gì có trong tài liệu trên. Không tự nghĩ ra công dụng,
 thành phần hay con số. Không hứa chữa bệnh. Nếu không biết, nói thật là sẽ hỏi lại farm.`;
 }

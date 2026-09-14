@@ -44,6 +44,48 @@ function imageUrl(amount, note) {
   return `${BASE}/${bank}-${account}-${template}.png?${params.toString()}`;
 }
 
+/**
+ * Does this message ask to pay by bank transfer, or ask for our account / QR?
+ *
+ * Customers rarely write "chuyển khoản" in full — they write ck, stk, tk,
+ * "gởi qr", "xin số tk". Relying on the model to classify this would fail
+ * quietly, so the pipeline checks the raw text too.
+ */
+const TRANSFER_WORDS = [
+  'chuyen khoan', 'chuyen tien', 'chuyenkhoan',
+  'ck', 'cknh',
+  'stk', 'so tk', 'so tai khoan', 'tai khoan', 'tk',
+  'qr', 'qrcode', 'qr code', 'ma qr', 'vietqr', 'quet ma',
+  'bank', 'banking', 'atm', 'internet banking',
+];
+
+function wantsTransfer(text) {
+  const t = String(text || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/đ/gi, 'd')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')   // "qr-code" → "qr code"
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!t) return false;
+  return TRANSFER_WORDS.some(w => new RegExp(`(^|\\s)${w}(\\s|$)`).test(t));
+}
+
+/** Account details to send when a customer asks but has no order yet. */
+function accountInfoMessage() {
+  if (!configured()) return null;
+  return [
+    'Dạ farm gửi bạn thông tin chuyển khoản ạ 🌿',
+    '',
+    `Ngân hàng: ${process.env.BANK_CODE_DISPLAY || process.env.BANK_CODE}`,
+    `Số tài khoản: ${process.env.BANK_ACCOUNT}`,
+    process.env.BANK_ACCOUNT_NAME ? `Chủ tài khoản: ${process.env.BANK_ACCOUNT_NAME}` : null,
+    '',
+    'Bạn quét mã QR bên dưới cho nhanh nha. Nhớ ghi nội dung chuyển khoản là ' +
+    'tên hoặc số điện thoại của bạn để farm đối soát ạ!',
+  ].filter(Boolean).join('\n');
+}
+
 /** The message sent alongside the QR image. */
 function caption(order) {
   const amount = Number(order.total || 0).toLocaleString('vi');
@@ -65,4 +107,4 @@ function caption(order) {
   return lines.join('\n');
 }
 
-module.exports = { imageUrl, caption, configured, cleanNote };
+module.exports = { imageUrl, caption, configured, cleanNote, wantsTransfer, accountInfoMessage };
