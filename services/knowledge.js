@@ -75,8 +75,15 @@ function topicIndex() {
   return sections.map(s => `- ${s.title}`).join('\n');
 }
 
-/** Small corpora get inlined verbatim; large ones get an index + the search tool. */
+/**
+ * Small corpora get inlined verbatim; large ones get an index + the search tool.
+ *
+ * Returns nothing once the FAQ has been imported into the database: keeping
+ * both alive meant an answer the farm had just corrected still had the old
+ * file text sitting beside it in the same prompt.
+ */
 function systemPromptBlock() {
+  if (mdDisabled) return '';
   if (sections.length === 0) return '';
   if (totalChars <= INLINE_BUDGET) {
     return `\n\nKIẾN THỨC SẢN PHẨM (dùng để trả lời khách, bám sát nội dung này):\n${fullText()}`;
@@ -86,6 +93,13 @@ function systemPromptBlock() {
 
 /** Keyword search across sections. Returns formatted text for a tool result. */
 function search(query, limit = 3) {
+  // Once the FAQ is in the database it is already in the prompt; searching the
+  // stale file would only reintroduce the text the farm edited away.
+  if (mdDisabled) {
+    const hit = lessons.find(l => normalize(l.question).includes(normalize(query)) ||
+                                  normalize(query).includes(normalize(l.question)));
+    return hit ? hit.answer : 'Không có trong tài liệu farm. Hãy nói thật là sẽ hỏi lại farm.';
+  }
   if (sections.length === 0) return 'Chưa có tài liệu sản phẩm.';
 
   const terms = normalize(query).split(/\s+/).filter(t => t.length > 1);
@@ -125,6 +139,7 @@ const state = require('./state');
 let lessons = [];
 let rules = '';
 let taughtAt = 0;
+let mdDisabled = false;   // true once the FAQ lives in the database
 const TAUGHT_TTL = 60 * 1000;
 
 async function refreshTaught() {
@@ -135,6 +150,7 @@ async function refreshTaught() {
     );
     lessons = r.rows;
     rules = (await state.get('bot_rules')) || '';
+    mdDisabled = (await state.get('faq_md_disabled')) === 'true';
     taughtAt = Date.now();
   } catch (e) {
     // Table may not exist yet on a database that hasn't run migration 004.
