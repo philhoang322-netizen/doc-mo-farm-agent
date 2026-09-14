@@ -37,7 +37,7 @@ async function render(key, flash = null) {
 
   const customers = await q(`
     SELECT c.id, c.display_name, c.phone, c.customer_tier, c.bot_paused, c.paused_reason,
-           c.last_seen_at,
+           c.last_seen_at, c.interest_product, c.lead_stage,
            (SELECT COUNT(*)::int FROM messages m WHERE m.customer_id = c.id) AS msgs,
            (SELECT COUNT(*)::int FROM orders o WHERE o.customer_id = c.id) AS orders,
            (SELECT string_agg(i.channel, ',') FROM customer_identities i WHERE i.customer_id = c.id) AS channels,
@@ -78,6 +78,8 @@ async function render(key, flash = null) {
   const rowsCustomers = customers.map(c => `
     <tr>
       <td><b>${esc(c.display_name || 'Khách')}</b>${c.bot_paused ? ' <span class="tag warn">chờ người</span>' : ''}
+        ${c.lead_stage === 'deciding' ? ' <span class="tag warn">sắp chốt</span>' : ''}
+        ${c.interest_product ? `<div class="sub">Muốn: ${esc(c.interest_product)}</div>` : ''}
         <div class="sub">${esc(c.channels || '')}${c.ext ? ` · <code>${esc(c.ext)}</code>` : ''}</div></td>
       <td>${esc(c.phone || '—')}</td>
       <td class="num">${c.msgs}</td>

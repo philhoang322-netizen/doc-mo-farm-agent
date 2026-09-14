@@ -238,6 +238,7 @@ async function weeklyLeadsText() {
   const leads = await q(`
     SELECT c.id, c.display_name, c.full_name, c.phone, c.gender,
            c.convo_summary, c.last_seen_at, c.bot_paused, c.followup_stage,
+           c.interest_product, c.interest_note, c.lead_stage,
            (SELECT COUNT(*)::int FROM messages m WHERE m.customer_id = c.id) AS msgs,
            (SELECT i.external_id FROM customer_identities i
              WHERE i.customer_id = c.id ORDER BY i.created_at LIMIT 1) AS ext
@@ -245,7 +246,11 @@ async function weeklyLeadsText() {
     WHERE c.last_seen_at > NOW() - INTERVAL '7 days'
       AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)
       AND (SELECT COUNT(*) FROM messages m WHERE m.customer_id = c.id) >= 3
-    ORDER BY c.last_seen_at DESC
+    ORDER BY
+      -- Closest to buying first: that is where a phone call pays off most.
+      CASE c.lead_stage WHEN 'deciding' THEN 1 WHEN 'interested' THEN 2
+                        WHEN 'browsing' THEN 3 WHEN 'lost' THEN 5 ELSE 4 END,
+      c.last_seen_at DESC
     LIMIT 20`);
 
   const [won] = await q(`
@@ -277,17 +282,27 @@ async function weeklyLeadsText() {
   }
 
   L.push('', `🙋 ${leads.length} khách đã hỏi mà chưa mua:`, '');
+  const STAGE = {
+    deciding: '🔥 sắp chốt',
+    interested: '👀 đang quan tâm',
+    browsing: '· hỏi dạo',
+    lost: '✕ đã từ chối',
+    new: '· mới',
+  };
+
   leads.forEach((c, i) => {
     const call = c.gender === 'male' ? 'anh ' : c.gender === 'female' ? 'chị ' : '';
     const days = Math.floor((Date.now() - new Date(c.last_seen_at).getTime()) / 86400000);
-    L.push(`${i + 1}. ${call}${c.display_name || c.full_name || 'Khách'}` +
+    L.push(`${i + 1}. ${STAGE[c.lead_stage] || '·'} ${call}${c.display_name || c.full_name || 'Khách'}` +
            `${c.phone ? ` · ${c.phone}` : ' · chưa có số'}`);
+    if (c.interest_product) {
+      L.push(`   Muốn: ${c.interest_product}${c.interest_note ? ` — ${c.interest_note}` : ''}`);
+    } else if (c.convo_summary) {
+      L.push(`   ${c.convo_summary.split('\n')[0].slice(0, 110)}`);
+    }
     L.push(`   ${c.msgs} tin · ${days === 0 ? 'hôm nay' : days + ' ngày trước'}` +
            `${c.bot_paused ? ' · ĐANG CHỜ NGƯỜI THẬT' : ''}` +
            `${c.followup_stage >= 2 ? ' · đã nhắc 2 lần' : ''}`);
-    if (c.convo_summary) {
-      L.push(`   ${c.convo_summary.split('\n')[0].slice(0, 110)}`);
-    }
     L.push('');
   });
 

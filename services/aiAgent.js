@@ -122,6 +122,24 @@ function buildCustomerPrompt(customer, memories, recentOrders, preferences) {
     if (recentOrders?.length) {
       out += `\nĐây là KHÁCH CŨ đã từng mua. Mở lời bằng điều cụ thể: hỏi thăm lần dùng trước` +
              ` có hợp không, rồi mới tư vấn tiếp. Không chào như người lạ.`;
+
+      // The single easiest sale a farm ever makes is the one the customer
+      // already decided on once. Hand the agent the exact basket to offer back.
+      const last = recentOrders[0];
+      const items = Array.isArray(last.items)
+        ? last.items.filter(i => i && i.name)
+        : [];
+      if (items.length) {
+        const basket = items.map(i => `${i.name} ×${i.qty}`).join(', ');
+        out += `\nLẦN TRƯỚC KHÁCH MUA: ${basket}.` +
+               `\nNếu khách tỏ ý mua tiếp mà chưa nói rõ món, hãy mời đúng giỏ cũ:` +
+               ` "Mình lấy lại như lần trước nhen — ${basket}?" Khách gật là chốt luôn,` +
+               ` khỏi bắt họ chọn lại từ đầu.`;
+      }
+    }
+    if (customer.interest_product && customer.lead_stage !== 'ordered') {
+      out += `\nLần gần nhất khách quan tâm: ${customer.interest_product}` +
+             `${customer.interest_note ? ` (${customer.interest_note})` : ''}.`;
     }
   }
   // What the conversation has already established, including turns that have
@@ -223,6 +241,31 @@ const tools = [
     }
   },
   {
+    name: 'log_interest',
+    description:
+      'Ghi nhận khách đang quan tâm sản phẩm nào và đang ở bước nào. Gọi NGAY khi khách ' +
+      'nhắc tới một sản phẩm cụ thể, hỏi giá, hỏi cách dùng, hoặc tỏ ý cân nhắc mua. ' +
+      'Gọi lại mỗi khi mức độ quan tâm thay đổi. Việc này giúp farm biết ai đang cần chăm sóc.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        product: { type: 'string', description: 'Tên sản phẩm khách quan tâm' },
+        stage: {
+          type: 'string',
+          enum: ['browsing', 'interested', 'deciding', 'lost'],
+          description:
+            'browsing = mới hỏi dạo; interested = hỏi kỹ về một sản phẩm; ' +
+            'deciding = đã hỏi giá/giao hàng/thanh toán, sắp chốt; lost = nói rõ là không mua',
+        },
+        note: {
+          type: 'string',
+          description: 'Một câu ngắn: khách cần gì, ngại gì, mua cho ai. Để nhân viên farm nắm nhanh.',
+        },
+      },
+      required: ['product', 'stage'],
+    },
+  },
+  {
     name: 'request_human',
     description:
       'Chuyển cuộc trò chuyện cho người thật của farm. Dùng khi khách yêu cầu gặp người, khiếu nại, ' +
@@ -242,7 +285,8 @@ const tools = [
     input_schema: {
       type: 'object',
       properties: {
-        order_number: { type: 'string', description: 'Số đơn hàng (vd: ORD-2025-000001)' }
+        order_number: { type: 'string', description: 'Mã đơn nếu khách nhớ (vd: ORD-2026-000001)' },
+        phone: { type: 'string', description: 'Số điện thoại lúc đặt, nếu khách không nhớ mã đơn' }
       }
     }
   }
@@ -299,6 +343,20 @@ async function executeTool(toolName, toolInput, customer, zaloUserId) {
       ).join('\n');
     }
 
+    if (toolName === 'log_interest') {
+      if (!customer || !db.DB_ENABLED) return 'Đã ghi nhận.';
+      await db.pool.query(
+        `UPDATE customers
+         SET interest_product = $2,
+             interest_note = COALESCE($3, interest_note),
+             lead_stage = $4,
+             lead_updated_at = NOW()
+         WHERE id = $1`,
+        [customer.id, toolInput.product, toolInput.note || null, toolInput.stage]
+      );
+      return 'Đã ghi nhận quan tâm của khách.';
+    }
+
     if (toolName === 'search_knowledge') {
       const found = knowledge.search(toolInput.query);
       // Repeated dead ends mean the bot is answering from outside the farm's
@@ -314,6 +372,10 @@ async function executeTool(toolName, toolInput, customer, zaloUserId) {
       if (toolInput.customer_phone) {
         await db.setPhoneAndMerge(customer.id, toolInput.customer_phone);
       }
+      await db.pool.query(
+        `UPDATE customers SET lead_stage='ordered', lead_updated_at=NOW() WHERE id=$1`,
+        [customer.id]
+      ).catch(() => {});
       const order = await db.createOrderNew(
         customer.id,
         toolInput.items,
@@ -397,17 +459,55 @@ async function executeTool(toolName, toolInput, customer, zaloUserId) {
     }
 
     if (toolName === 'get_order_status') {
-      if (!customer) return 'Chưa xác định được khách hàng.';
-      const q = toolInput.order_number
-        ? 'SELECT order_number, status, total_amount, delivery_date FROM orders WHERE customer_id=$1 AND order_number=$2'
-        : 'SELECT order_number, status, total_amount, delivery_date FROM orders WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 1';
-      const params = toolInput.order_number
-        ? [customer.id, toolInput.order_number]
-        : [customer.id];
-      const result = await db.pool.query(q, params);
-      if (!result.rows.length) return 'Không tìm thấy đơn hàng.';
-      const o = result.rows[0];
-      return `Đơn ${o.order_number}: ${o.status} | ${Number(o.total_amount).toLocaleString('vi')}đ${o.delivery_date ? ` | Giao: ${o.delivery_date}` : ''}`;
+      if (!db.DB_ENABLED) return 'Chưa tra được đơn, farm sẽ kiểm tra lại giúp khách.';
+
+      // Look up by order number, by phone, or fall back to this customer's own
+      // orders. Phone matters: someone may have ordered on one channel and be
+      // asking from another, or be asking on behalf of the person who ordered.
+      let rows = [];
+      if (toolInput.order_number) {
+        rows = (await db.pool.query(
+          `SELECT o.*, c.display_name FROM orders o
+           LEFT JOIN customers c ON c.id = o.customer_id
+           WHERE o.order_number ILIKE $1 LIMIT 1`,
+          [`%${String(toolInput.order_number).trim()}%`]
+        )).rows;
+      } else if (toolInput.phone) {
+        const phone = db.normalizePhone(toolInput.phone);
+        rows = (await db.pool.query(
+          `SELECT o.* FROM orders o JOIN customers c ON c.id = o.customer_id
+           WHERE c.phone = $1 ORDER BY o.created_at DESC LIMIT 3`, [phone]
+        )).rows;
+      } else if (customer) {
+        rows = (await db.pool.query(
+          `SELECT * FROM orders WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 3`,
+          [customer.id]
+        )).rows;
+      }
+
+      if (!rows.length) {
+        return 'Không tìm thấy đơn nào. Hỏi khách mã đơn hoặc số điện thoại lúc đặt để tra lại.';
+      }
+
+      // The database stores English status codes; the customer must never see them.
+      const VN = {
+        pending: 'farm đã nhận đơn, đang chuẩn bị',
+        confirmed: 'farm đã xác nhận đơn',
+        packed: 'farm đã đóng gói xong',
+        shipped: 'đơn đang trên đường giao',
+        delivered: 'đơn đã giao xong',
+        cancelled: 'đơn đã huỷ',
+        refunded: 'đơn đã hoàn tiền',
+      };
+
+      return rows.map(o => {
+        const when = o.created_at
+          ? new Date(o.created_at).toLocaleDateString('vi-VN') : '';
+        return `Đơn ${o.order_number} (đặt ${when}): ${VN[o.status] || o.status}` +
+               ` — ${Number(o.total_amount).toLocaleString('vi')}đ` +
+               `${o.delivery_date ? `, hẹn giao ${new Date(o.delivery_date).toLocaleDateString('vi-VN')}` : ''}` +
+               `${o.description ? `\n   ${String(o.description).slice(0, 150)}` : ''}`;
+      }).join('\n');
     }
 
     return 'Tool không hợp lệ.';
