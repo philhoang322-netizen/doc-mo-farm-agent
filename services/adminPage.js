@@ -257,8 +257,13 @@ async function render(key, flash = null) {
   .prod-foot { display:flex; justify-content:space-between; align-items:center; margin-top:10px; gap:8px }
   .chk { font-size:13px; display:flex; gap:5px; align-items:center }
   .chk input { width:auto }
-  .ok { background:#eef7f0; border:1px solid #cfe5d6; color:var(--green);
-        padding:9px 12px; border-radius:10px; margin-bottom:14px; font-size:14px }
+  /* Fixed, not inline: the farm is usually scrolled far down when they save,
+     and a banner at the top of the document would go unseen. */
+  .ok { position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:99;
+        background:var(--green); color:#fff; border:0;
+        padding:11px 18px; border-radius:999px; font-size:14px; font-weight:600;
+        box-shadow:0 6px 20px rgba(0,0,0,.18); animation:pop .25s ease }
+  @keyframes pop { from{opacity:0;transform:translate(-50%,-8px)} to{opacity:1} }
   textarea.in { resize:vertical; font-size:14px; line-height:1.45 }
   button.danger { background:transparent; color:#a33; border:1px solid #e3cccc; margin-left:6px }
   .teach { margin-top:8px; border-top:1px dashed var(--line); padding-top:7px }
@@ -277,7 +282,7 @@ async function render(key, flash = null) {
     <a href="#" onclick="location.reload();return false">Làm mới ngay</a></div>
 </header>
 <div class="wrap">
-  ${flash ? `<div class="ok">${esc(flash)}</div>` : ''}
+  ${flash ? `<div class="ok" id="flash">${esc(flash)}</div>` : ''}
   <div class="cards">
     ${card('Khách hàng', stats.customers)}
     ${card('Khách mới hôm nay', stats.new_today, 'green')}
@@ -291,17 +296,17 @@ async function render(key, flash = null) {
   <table><thead><tr><th>Khách</th><th>Điện thoại</th><th class="num">Tin</th><th class="num">Đơn</th><th>Lần cuối</th></tr></thead>
   <tbody>${rowsCustomers || '<tr><td colspan="5" class="sub">Chưa có khách nào.</td></tr>'}</tbody></table>
 
-  <h2>Bảng giá — sửa ở đây, bot cập nhật ngay</h2>
+  <h2 id="gia">Bảng giá — sửa ở đây, bot cập nhật ngay</h2>
   <div class="prods">${cardsProducts}${newProductForm}</div>
 
   <h2>Đơn hàng</h2>
   <table><thead><tr><th>Mã</th><th>Khách</th><th class="num">Tổng</th><th>Trạng thái</th><th>Lúc</th></tr></thead>
   <tbody>${rowsOrders || '<tr><td colspan="5" class="sub">Chưa có đơn nào.</td></tr>'}</tbody></table>
 
-  <h2>Quy tắc chung cho bot</h2>
+  <h2 id="quytac">Quy tắc chung cho bot</h2>
   ${rulesForm}
 
-  <h2>Câu trả lời mẫu — bot ưu tiên dùng (${lessons.length})</h2>
+  <h2 id="caumau">Câu trả lời mẫu — bot ưu tiên dùng (${lessons.length})</h2>
   <div class="prods">${lessonCards}${newLesson}</div>
 
   <h2>Hội thoại gần nhất — bấm "Dạy lại" dưới câu bot trả lời</h2>
@@ -328,6 +333,23 @@ async function render(key, flash = null) {
     if (el) el.textContent = 'Tự làm mới: đã tạm dừng vì bạn đang nhập';
   }
   setInterval(function () { if (!busy()) location.reload(); }, 60000);
+
+  // Fade the toast out; keep the URL clean so a manual refresh doesn't re-show it.
+  var flash = document.getElementById('flash');
+  if (flash) {
+    setTimeout(function () { flash.style.transition = 'opacity .4s'; flash.style.opacity = '0'; }, 2600);
+    setTimeout(function () { flash.remove(); }, 3100);
+    if (history.replaceState) {
+      var u = new URL(location.href); u.searchParams.delete('ok');
+      history.replaceState(null, '', u.toString() + location.hash);
+    }
+  }
+
+  // Come back to the section you were editing instead of the top of the page.
+  if (location.hash) {
+    var t = document.querySelector(location.hash);
+    if (t) t.scrollIntoView();
+  }
   document.addEventListener('focusin', function (e) {
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) markPaused();
   });

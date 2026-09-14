@@ -184,7 +184,8 @@ app.post('/admin/product', async (req, res) => {
   const key = req.body.key;
   if (key !== process.env.ZALO_WEBHOOK_TOKEN) return res.status(403).send('Forbidden');
 
-  const back = (msg) => res.redirect(`/admin?key=${encodeURIComponent(key)}&ok=${encodeURIComponent(msg)}`);
+  // Land back on the section that was edited, not the top of the page.
+  const back = (msg) => res.redirect(`/admin?key=${encodeURIComponent(key)}&ok=${encodeURIComponent(msg)}#gia`);
   try {
     const num = (v) => (v === '' || v == null ? null : Number(v));
     const available = req.body.is_available === 'on';
@@ -218,7 +219,7 @@ app.post('/admin/product', async (req, res) => {
 app.post('/admin/lesson', async (req, res) => {
   const key = req.body.key;
   if (key !== process.env.ZALO_WEBHOOK_TOKEN) return res.status(403).send('Forbidden');
-  const back = (msg) => res.redirect(`/admin?key=${encodeURIComponent(key)}&ok=${encodeURIComponent(msg)}`);
+  const back = (msg) => res.redirect(`/admin?key=${encodeURIComponent(key)}&ok=${encodeURIComponent(msg)}#caumau`);
   try {
     const { id, question, answer } = req.body;
     const active = req.body.is_active === 'on';
