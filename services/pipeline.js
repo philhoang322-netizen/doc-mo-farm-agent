@@ -48,6 +48,33 @@ async function handleMessage(p) {
       let customer = await db.getOrCreateCustomer(p.externalKey, p.senderName);
       customer = await learnHonorific(customer, p);
 
+      // 2b. "ngưng bot" / "gặp người thật" — honoured before anything else.
+      //     Deliberately decided from the raw text, not by the model: if a
+      //     customer asks for a human, that must hold even when the AI is
+      //     down, and must never be second-guessed.
+      if (ops.wantsHuman(p.text)) {
+        await db.saveMessage(p.externalKey, 'user', p.text);
+        if (customer) await db.pauseBot(customer.id, 'Khách yêu cầu ngưng bot');
+
+        const when = ops.isWorkingHours()
+          ? 'Nhân viên farm sẽ trả lời bạn ngay ạ'
+          : `Hiện đang ngoài giờ làm việc (${ops.workHoursText()}), farm sẽ phản hồi vào đầu giờ làm việc ạ`;
+        const reply =
+          `Dạ vâng ạ, em dừng trả lời tự động tại đây. ${when} 🌿\n\n` +
+          `Bạn cứ để lại nội dung cần hỗ trợ, farm đọc hết và trả lời sớm nhất có thể ạ.`;
+
+        await p.send(p.replyTo, reply);
+        await db.saveMessage(p.externalKey, 'assistant', reply);
+        log({ type: 'stop_bot', channel: p.channel, to: p.replyTo });
+
+        await notify.handoff(
+          { reason: 'Khách chủ động yêu cầu ngưng bot', urgency: 'high', externalId: p.externalKey },
+          customer,
+          p.text
+        );
+        return { ok: true, stopped: true };
+      }
+
       // 3. A human took over this conversation — stay out of the way.
       if (customer && customer.bot_paused) {
         await db.saveMessage(p.externalKey, 'user', p.text);

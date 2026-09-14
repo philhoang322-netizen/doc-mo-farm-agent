@@ -76,6 +76,48 @@ async function pruneEvents(days = 3) {
   }
 }
 
+// ---------------- "stop bot" ----------------
+/**
+ * The customer explicitly asked to stop talking to the bot.
+ *
+ * This is checked against the raw message before the AI is ever called: a
+ * request to speak to a human must be honoured even if the model would have
+ * decided otherwise, and even if the AI service is down.
+ */
+const STOP_PHRASES = [
+  'stop bot', 'stopbot', 'stop',
+  'ngung bot', 'ngưng bot', 'ngung chat bot', 'ngung chatbot',
+  'dung bot', 'tat bot', 'thoat bot', 'bo bot', 'huy bot',
+  'khong chat voi bot', 'khong muon chat voi bot', 'khong noi chuyen voi bot',
+  'khong chat bot', 'khong can bot', 'khong thich bot',
+  'gap nguoi that', 'gap nguoi', 'can nguoi that', 'muon gap nguoi that',
+  'gap nhan vien', 'can nhan vien', 'muon gap nhan vien', 'cho gap nhan vien',
+  'noi chuyen voi nguoi that', 'noi chuyen voi nhan vien',
+  'gap chu farm', 'gap admin', 'cho gap nguoi',
+];
+
+function normalizeText(s) {
+  return String(s || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/đ/gi, 'd')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function wantsHuman(text) {
+  const t = normalizeText(text);
+  if (!t) return false;
+  // "stop" on its own counts; inside a sentence it usually doesn't.
+  if (t === 'stop' || t === 'bot stop') return true;
+  return STOP_PHRASES.some(pRaw => {
+    const p = normalizeText(pRaw);
+    if (p === 'stop') return false; // handled above
+    return t.includes(p);
+  });
+}
+
 // ---------------- business hours ----------------
 /** WORK_HOURS="8-18" in Asia/Ho_Chi_Minh. Used only for human-handoff wording. */
 function isWorkingHours(now = new Date()) {
@@ -98,4 +140,7 @@ function workHoursText() {
   return `${from}h–${to}h hằng ngày`;
 }
 
-module.exports = { withLock, activeLocks, isNewEvent, pruneEvents, isWorkingHours, workHoursText };
+module.exports = {
+  withLock, activeLocks, isNewEvent, pruneEvents,
+  isWorkingHours, workHoursText, wantsHuman, normalizeText,
+};
