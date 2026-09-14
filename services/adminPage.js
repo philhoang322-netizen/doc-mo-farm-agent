@@ -55,6 +55,18 @@ async function render(key, flash = null) {
      FROM products ORDER BY is_available DESC, name_vi`
   );
 
+  let lessons = [];
+  let botRules = '';
+  try {
+    lessons = await q(
+      'SELECT id, question, answer, is_active FROM bot_lessons ORDER BY updated_at DESC LIMIT 50'
+    );
+    const r = await q(`SELECT value FROM app_state WHERE key = 'bot_rules'`);
+    botRules = r[0]?.value || '';
+  } catch (e) {
+    // Migration 004 not applied yet — show the sections empty rather than 500.
+  }
+
   const recent = await q(`
     SELECT m.role, m.content, m.created_at, c.display_name
     FROM messages m LEFT JOIN customers c ON c.id = m.customer_id
@@ -130,11 +142,67 @@ async function render(key, flash = null) {
       </div>
     </form>`;
 
-  const chat = recent.reverse().map(m => `
-    <div class="msg ${m.role}">
-      <div class="who">${m.role === 'user' ? esc(m.display_name || 'Khách') : 'Bot'} · ${when(m.created_at)}</div>
-      <div class="body">${esc(m.content).slice(0, 400)}</div>
-    </div>`).join('');
+  // Oldest-first so a bot reply sits under the question it answered — that
+  // pairing is what makes the "Dạy lại" button useful.
+  const ordered = recent.reverse();
+  const chat = ordered.map((m, i) => {
+    const head = `<div class="who">${m.role === 'user' ? esc(m.display_name || 'Khách') : 'Bot'} · ${when(m.created_at)}</div>`;
+    const body = `<div class="body">${esc(m.content).slice(0, 600)}</div>`;
+    if (m.role !== 'assistant') return `<div class="msg ${m.role}">${head}${body}</div>`;
+
+    // The customer message immediately before is the question this answered.
+    let q = '';
+    for (let j = i - 1; j >= 0; j--) {
+      if (ordered[j].role === 'user') { q = ordered[j].content; break; }
+    }
+    return `<div class="msg assistant">${head}${body}
+      <details class="teach">
+        <summary>✏️ Dạy lại câu này</summary>
+        <form method="post" action="/admin/lesson">
+          <input type="hidden" name="key" value="${esc(key)}">
+          <label>Khi khách hỏi<input name="question" class="in" value="${esc(q).slice(0, 300)}"></label>
+          <label>Bot phải trả lời<textarea name="answer" class="in" rows="4"
+            placeholder="Gõ câu trả lời đúng mà bạn muốn bot dùng từ giờ...">${esc(m.content).slice(0, 900)}</textarea></label>
+          <button type="submit">Lưu bài học</button>
+        </form>
+      </details>
+    </div>`;
+  }).join('');
+
+  const lessonCards = lessons.map(l => `
+    <form method="post" action="/admin/lesson" class="prod">
+      <input type="hidden" name="key" value="${esc(key)}">
+      <input type="hidden" name="id" value="${esc(l.id)}">
+      <label class="sub">Khách hỏi<input name="question" class="in" value="${esc(l.question)}"></label>
+      <label class="sub">Bot trả lời<textarea name="answer" class="in" rows="4">${esc(l.answer)}</textarea></label>
+      <div class="prod-foot">
+        <label class="chk"><input type="checkbox" name="is_active" ${l.is_active ? 'checked' : ''}> Đang dùng</label>
+        <span>
+          <button type="submit">Lưu</button>
+          <button type="submit" name="delete" value="1" class="danger">Xoá</button>
+        </span>
+      </div>
+    </form>`).join('');
+
+  const newLesson = `
+    <form method="post" action="/admin/lesson" class="prod new">
+      <input type="hidden" name="key" value="${esc(key)}">
+      <label class="sub">Khách hỏi<input name="question" class="in" placeholder="vd: Giao hàng mất mấy ngày?" required></label>
+      <label class="sub">Bot trả lời<textarea name="answer" class="in" rows="4" placeholder="Câu trả lời đúng bạn muốn bot dùng..." required></textarea></label>
+      <div class="prod-foot"><span class="sub">Thêm câu mẫu</span><button type="submit">Thêm</button></div>
+    </form>`;
+
+  const rulesForm = `
+    <form method="post" action="/admin/rules">
+      <input type="hidden" name="key" value="${esc(key)}">
+      <textarea name="rules" class="in" rows="6" placeholder="Mỗi dòng một quy tắc. Ví dụ:
+- Luôn nhắc khách giao hàng trong 2 ngày ở TP.HCM
+- Không hứa chữa bệnh, không nói 'điều trị'
+- Nếu khách hỏi giá sỉ thì chuyển cho người thật
+- Không dùng quá 2 emoji mỗi tin">${esc(botRules)}</textarea>
+      <div class="prod-foot"><span class="sub">Áp dụng cho mọi câu trả lời, có hiệu lực sau 1 phút</span>
+      <button type="submit">Lưu quy tắc</button></div>
+    </form>`;
 
   return `<!doctype html>
 <html lang="vi"><head>
@@ -191,6 +259,14 @@ async function render(key, flash = null) {
   .chk input { width:auto }
   .ok { background:#eef7f0; border:1px solid #cfe5d6; color:var(--green);
         padding:9px 12px; border-radius:10px; margin-bottom:14px; font-size:14px }
+  textarea.in { resize:vertical; font-size:14px; line-height:1.45 }
+  button.danger { background:transparent; color:#a33; border:1px solid #e3cccc; margin-left:6px }
+  .teach { margin-top:8px; border-top:1px dashed var(--line); padding-top:7px }
+  .teach summary { cursor:pointer; font-size:12px; color:var(--soft); user-select:none }
+  .teach form { margin-top:8px; display:grid; gap:8px }
+  .teach label, .prod label.sub { display:block; font-size:11px; color:var(--soft) }
+  .teach label input, .teach label textarea { margin-top:3px }
+  .prod label.sub + label.sub { margin-top:8px }
   @media (max-width:600px){ .card .val{font-size:19px} td,th{padding:8px 9px} }
 </style></head>
 <body>
@@ -220,7 +296,13 @@ async function render(key, flash = null) {
   <table><thead><tr><th>Mã</th><th>Khách</th><th class="num">Tổng</th><th>Trạng thái</th><th>Lúc</th></tr></thead>
   <tbody>${rowsOrders || '<tr><td colspan="5" class="sub">Chưa có đơn nào.</td></tr>'}</tbody></table>
 
-  <h2>Hội thoại gần nhất</h2>
+  <h2>Quy tắc chung cho bot</h2>
+  ${rulesForm}
+
+  <h2>Câu trả lời mẫu — bot ưu tiên dùng (${lessons.length})</h2>
+  <div class="prods">${lessonCards}${newLesson}</div>
+
+  <h2>Hội thoại gần nhất — bấm "Dạy lại" dưới câu bot trả lời</h2>
   <div class="scroll">${chat || '<div class="sub">Chưa có tin nhắn.</div>'}</div>
 </div>
 <script>setTimeout(function(){location.reload()},60000)</script>

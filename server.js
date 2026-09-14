@@ -13,6 +13,8 @@ const notify      = require('./services/notify');
 const ops         = require('./services/ops');
 const adminPage   = require('./services/adminPage');
 const catalog     = require('./services/catalog');
+const knowledge   = require('./services/knowledge');
+const state       = require('./services/state');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -27,6 +29,7 @@ db.initDB()
   .then(() => zaloService.startTokenRefresh())
   .then(() => ops.pruneEvents(3))
   .then(() => catalog.refresh())
+  .then(() => knowledge.refreshTaught())
   .catch(err => console.error('Startup error:', err));
 
 // ============================================================
@@ -208,6 +211,53 @@ app.post('/admin/product', async (req, res) => {
     return back(`Đã thêm "${req.body.name_vi}"`);
   } catch (e) {
     return back(`Lỗi: ${e.message}`);
+  }
+});
+
+// POST /admin/lesson — teach, edit or delete one canned answer.
+app.post('/admin/lesson', async (req, res) => {
+  const key = req.body.key;
+  if (key !== process.env.ZALO_WEBHOOK_TOKEN) return res.status(403).send('Forbidden');
+  const back = (msg) => res.redirect(`/admin?key=${encodeURIComponent(key)}&ok=${encodeURIComponent(msg)}`);
+  try {
+    const { id, question, answer } = req.body;
+    const active = req.body.is_active === 'on';
+
+    if (id && req.body.delete) {
+      await db.pool.query('DELETE FROM bot_lessons WHERE id=$1', [id]);
+      await knowledge.refreshTaught();
+      return back('Đã xoá câu mẫu');
+    }
+    if (!question?.trim() || !answer?.trim()) return back('Thiếu câu hỏi hoặc câu trả lời');
+
+    if (id) {
+      await db.pool.query(
+        'UPDATE bot_lessons SET question=$2, answer=$3, is_active=$4, updated_at=NOW() WHERE id=$1',
+        [id, question.trim(), answer.trim(), active]
+      );
+    } else {
+      await db.pool.query(
+        'INSERT INTO bot_lessons (question, answer) VALUES ($1,$2)',
+        [question.trim(), answer.trim()]
+      );
+    }
+    await knowledge.refreshTaught();
+    return back('Đã dạy bot câu này');
+  } catch (e) {
+    return back(`Lỗi: ${e.message}`);
+  }
+});
+
+// POST /admin/rules — house rules applied to every reply.
+app.post('/admin/rules', async (req, res) => {
+  const key = req.body.key;
+  if (key !== process.env.ZALO_WEBHOOK_TOKEN) return res.status(403).send('Forbidden');
+  try {
+    await state.set('bot_rules', String(req.body.rules || '').slice(0, 4000));
+    await knowledge.refreshTaught();
+    res.redirect(`/admin?key=${encodeURIComponent(key)}&ok=${encodeURIComponent('Đã lưu quy tắc')}`);
+  } catch (e) {
+    res.redirect(`/admin?key=${encodeURIComponent(key)}&ok=${encodeURIComponent('Lỗi: ' + e.message)}`);
   }
 });
 

@@ -55,7 +55,7 @@ NGUYÊN TẮC GIAO TIẾP:
 
 ${productCatalog}
 ${customerCtx}${memoriesCtx}${ordersCtx}${prefsCtx}${knowledge.systemPromptBlock()}
-${honorific.promptBlock(customer)}
+${honorific.promptBlock(customer)}${knowledge.taughtPromptBlock()}
 
 KHI KHÁCH ĐẶT HÀNG: Gọi tool create_order để tạo đơn hàng.
 KHI KHÁCH HỎI SẢN PHẨM: Gọi tool search_products để tìm.

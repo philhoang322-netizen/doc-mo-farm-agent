@@ -113,6 +113,69 @@ function stats() {
   return { files: [...new Set(sections.map(s => s.file))], sections: sections.length, chars: totalChars };
 }
 
+// ============================================================
+// TAUGHT ANSWERS + HOUSE RULES (edited from /admin, stored in the database)
+//
+// These outrank the .md files: they are what the farm explicitly told the
+// agent to say after seeing a reply it didn't like.
+// ============================================================
+const db = require('./database');
+const state = require('./state');
+
+let lessons = [];
+let rules = '';
+let taughtAt = 0;
+const TAUGHT_TTL = 60 * 1000;
+
+async function refreshTaught() {
+  if (!db.DB_ENABLED) return;
+  try {
+    const r = await db.pool.query(
+      'SELECT id, question, answer FROM bot_lessons WHERE is_active = TRUE ORDER BY updated_at DESC LIMIT 200'
+    );
+    lessons = r.rows;
+    rules = (await state.get('bot_rules')) || '';
+    taughtAt = Date.now();
+  } catch (e) {
+    // Table may not exist yet on a database that hasn't run migration 004.
+    if (!/bot_lessons/.test(e.message)) console.warn('Taught refresh failed:', e.message);
+  }
+}
+
+function touchTaught() {
+  if (Date.now() - taughtAt > TAUGHT_TTL) refreshTaught().catch(() => {});
+}
+
+/** Lessons + house rules, appended after the product FAQ. */
+function taughtPromptBlock() {
+  touchTaught();
+  const parts = [];
+
+  if (lessons.length) {
+    const list = lessons
+      .map(l => `Hỏi: ${l.question}\nTrả lời: ${l.answer}`)
+      .join('\n\n');
+    parts.push(
+      '\n\nCÂU TRẢ LỜI DO FARM SOẠN SẴN — ưu tiên cao nhất.\n' +
+      'Nếu khách hỏi trùng ý với một mục dưới đây, hãy trả lời đúng theo nội dung đó ' +
+      '(được diễn đạt lại cho hợp ngữ cảnh, nhưng KHÔNG đổi thông tin):\n' + list
+    );
+  }
+
+  if (rules && rules.trim()) {
+    parts.push('\n\nQUY TẮC RIÊNG CỦA FARM — phải tuân thủ tuyệt đối:\n' + rules.trim());
+  }
+
+  return parts.join('');
+}
+
+function taughtStats() {
+  return { lessons: lessons.length, rules_chars: rules.length };
+}
+
 load();
 
-module.exports = { load, search, systemPromptBlock, fullText, topicIndex, stats };
+module.exports = {
+  load, search, systemPromptBlock, fullText, topicIndex, stats,
+  refreshTaught, taughtPromptBlock, taughtStats,
+};
