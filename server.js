@@ -12,11 +12,13 @@ const pipeline    = require('./services/pipeline');
 const notify      = require('./services/notify');
 const ops         = require('./services/ops');
 const adminPage   = require('./services/adminPage');
+const catalog     = require('./services/catalog');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: false })); // admin form posts
 app.use(express.static('public'));
 
 // Boot: migrate, then restore the Zalo tokens the previous run may have rotated.
@@ -24,6 +26,7 @@ db.initDB()
   .then(() => zaloService.loadTokens())
   .then(() => zaloService.startTokenRefresh())
   .then(() => ops.pruneEvents(3))
+  .then(() => catalog.refresh())
   .catch(err => console.error('Startup error:', err));
 
 // ============================================================
@@ -167,9 +170,62 @@ app.get('/admin', async (req, res) => {
   try {
     res.set('Content-Type', 'text/html; charset=utf-8');
     res.set('X-Robots-Tag', 'noindex, nofollow');
-    res.send(await adminPage.render(req.query.key));
+    res.send(await adminPage.render(req.query.key, req.query.ok || null));
   } catch (e) {
     res.status(500).send(`<pre>${e.message}</pre>`);
+  }
+});
+
+// POST /admin/product — create or update one product, then back to the page.
+app.post('/admin/product', async (req, res) => {
+  const key = req.body.key;
+  if (key !== process.env.ZALO_WEBHOOK_TOKEN) return res.status(403).send('Forbidden');
+
+  const back = (msg) => res.redirect(`/admin?key=${encodeURIComponent(key)}&ok=${encodeURIComponent(msg)}`);
+  try {
+    const num = (v) => (v === '' || v == null ? null : Number(v));
+    const available = req.body.is_available === 'on';
+
+    if (req.body.id) {
+      await db.pool.query(
+        `UPDATE products SET name_vi=$2, base_price=$3, sale_price=$4, unit=$5,
+                             stock_qty=$6, is_available=$7, updated_at=NOW()
+         WHERE id=$1`,
+        [req.body.id, req.body.name_vi, num(req.body.base_price), num(req.body.sale_price),
+         req.body.unit || 'cái', num(req.body.stock_qty) ?? 0, available]
+      );
+      await catalog.refresh();
+      return back(`Đã lưu "${req.body.name_vi}"`);
+    }
+
+    await db.pool.query(
+      `INSERT INTO products (sku, name, name_vi, category, base_price, unit, stock_qty, is_available)
+       VALUES ($1,$2,$2,'general',$3,$4,$5,TRUE)`,
+      [req.body.sku, req.body.name_vi, num(req.body.base_price),
+       req.body.unit || 'cái', num(req.body.stock_qty) ?? 0]
+    );
+    await catalog.refresh();
+    return back(`Đã thêm "${req.body.name_vi}"`);
+  } catch (e) {
+    return back(`Lỗi: ${e.message}`);
+  }
+});
+
+// POST /admin/order — change an order's status.
+app.post('/admin/order', async (req, res) => {
+  const key = req.body.key;
+  if (key !== process.env.ZALO_WEBHOOK_TOKEN) return res.status(403).send('Forbidden');
+  try {
+    const r = await db.pool.query(
+      'UPDATE orders SET status=$2, updated_at=NOW() WHERE id=$1 RETURNING order_number, customer_id',
+      [req.body.id, req.body.status]
+    );
+    const row = r.rows[0];
+    if (row) await db.updateCustomerLtv(row.customer_id).catch(() => {});
+    res.redirect(`/admin?key=${encodeURIComponent(key)}&ok=${encodeURIComponent(
+      `Đơn ${row ? row.order_number : ''} → ${req.body.status}`)}`);
+  } catch (e) {
+    res.redirect(`/admin?key=${encodeURIComponent(key)}&ok=${encodeURIComponent('Lỗi: ' + e.message)}`);
   }
 });
 

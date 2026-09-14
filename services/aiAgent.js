@@ -3,6 +3,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const db = require('./database');
 const knowledge = require('./knowledge');
 const ops = require('./ops');
+const catalog = require('./catalog');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -11,16 +12,8 @@ const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // Injects customer memory + context into every conversation
 // ============================================================
 function buildSystemPrompt(customer, memories, recentOrders, preferences) {
-  const productCatalog = `
-Sản phẩm Doc Mo Farm:
-- Dầu gội cao cấp (DMF-SHP-001): 180.000đ/chai
-- Dầu tắm (DMF-BTH-001): 120.000đ/chai
-- Xúc xích phô mai (DMF-SCH-001): 85.000đ/gói
-- Xúc xích tỏi (DMF-SCG-001): 85.000đ/gói
-- Nước gừng lên men (DMF-NGM-001): 95.000đ/chai
-- Nước nghệ lên men (DMF-NNG-001): 95.000đ/chai
-- Kẹo chuối (DMF-KC-001): 45.000đ/gói
-- Chuối sấy dẻo (DMF-CS-001): 65.000đ/gói`;
+  // Single source of truth: the products table. Editable from /admin.
+  const productCatalog = catalog.promptBlock();
 
   let customerCtx = '';
   if (customer) {
@@ -204,8 +197,11 @@ async function executeTool(toolName, toolInput, customer, zaloUserId) {
 
     if (toolName === 'search_products') {
       if (!db.DB_ENABLED) {
-        // No database yet — fall back to the catalog already in the prompt.
-        return 'Dùng bảng giá trong hệ thống (chưa kết nối database sản phẩm).';
+        const q = String(toolInput.query || '').toLowerCase();
+        const hit = catalog.rows().filter(p => p.name_vi.toLowerCase().includes(q));
+        return hit.length
+          ? hit.map(p => `${p.name_vi}: ${Number(p.base_price).toLocaleString('vi')}đ/${p.unit}`).join('\n')
+          : 'Không tìm thấy sản phẩm phù hợp.';
       }
       const result = await db.pool.query(
         `SELECT name_vi, base_price, unit, is_available

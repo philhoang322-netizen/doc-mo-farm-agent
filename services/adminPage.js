@@ -19,7 +19,7 @@ function when(d) {
   return new Date(d).toLocaleDateString('vi-VN');
 }
 
-async function render(key) {
+async function render(key, flash = null) {
   if (!db.DB_ENABLED) {
     return `<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;padding:2rem">
       <h2>Chưa kết nối database</h2></body>`;
@@ -45,10 +45,15 @@ async function render(key) {
     FROM customers c ORDER BY c.last_seen_at DESC NULLS LAST LIMIT 50`);
 
   const orders = await q(`
-    SELECT o.order_number, o.total_amount, o.status, o.created_at,
+    SELECT o.id, o.order_number, o.total_amount, o.status, o.created_at,
            c.display_name, c.phone
     FROM orders o LEFT JOIN customers c ON c.id = o.customer_id
     ORDER BY o.created_at DESC LIMIT 25`);
+
+  const products = await q(
+    `SELECT id, sku, name_vi, base_price, sale_price, unit, stock_qty, is_available
+     FROM products ORDER BY is_available DESC, name_vi`
+  );
 
   const recent = await q(`
     SELECT m.role, m.content, m.created_at, c.display_name
@@ -68,14 +73,62 @@ async function render(key) {
       <td class="sub">${when(c.last_seen_at)}</td>
     </tr>`).join('');
 
+  const STATUSES = ['pending', 'confirmed', 'packed', 'shipped', 'delivered', 'cancelled'];
+
   const rowsOrders = orders.map(o => `
     <tr>
       <td><code>${esc(o.order_number)}</code></td>
       <td>${esc(o.display_name || '—')}<div class="sub">${esc(o.phone || '')}</div></td>
       <td class="num">${money(o.total_amount)}</td>
-      <td><span class="tag ${o.status === 'pending' ? 'warn' : ''}">${esc(o.status)}</span></td>
+      <td>
+        <form method="post" action="/admin/order" class="inline">
+          <input type="hidden" name="key" value="${esc(key)}">
+          <input type="hidden" name="id" value="${esc(o.id)}">
+          <select name="status" onchange="this.form.submit()">
+            ${STATUSES.map(s => `<option value="${s}"${s === o.status ? ' selected' : ''}>${s}</option>`).join('')}
+          </select>
+        </form>
+      </td>
       <td class="sub">${when(o.created_at)}</td>
     </tr>`).join('');
+
+  // Each product is its own form. A <form> inside <tr> is invalid HTML and
+  // browsers hoist it out of the table, so these are cards, not table rows.
+  const cardsProducts = products.map(p => `
+    <form method="post" action="/admin/product" class="prod ${p.is_available ? '' : 'off'}">
+      <input type="hidden" name="key" value="${esc(key)}">
+      <input type="hidden" name="id" value="${esc(p.id)}">
+      <div class="prod-head">
+        <input name="name_vi" value="${esc(p.name_vi)}" class="in name">
+        <code>${esc(p.sku)}</code>
+      </div>
+      <div class="prod-grid">
+        <label>Giá<input name="base_price" type="number" step="1000" value="${Number(p.base_price)}" class="in"></label>
+        <label>Giá KM<input name="sale_price" type="number" step="1000" value="${p.sale_price ?? ''}" placeholder="—" class="in"></label>
+        <label>Đơn vị<input name="unit" value="${esc(p.unit)}" class="in"></label>
+        <label>Tồn<input name="stock_qty" type="number" value="${p.stock_qty ?? 0}" class="in"></label>
+      </div>
+      <div class="prod-foot">
+        <label class="chk"><input type="checkbox" name="is_available" ${p.is_available ? 'checked' : ''}> Đang bán</label>
+        <button type="submit">Lưu</button>
+      </div>
+    </form>`).join('');
+
+  const newProductForm = `
+    <form method="post" action="/admin/product" class="prod new">
+      <input type="hidden" name="key" value="${esc(key)}">
+      <div class="prod-head"><input name="name_vi" placeholder="Tên sản phẩm mới" class="in name" required></div>
+      <div class="prod-grid">
+        <label>SKU<input name="sku" placeholder="DMF-XXX-001" class="in" required></label>
+        <label>Giá<input name="base_price" type="number" step="1000" placeholder="0" class="in" required></label>
+        <label>Đơn vị<input name="unit" placeholder="chai" class="in"></label>
+        <label>Tồn<input name="stock_qty" type="number" placeholder="0" class="in"></label>
+      </div>
+      <div class="prod-foot">
+        <span class="sub">Thêm sản phẩm — bot dùng ngay sau 1 phút</span>
+        <button type="submit">Thêm</button>
+      </div>
+    </form>`;
 
   const chat = recent.reverse().map(m => `
     <div class="msg ${m.role}">
@@ -120,14 +173,33 @@ async function render(key) {
   .msg .who { font-size:11px; color:var(--soft); margin-bottom:3px }
   .msg .body { white-space:pre-wrap; font-size:14px }
   .scroll { max-height:520px; overflow:auto }
+  form.inline { margin:0 }
+  select, .in { font:inherit; color:inherit; background:#fff; border:1px solid var(--line);
+                border-radius:7px; padding:5px 7px; width:100% }
+  .in.name { font-weight:600 }
+  button { font:inherit; font-weight:600; background:var(--green); color:#fff; border:0;
+           border-radius:8px; padding:7px 16px; cursor:pointer }
+  .prods { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px }
+  .prod { background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px }
+  .prod.off { opacity:.55 }
+  .prod.new { border-style:dashed }
+  .prod-head { display:flex; gap:8px; align-items:center; margin-bottom:8px }
+  .prod-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px }
+  .prod-grid label { font-size:11px; color:var(--soft) }
+  .prod-foot { display:flex; justify-content:space-between; align-items:center; margin-top:10px; gap:8px }
+  .chk { font-size:13px; display:flex; gap:5px; align-items:center }
+  .chk input { width:auto }
+  .ok { background:#eef7f0; border:1px solid #cfe5d6; color:var(--green);
+        padding:9px 12px; border-radius:10px; margin-bottom:14px; font-size:14px }
   @media (max-width:600px){ .card .val{font-size:19px} td,th{padding:8px 9px} }
 </style></head>
 <body>
 <header class="wrap">
   <h1>🌿 Dốc Mơ Farm — Quản trị</h1>
-  <div class="sub">Cập nhật ${new Date().toLocaleString('vi-VN')} · tự làm mới mỗi 60 giây</div>
+  <div class="sub">Cập nhật ${new Date().toLocaleString('vi-VN')}</div>
 </header>
 <div class="wrap">
+  ${flash ? `<div class="ok">${esc(flash)}</div>` : ''}
   <div class="cards">
     ${card('Khách hàng', stats.customers)}
     ${card('Khách mới hôm nay', stats.new_today, 'green')}
@@ -140,6 +212,9 @@ async function render(key) {
   <h2>Khách hàng gần đây</h2>
   <table><thead><tr><th>Khách</th><th>Điện thoại</th><th class="num">Tin</th><th class="num">Đơn</th><th>Lần cuối</th></tr></thead>
   <tbody>${rowsCustomers || '<tr><td colspan="5" class="sub">Chưa có khách nào.</td></tr>'}</tbody></table>
+
+  <h2>Bảng giá — sửa ở đây, bot cập nhật ngay</h2>
+  <div class="prods">${cardsProducts}${newProductForm}</div>
 
   <h2>Đơn hàng</h2>
   <table><thead><tr><th>Mã</th><th>Khách</th><th class="num">Tổng</th><th>Trạng thái</th><th>Lúc</th></tr></thead>
