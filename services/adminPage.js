@@ -272,7 +272,9 @@ async function render(key, flash = null) {
 <body>
 <header class="wrap">
   <h1>🌿 Dốc Mơ Farm — Quản trị</h1>
-  <div class="sub">Cập nhật ${new Date().toLocaleString('vi-VN')}</div>
+  <div class="sub">Cập nhật ${new Date().toLocaleString('vi-VN')} ·
+    <span id="auto">Tự làm mới mỗi 60 giây, dừng khi bạn đang nhập</span> ·
+    <a href="#" onclick="location.reload();return false">Làm mới ngay</a></div>
 </header>
 <div class="wrap">
   ${flash ? `<div class="ok">${esc(flash)}</div>` : ''}
@@ -305,7 +307,32 @@ async function render(key, flash = null) {
   <h2>Hội thoại gần nhất — bấm "Dạy lại" dưới câu bot trả lời</h2>
   <div class="scroll">${chat || '<div class="sub">Chưa có tin nhắn.</div>'}</div>
 </div>
-<script>setTimeout(function(){location.reload()},60000)</script>
+<script>
+// Auto-refresh keeps the numbers current, but it must never eat something
+// the farm is in the middle of typing. Any edit, any focused field, or any
+// open "Dạy lại" panel cancels it until the page is reloaded by hand.
+(function () {
+  var dirty = false;
+  document.addEventListener('input', function () { dirty = true; markPaused(); });
+  document.addEventListener('submit', function () { dirty = false; });
+
+  function busy() {
+    if (dirty) return true;
+    var a = document.activeElement;
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return true;
+    if (document.querySelector('details.teach[open]')) return true;
+    return false;
+  }
+  function markPaused() {
+    var el = document.getElementById('auto');
+    if (el) el.textContent = 'Tự làm mới: đã tạm dừng vì bạn đang nhập';
+  }
+  setInterval(function () { if (!busy()) location.reload(); }, 60000);
+  document.addEventListener('focusin', function (e) {
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) markPaused();
+  });
+})();
+</script>
 </body></html>`;
 }
 
