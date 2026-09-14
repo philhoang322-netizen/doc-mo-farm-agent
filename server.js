@@ -457,7 +457,24 @@ async function handleOwnerCommand(text, reply) {
     await reply(`Lỗi lệnh: ${e.message}`);
     return true;
   }
-  return false;
+
+  // Anything else starting with "/" from the owner is a mistyped command.
+  // Answering it as a customer question would burn ~6k tokens for nothing.
+  await reply(
+    `Không có lệnh "${esc(cmd)}".\n\n` +
+    'Lệnh hiện có:\n' +
+    '/cho — khách đang chờ người thật\n' +
+    '/mo <id> — mở lại bot cho khách\n' +
+    '/dung <id> — tạm dừng bot cho khách\n' +
+    '/tinhtrang — kiểm tra hệ thống\n' +
+    '/baocao — báo cáo kinh doanh'
+  );
+  return true;
+}
+
+/** Keep a mistyped command from being echoed back with markup. */
+function esc(s) {
+  return String(s || '').replace(/[<>]/g, '').slice(0, 40);
 }
 
 // ============================================================
