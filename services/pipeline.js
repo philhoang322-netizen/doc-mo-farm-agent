@@ -15,6 +15,7 @@ const honorific = require('./honorific');
 const zaloService = require('./zaloService');
 const memory = require('./memory');
 const drift = require('./drift');
+const followup = require('./followup');
 
 const FALLBACK_REPLY =
   'Dạ farm đang bận xử lý một chút, bạn nhắn lại giúp mình sau ít phút nha 🌿 ' +
@@ -90,6 +91,8 @@ async function handleMessage(p) {
 
       await db.saveMessage(p.externalKey, 'user', p.text);
       drift.noteQuestion(p.externalKey, p.text);
+      // They came back on their own — reset the nudge counter.
+      if (customer) followup.stopFor(customer.id).catch(() => {});
 
       // 2c. An angry customer must not receive one more automated reply, so
       //     this is settled before the model is called at all.
@@ -224,7 +227,11 @@ async function stepAside(p, customer, verdict, log) {
   try {
     await p.send(p.replyTo, text);
     await db.saveMessage(p.externalKey, 'assistant', text);
-    if (customer) await db.pauseBot(customer.id, verdict.reason);
+    if (customer) {
+      await db.pauseBot(customer.id, verdict.reason);
+      // Someone waiting on a person must never also get a sales nudge.
+      await followup.optOut(customer.id);
+    }
     drift.markHandedOff(p.externalKey);
 
     log({ type: 'stepped_aside', channel: p.channel, signal: verdict.signal, to: p.replyTo });

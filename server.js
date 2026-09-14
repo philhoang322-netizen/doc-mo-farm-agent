@@ -17,6 +17,7 @@ const knowledge   = require('./services/knowledge');
 const state       = require('./services/state');
 const faqPage     = require('./services/faqPage');
 const rewrite     = require('./services/rewrite');
+const followup    = require('./services/followup');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -943,6 +944,7 @@ app.post('/chat', async (req, res) => {
 });
 
 selfCheck.start();
+followup.start();
 
 app.listen(PORT, () => {
   console.log(`🚀 Doc Mo Farm AI Agent running on port ${PORT}`);
