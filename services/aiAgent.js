@@ -5,6 +5,7 @@ const knowledge = require('./knowledge');
 const ops = require('./ops');
 const catalog = require('./catalog');
 const honorific = require('./honorific');
+const drift = require('./drift');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -317,7 +318,13 @@ async function executeTool(toolName, toolInput, customer, zaloUserId) {
     }
 
     if (toolName === 'search_knowledge') {
-      return knowledge.search(toolInput.query);
+      const found = knowledge.search(toolInput.query);
+      // Repeated dead ends mean the bot is answering from outside the farm's
+      // own documents — a drift signal, not just an empty result.
+      if (/Không có trong tài liệu|Chưa có câu trả lời|Không tìm thấy/.test(found)) {
+        drift.noteUnknown(zaloUserId);
+      }
+      return found;
     }
 
     if (toolName === 'create_order') {

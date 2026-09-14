@@ -14,6 +14,7 @@ const kiotviet = require('./kiotviet');
 const honorific = require('./honorific');
 const zaloService = require('./zaloService');
 const memory = require('./memory');
+const drift = require('./drift');
 
 const FALLBACK_REPLY =
   'Dạ farm đang bận xử lý một chút, bạn nhắn lại giúp mình sau ít phút nha 🌿 ' +
@@ -88,6 +89,16 @@ async function handleMessage(p) {
       }
 
       await db.saveMessage(p.externalKey, 'user', p.text);
+      drift.noteQuestion(p.externalKey, p.text);
+
+      // 2c. An angry customer must not receive one more automated reply, so
+      //     this is settled before the model is called at all.
+      if (drift.soundsAbusive(p.text)) {
+        return stepAside(p, customer, {
+          signal: 'anger', urgency: 'high',
+          reason: 'Khách đang bực và có lời lẽ nặng — cần người thật xử lý ngay',
+        }, log);
+      }
 
       // A bare "ok" / "👍" / "cảm ơn" doesn't need a model call. Answering
       // these locally saves a full prompt every time, and they are common.
@@ -99,8 +110,23 @@ async function handleMessage(p) {
         return { ok: true, quick: true };
       }
 
+      // 2d. Other drift signals — a long thread, a question asked three times,
+      //     repeated dead-end lookups. Checked before answering, so the
+      //     customer gets a hand over instead of one more wobbly answer.
+      let msgCount = 0;
+      if (customer && db.DB_ENABLED) {
+        const c = await db.pool.query(
+          'SELECT COUNT(*)::int AS n FROM messages WHERE customer_id=$1', [customer.id]);
+        msgCount = c.rows[0].n;
+      }
+      const verdict = drift.assess(p.externalKey, { messageCount: msgCount, lastUserText: p.text });
+      if (verdict.handoff) {
+        return stepAside(p, customer, verdict, log);
+      }
+
       const { text: reply, tokensUsed, handoff, newOrder } =
         await aiAgent.respond(p.externalKey, p.text);
+      drift.noteAnswer(p.externalKey, reply);
 
       await db.saveMessage(p.externalKey, 'assistant', reply, {
         model: 'claude-sonnet-4-6',
@@ -187,6 +213,31 @@ async function learnHonorific(customer, p) {
 
   await db.setGender(customer.id, gender, fullName);
   return { ...customer, gender, full_name: fullName || customer.full_name };
+}
+
+/**
+ * Bow out gracefully: tell the customer, stop answering, and put the thread
+ * in front of a person. Used whenever the bot is more likely to hurt than help.
+ */
+async function stepAside(p, customer, verdict, log) {
+  const text = drift.message(verdict.signal);
+  try {
+    await p.send(p.replyTo, text);
+    await db.saveMessage(p.externalKey, 'assistant', text);
+    if (customer) await db.pauseBot(customer.id, verdict.reason);
+    drift.markHandedOff(p.externalKey);
+
+    log({ type: 'stepped_aside', channel: p.channel, signal: verdict.signal, to: p.replyTo });
+    await notify.handoff(
+      { reason: verdict.reason, urgency: verdict.urgency || 'high', externalId: p.externalKey },
+      customer,
+      p.text
+    );
+    return { ok: true, steppedAside: verdict.signal };
+  } catch (e) {
+    console.error('stepAside failed:', e.message);
+    return { ok: false, error: e.message };
+  }
 }
 
 /**
