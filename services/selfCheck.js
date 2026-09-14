@@ -9,6 +9,7 @@ const db = require('./database');
 const knowledge = require('./knowledge');
 const zaloService = require('./zaloService');
 const botService = require('./zaloBotService');
+const ops = require('./ops');
 
 const DEFAULT_INTERVAL_H = Number(process.env.HEALTH_CHECK_INTERVAL_HOURS || 24);
 const FIRST_RUN_DELAY_MS = 60 * 1000; // let the app finish booting
@@ -25,6 +26,7 @@ async function gather() {
     knowledge: knowledge.stats(),
     oa_token_present: !!zaloService.getTokens().accessToken,
     oa_last_error: zaloService.getLastError(),
+    active_locks: ops.activeLocks(),
   };
 
   if (db.DB_ENABLED) {
@@ -152,7 +154,98 @@ async function notifyOwner(text) {
   }
 }
 
+/**
+ * Yesterday-and-today business summary, in the farm's language.
+ * Sent every morning and available on demand via /baocao.
+ */
+async function dailyReportText() {
+  if (!db.DB_ENABLED) return 'Chưa kết nối database nên chưa có số liệu ạ.';
+  const q = async (sql, p = []) => (await db.pool.query(sql, p)).rows;
+
+  const [today] = await q(`
+    SELECT
+      (SELECT COUNT(*)::int FROM messages WHERE created_at::date = CURRENT_DATE) AS msgs,
+      (SELECT COUNT(DISTINCT customer_id)::int FROM messages WHERE created_at::date = CURRENT_DATE) AS chatters,
+      (SELECT COUNT(*)::int FROM customers WHERE created_at::date = CURRENT_DATE) AS new_customers,
+      (SELECT COUNT(*)::int FROM orders WHERE created_at::date = CURRENT_DATE) AS orders,
+      (SELECT COALESCE(SUM(total_amount),0) FROM orders WHERE created_at::date = CURRENT_DATE
+         AND status NOT IN ('cancelled','refunded')) AS revenue`);
+
+  const [week] = await q(`
+    SELECT COUNT(*)::int AS orders, COALESCE(SUM(total_amount),0) AS revenue
+    FROM orders WHERE created_at > NOW() - INTERVAL '7 days'
+      AND status NOT IN ('cancelled','refunded')`);
+
+  const topProducts = await q(`
+    SELECT oi.product_name, SUM(oi.quantity)::int AS qty
+    FROM order_items oi JOIN orders o ON o.id = oi.order_id
+    WHERE o.created_at > NOW() - INTERVAL '7 days'
+      AND o.status NOT IN ('cancelled','refunded')
+    GROUP BY oi.product_name ORDER BY qty DESC LIMIT 3`);
+
+  const waiting = await db.listPaused();
+  const pendingOrders = await q(
+    `SELECT order_number, total_amount FROM orders WHERE status='pending' ORDER BY created_at DESC LIMIT 5`
+  );
+
+  const money = n => Number(n || 0).toLocaleString('vi') + 'đ';
+  const L = [
+    `☀️ Dốc Mơ Farm — báo cáo ${new Date().toLocaleDateString('vi-VN')}`,
+    '',
+    `💬 Hôm nay: ${today.msgs} tin · ${today.chatters} khách trò chuyện · ${today.new_customers} khách mới`,
+    `🛒 Đơn hôm nay: ${today.orders} · ${money(today.revenue)}`,
+    `📈 7 ngày: ${week.orders} đơn · ${money(week.revenue)}`,
+  ];
+
+  if (topProducts.length) {
+    L.push('', '🔥 Bán chạy 7 ngày:');
+    topProducts.forEach((p, i) => L.push(`  ${i + 1}. ${p.product_name} — ${p.qty}`));
+  }
+  if (pendingOrders.length) {
+    L.push('', `⏳ Đơn chờ xử lý (${pendingOrders.length}):`);
+    pendingOrders.forEach(o => L.push(`  • ${o.order_number} — ${money(o.total_amount)}`));
+  }
+  if (waiting.length) {
+    L.push('', `🙋 ${waiting.length} khách đang chờ người thật — gõ /cho để xem`);
+  }
+  if (today.orders === 0 && today.msgs === 0) {
+    L.push('', 'Hôm nay chưa có ai nhắn ạ.');
+  }
+  return L.join('\n');
+}
+
+/** Fire the morning report once per day, at REPORT_HOUR local time. */
+function startDailyReport() {
+  if (process.env.DAILY_REPORT_ENABLED === 'false') return;
+  const hour = Number(process.env.DAILY_REPORT_HOUR || 8);
+  const tz = process.env.TZ_NAME || 'Asia/Ho_Chi_Minh';
+  let lastSentDay = null;
+
+  const tick = async () => {
+    const now = new Date();
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, hour: '2-digit', day: '2-digit', hour12: false,
+    }).formatToParts(now);
+    const hh = Number(parts.find(p => p.type === 'hour').value);
+    const dd = parts.find(p => p.type === 'day').value;
+    if (hh === hour && lastSentDay !== dd) {
+      lastSentDay = dd;
+      try {
+        await notifyOwner(await dailyReportText());
+        console.log('📬 Daily report sent');
+      } catch (e) {
+        console.error('Daily report failed:', e.message);
+      }
+    }
+  };
+
+  const t = setInterval(tick, 10 * 60 * 1000); // check every 10 minutes
+  if (t.unref) t.unref();
+  console.log(`📬 Daily report at ${hour}:00 ${tz}`);
+}
+
 function start() {
+  startDailyReport();
   if (process.env.HEALTH_CHECK_ENABLED === 'false') {
     console.log('ℹ️  Self-check disabled by HEALTH_CHECK_ENABLED=false');
     return;
@@ -168,4 +261,4 @@ function getLastReport() {
   return lastReport;
 }
 
-module.exports = { start, run, gather, getLastReport, notifyOwner };
+module.exports = { start, run, gather, getLastReport, notifyOwner, dailyReportText };

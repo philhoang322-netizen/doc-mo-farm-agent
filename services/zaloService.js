@@ -9,9 +9,53 @@ const MAX_MSG_LEN = 2000; // Zalo text limit
 let accessToken = process.env.ZALO_ACCESS_TOKEN || null;
 let refreshToken = process.env.ZALO_REFRESH_TOKEN || null;
 
+const state = require('./state');
+const K_ACCESS = 'zalo_oa_access_token';
+const K_REFRESH = 'zalo_oa_refresh_token';
+const K_REFRESHED_AT = 'zalo_oa_refreshed_at';
+
 function setTokens(newAccess, newRefresh) {
   if (newAccess) accessToken = newAccess;
   if (newRefresh) refreshToken = newRefresh;
+  // Persist so a restart doesn't fall back to a spent refresh token.
+  if (newAccess) state.set(K_ACCESS, newAccess);
+  if (newRefresh) state.set(K_REFRESH, newRefresh);
+  state.set(K_REFRESHED_AT, new Date().toISOString());
+}
+
+/**
+ * Load tokens saved by a previous run. Database wins over env: the env copy
+ * is the bootstrap value and goes stale the first time Zalo rotates it.
+ */
+async function loadTokens() {
+  const saved = await state.getMany([K_ACCESS, K_REFRESH, K_REFRESHED_AT]);
+  if (saved[K_ACCESS]) accessToken = saved[K_ACCESS];
+  if (saved[K_REFRESH]) refreshToken = saved[K_REFRESH];
+  if (saved[K_ACCESS] || saved[K_REFRESH]) {
+    console.log(`🔑 Zalo tokens restored from database (last refreshed ${saved[K_REFRESHED_AT] || 'unknown'})`);
+  } else if (accessToken || refreshToken) {
+    // First boot after this feature shipped: seed the store from env.
+    await state.set(K_ACCESS, accessToken);
+    await state.set(K_REFRESH, refreshToken);
+    console.log('🔑 Seeded Zalo tokens from environment into database');
+  }
+  return { accessToken, refreshToken, refreshedAt: saved[K_REFRESHED_AT] || null };
+}
+
+/**
+ * Renew before Zalo expires the access token (~25h), instead of waiting for
+ * a customer message to fail. Runs every REFRESH_HOURS (default 20).
+ */
+function startTokenRefresh() {
+  const hours = Number(process.env.ZALO_TOKEN_REFRESH_HOURS || 20);
+  const tick = async () => {
+    if (!refreshToken) return;
+    const ok = await refreshAccessToken();
+    console.log(ok ? '🔁 Proactive Zalo token refresh OK' : '⚠️  Proactive Zalo token refresh failed');
+  };
+  const t = setInterval(tick, hours * 3600 * 1000);
+  if (t.unref) t.unref();
+  console.log(`🔁 Zalo token auto-refresh every ${hours}h`);
 }
 
 function getTokens() {
@@ -58,10 +102,9 @@ async function refreshAccessToken() {
       }
     );
     if (res.data?.access_token) {
-      accessToken = res.data.access_token;
-      if (res.data.refresh_token) refreshToken = res.data.refresh_token;
-      console.log('🔄 Zalo access token refreshed OK.');
-      console.log('⚠️  NEW REFRESH TOKEN (update ZALO_REFRESH_TOKEN env var!):', res.data.refresh_token);
+      // setTokens persists both — the rotated refresh token must not be lost.
+      setTokens(res.data.access_token, res.data.refresh_token);
+      console.log('🔄 Zalo access token refreshed and saved to database.');
       return true;
     }
     console.error('❌ Token refresh failed:', JSON.stringify(res.data));
@@ -165,4 +208,6 @@ module.exports = {
   setTokens,
   getTokens,
   getLastError,
+  loadTokens,
+  startTokenRefresh,
 };

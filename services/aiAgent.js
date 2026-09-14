@@ -2,6 +2,7 @@ require('dotenv').config();
 const Anthropic = require('@anthropic-ai/sdk');
 const db = require('./database');
 const knowledge = require('./knowledge');
+const ops = require('./ops');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -149,6 +150,20 @@ const tools = [
     }
   },
   {
+    name: 'request_human',
+    description:
+      'Chuyển cuộc trò chuyện cho người thật của farm. Dùng khi khách yêu cầu gặp người, khiếu nại, ' +
+      'hỏi việc ngoài khả năng (đổi trả, hoá đơn, hợp tác, giá sỉ), hoặc khi bạn đã trả lời 2 lần mà khách vẫn chưa hài lòng.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        reason: { type: 'string', description: 'Lý do ngắn gọn để farm nắm tình hình' },
+        urgency: { type: 'string', enum: ['normal', 'high'], description: 'high nếu khách bực hoặc việc gấp' }
+      },
+      required: ['reason']
+    }
+  },
+  {
     name: 'get_order_status',
     description: 'Kiểm tra trạng thái đơn hàng của khách',
     input_schema: {
@@ -163,8 +178,30 @@ const tools = [
 // ============================================================
 // TOOL EXECUTION
 // ============================================================
-async function executeTool(toolName, toolInput, customer) {
+// Set by request_human during a turn, read once the reply is built so the
+// caller can notify the farm and mute the bot for that customer.
+const pendingHandoff = new Map();
+const pendingOrder = new Map();
+
+async function executeTool(toolName, toolInput, customer, zaloUserId) {
   try {
+    if (toolName === 'request_human') {
+      const info = {
+        reason: toolInput.reason || 'Khách muốn gặp người thật',
+        urgency: toolInput.urgency || 'normal',
+        customerId: customer ? customer.id : null,
+        externalId: zaloUserId,
+      };
+      pendingHandoff.set(zaloUserId, info);
+      if (customer && db.DB_ENABLED) {
+        await db.pauseBot(customer.id, info.reason);
+      }
+      const when = ops.isWorkingHours()
+        ? 'Người của farm sẽ trả lời bạn ngay ạ'
+        : `Ngoài giờ làm việc (${ops.workHoursText()}) nên farm sẽ phản hồi vào đầu giờ làm việc ạ`;
+      return `Đã chuyển cho người thật. Hãy báo khách: ${when}.`;
+    }
+
     if (toolName === 'search_products') {
       if (!db.DB_ENABLED) {
         // No database yet — fall back to the catalog already in the prompt.
@@ -203,6 +240,17 @@ async function executeTool(toolName, toolInput, customer) {
         toolInput.payment_method || 'cod'
       );
       const total = toolInput.items.reduce((s, i) => s + i.quantity * i.unit_price, 0);
+      // Flag it so the farm gets a Zalo ping about the new order.
+      pendingOrder.set(zaloUserId, {
+        order_number: order.order_number,
+        total,
+        items: toolInput.items,
+        phone: toolInput.customer_phone || customer.phone || null,
+        address: toolInput.delivery_address || null,
+        note: toolInput.customer_note || null,
+        payment: toolInput.payment_method || 'cod',
+        customerName: customer.display_name || customer.full_name || 'Khách',
+      });
       return `Đã tạo đơn hàng ${order.order_number}. Tổng: ${total.toLocaleString('vi')}đ. Thanh toán: ${toolInput.payment_method || 'COD'}.`;
     }
 
@@ -284,20 +332,24 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
   const systemPrompt = buildSystemPrompt(customer, memories, recentOrders, preferences);
   let response = await claude.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 600,
+    max_tokens: 1500,
     system: systemPrompt,
     tools,
     messages
   });
 
-  // 4. Handle tool use loop
+  // 4. Handle tool use loop — capped, so a confused model can't spin forever
+  //    (each turn costs an API call, and a runaway loop would hang the reply).
   let finalText = '';
-  while (response.stop_reason === 'tool_use') {
+  const MAX_TOOL_TURNS = 6;
+  let turns = 0;
+  while (response.stop_reason === 'tool_use' && turns < MAX_TOOL_TURNS) {
+    turns++;
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
     const toolResults = [];
 
     for (const block of toolUseBlocks) {
-      const result = await executeTool(block.name, block.input, customer);
+      const result = await executeTool(block.name, block.input, customer, zaloUserId);
       console.log(`🔧 Tool [${block.name}]:`, JSON.stringify(block.input), '→', result);
       toolResults.push({
         type: 'tool_result',
@@ -309,7 +361,7 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
     // Continue conversation with tool results
     response = await claude.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 600,
+      max_tokens: 1500,
       system: systemPrompt,
       tools,
       messages: [
@@ -318,6 +370,10 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
         { role: 'user', content: toolResults }
       ]
     });
+  }
+
+  if (turns >= MAX_TOOL_TURNS && response.stop_reason === 'tool_use') {
+    console.warn(`⚠️  Tool loop hit the ${MAX_TOOL_TURNS}-turn cap for ${zaloUserId}`);
   }
 
   // 5. Extract final text
@@ -329,7 +385,18 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
   // 6. Track usage
   const tokensUsed = (response.usage?.input_tokens || 0) + (response.usage?.output_tokens || 0);
 
-  return { text: finalText, tokensUsed };
+  // A silent bot looks broken to the customer — never return an empty reply.
+  if (!finalText.trim()) {
+    finalText = 'Dạ mình chưa rõ ý bạn lắm ạ. Bạn nói rõ hơn giúp mình nha! 🌿';
+  }
+
+  // Hand these to the caller exactly once, then forget them.
+  const handoff = pendingHandoff.get(zaloUserId) || null;
+  const newOrder = pendingOrder.get(zaloUserId) || null;
+  pendingHandoff.delete(zaloUserId);
+  pendingOrder.delete(zaloUserId);
+
+  return { text: finalText, tokensUsed, handoff, newOrder, customer };
 }
 
 module.exports = { respond };

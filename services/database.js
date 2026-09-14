@@ -269,6 +269,39 @@ async function getOrCreateCustomer(zaloUserId, name = null) {
   return result.rows[0];
 }
 
+// ============================================================
+// HUMAN HANDOFF — while paused, the AI stays silent for this customer
+// ============================================================
+
+async function pauseBot(customerId, reason = null) {
+  if (!DB_ENABLED) return false;
+  await pool.query(
+    'UPDATE customers SET bot_paused=TRUE, paused_reason=$2, paused_at=NOW(), updated_at=NOW() WHERE id=$1',
+    [customerId, reason]
+  );
+  return true;
+}
+
+async function resumeBot(customerId) {
+  if (!DB_ENABLED) return false;
+  await pool.query(
+    'UPDATE customers SET bot_paused=FALSE, paused_reason=NULL, paused_at=NULL, updated_at=NOW() WHERE id=$1',
+    [customerId]
+  );
+  return true;
+}
+
+async function listPaused() {
+  if (!DB_ENABLED) return [];
+  const r = await pool.query(
+    `SELECT c.id, c.display_name, c.phone, c.paused_reason, c.paused_at,
+            (SELECT json_agg(json_build_object('channel', i.channel, 'external_id', i.external_id))
+             FROM customer_identities i WHERE i.customer_id = c.id) AS identities
+     FROM customers c WHERE c.bot_paused = TRUE ORDER BY c.paused_at DESC`
+  );
+  return r.rows;
+}
+
 async function updateCustomer(zaloUserId, data) {
   const { full_name, phone, full_address } = data;
   const result = await pool.query(
@@ -668,6 +701,10 @@ module.exports = {
   getCustomer,
   getOrCreateCustomer,
   updateCustomer,
+  // Handoff
+  pauseBot,
+  resumeBot,
+  listPaused,
   // Conversation
   getOrCreateSession,
   saveMessage,

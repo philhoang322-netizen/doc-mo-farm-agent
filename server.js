@@ -8,6 +8,10 @@ const db          = require('./services/database');
 const aiAgent     = require('./services/aiAgent');
 const faqService  = require('./services/faqService');
 const selfCheck   = require('./services/selfCheck');
+const pipeline    = require('./services/pipeline');
+const notify      = require('./services/notify');
+const ops         = require('./services/ops');
+const adminPage   = require('./services/adminPage');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -15,8 +19,12 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static('public'));
 
-// Init DB check on startup
-db.initDB().catch(err => console.error('DB init error:', err));
+// Boot: migrate, then restore the Zalo tokens the previous run may have rotated.
+db.initDB()
+  .then(() => zaloService.loadTokens())
+  .then(() => zaloService.startTokenRefresh())
+  .then(() => ops.pruneEvents(3))
+  .catch(err => console.error('Startup error:', err));
 
 // ============================================================
 // HEALTH CHECK
@@ -110,7 +118,6 @@ app.get('/webhook', (req, res) => {
 // DEBUG — ring buffer of recent webhook events + outcomes
 // ============================================================
 const lastEvents = [];
-const seenBotMessages = new Set();
 function logEvent(entry) {
   lastEvents.push({ at: new Date().toISOString(), ...entry });
   while (lastEvents.length > 30) lastEvents.shift();
@@ -149,6 +156,20 @@ app.get('/debug/test-send', async (req, res) => {
     res.json({ ok: !!result, zalo_response: result, last_error: zaloService.getLastError() });
   } catch (e) {
     res.json({ ok: false, error: e.message });
+  }
+});
+
+// GET /admin?key=... — the farm's dashboard
+app.get('/admin', async (req, res) => {
+  if (req.query.key !== process.env.ZALO_WEBHOOK_TOKEN) {
+    return res.status(403).send('Forbidden');
+  }
+  try {
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    res.set('X-Robots-Tag', 'noindex, nofollow');
+    res.send(await adminPage.render(req.query.key));
+  } catch (e) {
+    res.status(500).send(`<pre>${e.message}</pre>`);
   }
 });
 
@@ -302,44 +323,142 @@ app.post('/bot/webhook', async (req, res) => {
 
   logEvent({ type: 'bot_incoming', body: req.body });
 
-  const evt = botService.parseTextEvent(req.body);
-  if (!evt) {
-    logEvent({ type: 'bot_skipped', event_name: req.body?.event_name });
-    return;
-  }
+  const body = req.body || {};
+  const msg = body.message || {};
+  const chatId = msg.chat?.id || msg.from?.id;
+  const eventName = String(body.event_name || '');
 
-  // Drop duplicate deliveries of the same message
-  if (evt.messageId) {
-    if (seenBotMessages.has(evt.messageId)) return;
-    seenBotMessages.add(evt.messageId);
-    if (seenBotMessages.size > 500) {
-      seenBotMessages.delete(seenBotMessages.values().next().value);
+  const evt = botService.parseTextEvent(body);
+
+  // Owner control commands arrive on the owner's own bot chat.
+  if (evt && chatId && String(chatId) === String(notify.ownerChatId())) {
+    const handled = await handleOwnerCommand(evt.text, (t) => botService.sendMessage(chatId, t));
+    if (handled) {
+      logEvent({ type: 'owner_command', text: evt.text.slice(0, 60) });
+      return;
     }
   }
 
-  try {
+  if (evt) {
     console.log(`🤖 [bot ${evt.chatId}] ${evt.text}`);
-    botService.sendTyping(evt.chatId).catch(() => {});
-
-    const userKey = `bot_${evt.chatId}`;
-    await db.getOrCreateCustomer(userKey, evt.senderName);
-    await db.saveMessage(userKey, 'user', evt.text);
-
-    const { text: aiReply, tokensUsed } = await aiAgent.respond(userKey, evt.text);
-
-    await db.saveMessage(userKey, 'assistant', aiReply, {
-      model: 'claude-sonnet-4-6',
-      tokensUsed,
+    await pipeline.handleMessage({
+      channel: 'bot',
+      externalKey: `bot_${evt.chatId}`,
+      replyTo: evt.chatId,
+      text: evt.text,
+      msgId: evt.messageId,
+      senderName: evt.senderName,
+      send: (to, text) => botService.sendMessage(to, text),
+      typing: (to) => botService.sendTyping(to),
+      log: logEvent,
     });
-
-    const sent = await botService.sendMessage(evt.chatId, aiReply);
-    console.log(`✓ Bot replied [${tokensUsed} tokens]: ${aiReply.substring(0, 80)}...`);
-    logEvent({ type: 'bot_replied', to: evt.chatId, reply: aiReply.substring(0, 120), tokensUsed, send_ok: !!sent });
-  } catch (error) {
-    console.error('Bot webhook error:', error);
-    logEvent({ type: 'bot_error', error: error.message });
+    return;
   }
+
+  // Non-text: image / sticker / audio / video / file
+  const kind = /image/.test(eventName) ? 'image'
+    : /sticker/.test(eventName) ? 'sticker'
+    : /audio|voice/.test(eventName) ? 'audio'
+    : /video/.test(eventName) ? 'video'
+    : /file|document/.test(eventName) ? 'file'
+    : null;
+
+  if (kind && chatId) {
+    await pipeline.handleNonText({
+      channel: 'bot',
+      kind,
+      externalKey: `bot_${chatId}`,
+      replyTo: chatId,
+      msgId: msg.message_id,
+      senderName: msg.from?.display_name,
+      send: (to, text) => botService.sendMessage(to, text),
+      log: logEvent,
+    });
+    return;
+  }
+
+  logEvent({ type: 'bot_skipped', event_name: eventName });
 });
+
+// ============================================================
+// OWNER COMMANDS (sent from the farm's own Zalo to the bot)
+//   /mo <id>     resume the AI for that customer
+//   /dung <id>   pause the AI (a person will answer)
+//   /cho         list conversations waiting for a human
+//   /tinhtrang   health snapshot
+// ============================================================
+async function handleOwnerCommand(text, reply) {
+  const t = String(text || '').trim();
+  if (!t.startsWith('/')) return false;
+
+  const [cmd, ...rest] = t.split(/\s+/);
+  const arg = rest.join(' ').trim();
+
+  try {
+    if (cmd === '/mo' || cmd === '/resume') {
+      if (!arg) return reply('Cú pháp: /mo <id khách>'), true;
+      const c = await db.getCustomerByExternalId(arg);
+      if (!c) return reply(`Không tìm thấy khách: ${arg}`), true;
+      await db.resumeBot(c.id);
+      await reply(`✅ Đã mở lại bot cho ${c.display_name || arg}`);
+      return true;
+    }
+
+    if (cmd === '/dung' || cmd === '/pause') {
+      if (!arg) return reply('Cú pháp: /dung <id khách>'), true;
+      const c = await db.getCustomerByExternalId(arg);
+      if (!c) return reply(`Không tìm thấy khách: ${arg}`), true;
+      await db.pauseBot(c.id, 'Chủ farm tạm dừng');
+      await reply(`⏸️ Đã tạm dừng bot cho ${c.display_name || arg}. Mở lại: /mo ${arg}`);
+      return true;
+    }
+
+    if (cmd === '/cho' || cmd === '/waiting') {
+      const rows = await db.listPaused();
+      if (rows.length === 0) return reply('Không có khách nào đang chờ người thật ✅'), true;
+      const lines = rows.map(r => {
+        const id = (r.identities || [])[0]?.external_id || r.id;
+        return `• ${r.display_name || 'Khách'}${r.phone ? ` · ${r.phone}` : ''}\n  ${r.paused_reason || ''}\n  mở lại: /mo ${id}`;
+      });
+      await reply(`⏳ ${rows.length} khách đang chờ:\n\n${lines.join('\n\n')}`);
+      return true;
+    }
+
+    if (cmd === '/tinhtrang' || cmd === '/status') {
+      const h = await selfCheck.run('owner-command');
+      const head = h.healthy ? '💚 Hệ thống bình thường' : `💛 ${h.problems.length} vấn đề`;
+      const c = h.counts || {};
+      await reply(
+        `${head}\n\n` +
+        `👥 Khách: ${c.customers ?? '?'} · 💬 Tin: ${c.messages ?? '?'} · 🛒 Đơn: ${c.orders ?? '?'}\n` +
+        `📨 Tin 24h: ${h.messages_24h ?? '?'}\n` +
+        (h.problems?.length ? `\n${h.problems.map(x => '• ' + x).join('\n')}` : '')
+      );
+      return true;
+    }
+
+    if (cmd === '/help' || cmd === '/lenh') {
+      await reply(
+        'Lệnh dành cho farm:\n' +
+        '/cho — khách đang chờ người thật\n' +
+        '/mo <id> — mở lại bot cho khách\n' +
+        '/dung <id> — tạm dừng bot cho khách\n' +
+        '/tinhtrang — kiểm tra hệ thống\n' +
+        '/baocao — báo cáo kinh doanh hôm nay'
+      );
+      return true;
+    }
+
+    if (cmd === '/baocao' || cmd === '/report') {
+      await reply(await selfCheck.dailyReportText());
+      return true;
+    }
+  } catch (e) {
+    await reply(`Lỗi lệnh: ${e.message}`);
+    return true;
+  }
+  return false;
+}
 
 // ============================================================
 // ZALO WEBHOOK — Message Handler (POST)
@@ -369,36 +488,61 @@ app.post('/webhook', async (req, res) => {
     const events = Array.isArray(req.body.events) ? req.body.events : [req.body];
 
     for (const event of events) {
-      if (event.event_name !== 'user_send_text') {
-        logEvent({ type: 'skipped', event_name: event.event_name });
+      const name = String(event.event_name || '');
+      const senderId = event.sender?.id;
+      const senderName = event.sender?.display_name || null;
+      const send = (to, text) => zaloService.sendTextMessage(to, text);
+
+      // Our own outbound messages come back as events — ignore them.
+      if (name.startsWith('oa_') || name === 'user_received_message' || name === 'user_seen_message') {
+        logEvent({ type: 'skipped', event_name: name });
         continue;
       }
 
-      const senderId   = event.sender.id;
-      const userMsg    = event.message.text;
-      const senderName = event.sender?.display_name || null;
+      if (name === 'follow') {
+        await pipeline.handleFollow({
+          channel: 'oa', externalKey: senderId, replyTo: senderId,
+          senderName, send, log: logEvent,
+        });
+        continue;
+      }
 
-      console.log(`📨 [${senderId}] ${userMsg}`);
+      if (name === 'unfollow') {
+        logEvent({ type: 'unfollow', from: senderId });
+        continue;
+      }
 
-      // Ensure customer exists
-      await db.getOrCreateCustomer(senderId, senderName);
+      if (name === 'user_send_text') {
+        console.log(`📨 [${senderId}] ${event.message?.text}`);
+        await pipeline.handleMessage({
+          channel: 'oa',
+          externalKey: senderId,
+          replyTo: senderId,
+          text: event.message?.text || '',
+          msgId: event.message?.msg_id,
+          senderName,
+          send,
+          log: logEvent,
+        });
+        continue;
+      }
 
-      // Save incoming message
-      await db.saveMessage(senderId, 'user', userMsg);
+      const kind = name === 'user_send_image' ? 'image'
+        : name === 'user_send_sticker' ? 'sticker'
+        : name === 'user_send_audio' ? 'audio'
+        : name === 'user_send_video' ? 'video'
+        : name === 'user_send_file' ? 'file'
+        : null;
 
-      // Get AI response
-      const { text: aiReply, tokensUsed } = await aiAgent.respond(senderId, userMsg);
+      if (kind) {
+        await pipeline.handleNonText({
+          channel: 'oa', kind, externalKey: senderId, replyTo: senderId,
+          msgId: event.message?.msg_id, senderName, send, log: logEvent,
+        });
+        continue;
+      }
 
-      // Save AI reply
-      await db.saveMessage(senderId, 'assistant', aiReply, {
-        model: 'claude-sonnet-4-6',
-        tokensUsed
-      });
-
-      // Send back to Zalo
-      const sendResult = await zaloService.sendTextMessage(senderId, aiReply);
-      console.log(`✓ Replied [${tokensUsed} tokens]: ${aiReply.substring(0, 80)}...`);
-      logEvent({ type: 'replied', to: senderId, reply: aiReply.substring(0, 120), tokensUsed, send_ok: !!sendResult });
+      logEvent({ type: 'skipped', event_name: name });
     }
   } catch (error) {
     console.error('Webhook processing error:', error);
