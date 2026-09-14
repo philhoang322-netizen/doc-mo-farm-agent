@@ -144,6 +144,12 @@ async function mergeCustomers(survivorId, mergedId, matchedOn = 'phone') {
       'INSERT INTO customer_merges (survivor_id, merged_id, matched_on) VALUES ($1,$2,$3)',
       [survivorId, mergedId, matchedOn]
     );
+
+    // customer_ltv has a UNIQUE customer_id and no ON DELETE CASCADE, so the
+    // merged row must go before the customer can be deleted. Its numbers are
+    // recomputed for the survivor by updateCustomerLtv() below.
+    await client.query('DELETE FROM customer_ltv WHERE customer_id=$1', [mergedId]);
+
     await client.query('DELETE FROM customers WHERE id=$1', [mergedId]);
 
     await client.query('COMMIT');
