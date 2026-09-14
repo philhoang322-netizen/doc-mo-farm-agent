@@ -11,6 +11,8 @@ const aiAgent = require('./aiAgent');
 const notify = require('./notify');
 const vietqr = require('./vietqr');
 const kiotviet = require('./kiotviet');
+const honorific = require('./honorific');
+const zaloService = require('./zaloService');
 
 const FALLBACK_REPLY =
   'Dạ farm đang bận xử lý một chút, bạn nhắn lại giúp mình sau ít phút nha 🌿 ' +
@@ -43,7 +45,8 @@ async function handleMessage(p) {
     try {
       if (p.typing) p.typing(p.replyTo).catch(() => {});
 
-      const customer = await db.getOrCreateCustomer(p.externalKey, p.senderName);
+      let customer = await db.getOrCreateCustomer(p.externalKey, p.senderName);
+      customer = await learnHonorific(customer, p);
 
       // 3. A human took over this conversation — stay out of the way.
       if (customer && customer.bot_paused) {
@@ -107,6 +110,39 @@ async function handleMessage(p) {
  * Runs after the reply has already been delivered, and each step is wrapped
  * on its own — a POS outage must not cost the customer their confirmation.
  */
+/**
+ * Work out whether to say "anh" or "chị", once per customer.
+ *
+ * The OA API actually reports gender, so ask it. The Bot API doesn't, so fall
+ * back to the name — and only when the name is unambiguous. Everything else
+ * stays unknown and the agent asks the customer directly.
+ */
+async function learnHonorific(customer, p) {
+  if (!customer || !db.DB_ENABLED) return customer;
+  if (customer.gender === 'male' || customer.gender === 'female') return customer;
+
+  let gender = null;
+  let fullName = customer.full_name || p.senderName || null;
+
+  if (p.channel === 'oa') {
+    try {
+      const res = await zaloService.getUserProfile(p.externalKey);
+      const d = res?.data || res || {};
+      gender = honorific.fromZaloGender(d.user_gender);
+      if (d.display_name) fullName = d.display_name;
+      if (d.shared_info?.name) fullName = d.shared_info.name;
+    } catch (e) {
+      // Profile lookup is a nicety, never a blocker.
+    }
+  }
+
+  if (!gender) gender = honorific.guessFromName(fullName);
+  if (!gender) return customer;
+
+  await db.setGender(customer.id, gender, fullName);
+  return { ...customer, gender, full_name: fullName || customer.full_name };
+}
+
 /** Customer asked for our account or a QR but hasn't ordered yet. */
 async function sendAccountInfo(p, log) {
   try {

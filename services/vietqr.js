@@ -103,7 +103,6 @@ function caption(order) {
       `Nội dung: ${cleanNote(order.order_number)}`
     );
   }
-  lines.push('', 'Nếu bạn chọn thanh toán khi nhận hàng (COD) thì bỏ qua mã này nha ạ!');
   return lines.join('\n');
 }
 

@@ -4,6 +4,7 @@ const db = require('./database');
 const knowledge = require('./knowledge');
 const ops = require('./ops');
 const catalog = require('./catalog');
+const honorific = require('./honorific');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -54,6 +55,7 @@ NGUYÊN TẮC GIAO TIẾP:
 
 ${productCatalog}
 ${customerCtx}${memoriesCtx}${ordersCtx}${prefsCtx}${knowledge.systemPromptBlock()}
+${honorific.promptBlock(customer)}
 
 KHI KHÁCH ĐẶT HÀNG: Gọi tool create_order để tạo đơn hàng.
 KHI KHÁCH HỎI SẢN PHẨM: Gọi tool search_products để tìm.
@@ -275,9 +277,31 @@ async function executeTool(toolName, toolInput, customer, zaloUserId) {
         toolInput.importance || 3
       );
 
+      const key = String(toolInput.memory_key || '').toLowerCase();
+
+      // Gender decides anh/chị — promote it onto the customer record so every
+      // future conversation, on either channel, gets the address right.
+      if (/gioi_tinh|gender|xung_ho|danh_xung/.test(key)) {
+        const g = honorific.parseGenderValue(toolInput.memory_value);
+        if (g) {
+          await db.setGender(customer.id, g);
+          return `Đã ghi nhớ xưng hô: ${g === 'male' ? 'anh' : 'chị'}.`;
+        }
+      }
+      if (/ten_khach|full_name|ho_ten|^ten$/.test(key) && customer) {
+        await db.pool.query(
+          'UPDATE customers SET full_name=$2, updated_at=NOW() WHERE id=$1',
+          [customer.id, toolInput.memory_value]
+        ).catch(() => {});
+        // A name can also settle the anh/chị question on its own.
+        const guess = honorific.guessFromName(toolInput.memory_value);
+        if (guess && (!customer.gender || customer.gender === 'unknown')) {
+          await db.setGender(customer.id, guess);
+        }
+      }
+
       // A phone number is the one fact that can prove an OA chat and a Bot
       // chat are the same person — use it to merge their histories.
-      const key = String(toolInput.memory_key || '').toLowerCase();
       const looksLikePhone = /phone|dien_thoai|điện thoại|sdt|sđt|so_dt/.test(key);
       if (looksLikePhone) {
         const phone = db.normalizePhone(toolInput.memory_value);

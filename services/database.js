@@ -273,6 +273,21 @@ async function getOrCreateCustomer(zaloUserId, name = null) {
 // HUMAN HANDOFF — while paused, the AI stays silent for this customer
 // ============================================================
 
+/** Record what we learn about how to address someone. */
+async function setGender(customerId, gender, fullName = null) {
+  if (!DB_ENABLED || !customerId) return false;
+  if (!['male', 'female'].includes(gender)) return false;
+  await pool.query(
+    `UPDATE customers
+     SET gender = $2,
+         full_name = COALESCE($3, full_name),
+         updated_at = NOW()
+     WHERE id = $1`,
+    [customerId, gender, fullName]
+  );
+  return true;
+}
+
 async function pauseBot(customerId, reason = null) {
   if (!DB_ENABLED) return false;
   await pool.query(
@@ -701,6 +716,7 @@ module.exports = {
   getCustomer,
   getOrCreateCustomer,
   updateCustomer,
+  setGender,
   // Handoff
   pauseBot,
   resumeBot,
