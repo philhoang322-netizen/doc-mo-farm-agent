@@ -7,6 +7,7 @@ const botService  = require('./services/zaloBotService');
 const db          = require('./services/database');
 const aiAgent     = require('./services/aiAgent');
 const faqService  = require('./services/faqService');
+const selfCheck   = require('./services/selfCheck');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -232,42 +233,19 @@ app.get('/debug/merge-all', async (req, res) => {
   }
 });
 
-// GET /debug/health?key=... — one look at everything that can silently rot
+// GET /debug/health?key=... — one look at everything that can silently rot.
+// Same data the scheduled self-check uses. Add &run=1 to force a full pass
+// (repairs + alert) instead of a read-only snapshot.
 app.get('/debug/health', async (req, res) => {
   if (!debugAuth(req, res)) return;
-  const out = { db_enabled: db.DB_ENABLED, bot_enabled: !!process.env.ZALO_BOT_TOKEN };
   try {
-    const knowledge = require('./services/knowledge');
-    out.knowledge = knowledge.stats();
-
-    if (db.DB_ENABLED) {
-      const q = async (sql) => (await db.pool.query(sql)).rows[0];
-      out.counts = {
-        customers: (await q('SELECT COUNT(*)::int n FROM customers')).n,
-        identities: (await q('SELECT COUNT(*)::int n FROM customer_identities')).n,
-        messages: (await q('SELECT COUNT(*)::int n FROM messages')).n,
-        orders: (await q('SELECT COUNT(*)::int n FROM orders')).n,
-        merges: (await q('SELECT COUNT(*)::int n FROM customer_merges')).n,
-      };
-      out.duplicate_phones = (await db.pool.query(
-        `SELECT phone, COUNT(*)::int n FROM customers
-         WHERE phone IS NOT NULL GROUP BY phone HAVING COUNT(*)>1`
-      )).rows;
-      out.customers_without_identity = (await q(
-        `SELECT COUNT(*)::int n FROM customers c
-         WHERE NOT EXISTS (SELECT 1 FROM customer_identities i WHERE i.customer_id=c.id)`
-      )).n;
-      out.migrations = (await db.pool.query(
-        'SELECT filename FROM _migrations ORDER BY filename'
-      )).rows.map(r => r.filename);
+    if (req.query.run === '1') {
+      return res.json(await selfCheck.run('manual'));
     }
-
-    // Zalo token liveness — cheap call, tells us if OA replies would fail.
-    out.oa_token_present = !!zaloService.getTokens().accessToken;
-    out.oa_last_error = zaloService.getLastError();
-    res.json(out);
+    const snapshot = await selfCheck.gather();
+    res.json({ ...snapshot, last_self_check: selfCheck.getLastReport() });
   } catch (e) {
-    res.status(500).json({ ...out, error: e.message });
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -619,6 +597,8 @@ app.post('/chat', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+selfCheck.start();
 
 app.listen(PORT, () => {
   console.log(`🚀 Doc Mo Farm AI Agent running on port ${PORT}`);
