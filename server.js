@@ -199,6 +199,78 @@ app.get('/debug/merge', async (req, res) => {
   }
 });
 
+// GET /debug/merge-all?key=... — merge every set of customers sharing a phone
+app.get('/debug/merge-all', async (req, res) => {
+  if (!debugAuth(req, res)) return;
+  try {
+    const groups = await db.pool.query(
+      `SELECT phone, COUNT(*)::int AS n FROM customers
+       WHERE phone IS NOT NULL AND phone <> ''
+       GROUP BY phone HAVING COUNT(*) > 1`
+    );
+    const results = [];
+    for (const g of groups.rows) {
+      const rows = await db.pool.query(
+        'SELECT id FROM customers WHERE phone=$1 ORDER BY first_seen_at ASC',
+        [g.phone]
+      );
+      const survivor = rows.rows[0].id;
+      const absorbed = [];
+      for (const r of rows.rows.slice(1)) {
+        try {
+          await db.mergeCustomers(survivor, r.id, 'phone-sweep');
+          absorbed.push(r.id);
+        } catch (e) {
+          results.push({ phone: g.phone, error: e.message });
+        }
+      }
+      if (absorbed.length) results.push({ phone: g.phone, survivor, absorbed });
+    }
+    res.json({ ok: true, groups: groups.rows.length, results });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /debug/health?key=... — one look at everything that can silently rot
+app.get('/debug/health', async (req, res) => {
+  if (!debugAuth(req, res)) return;
+  const out = { db_enabled: db.DB_ENABLED, bot_enabled: !!process.env.ZALO_BOT_TOKEN };
+  try {
+    const knowledge = require('./services/knowledge');
+    out.knowledge = knowledge.stats();
+
+    if (db.DB_ENABLED) {
+      const q = async (sql) => (await db.pool.query(sql)).rows[0];
+      out.counts = {
+        customers: (await q('SELECT COUNT(*)::int n FROM customers')).n,
+        identities: (await q('SELECT COUNT(*)::int n FROM customer_identities')).n,
+        messages: (await q('SELECT COUNT(*)::int n FROM messages')).n,
+        orders: (await q('SELECT COUNT(*)::int n FROM orders')).n,
+        merges: (await q('SELECT COUNT(*)::int n FROM customer_merges')).n,
+      };
+      out.duplicate_phones = (await db.pool.query(
+        `SELECT phone, COUNT(*)::int n FROM customers
+         WHERE phone IS NOT NULL GROUP BY phone HAVING COUNT(*)>1`
+      )).rows;
+      out.customers_without_identity = (await q(
+        `SELECT COUNT(*)::int n FROM customers c
+         WHERE NOT EXISTS (SELECT 1 FROM customer_identities i WHERE i.customer_id=c.id)`
+      )).n;
+      out.migrations = (await db.pool.query(
+        'SELECT filename FROM _migrations ORDER BY filename'
+      )).rows.map(r => r.filename);
+    }
+
+    // Zalo token liveness — cheap call, tells us if OA replies would fail.
+    out.oa_token_present = !!zaloService.getTokens().accessToken;
+    out.oa_last_error = zaloService.getLastError();
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ ...out, error: e.message });
+  }
+});
+
 // GET /debug/knowledge?key=...&q=... — inspect the product knowledge base
 app.get('/debug/knowledge', (req, res) => {
   if (!debugAuth(req, res)) return;

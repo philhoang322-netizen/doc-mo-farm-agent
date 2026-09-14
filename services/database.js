@@ -115,7 +115,10 @@ async function mergeCustomers(survivorId, mergedId, matchedOn = 'phone') {
     await client.query('UPDATE orders SET customer_id=$1 WHERE customer_id=$2', [survivorId, mergedId]);
     await client.query('UPDATE events SET customer_id=$1 WHERE customer_id=$2', [survivorId, mergedId]);
 
-    // Memories/preferences have a unique key per customer — skip collisions.
+    // ---- Tables with a UNIQUE key per customer ----
+    // These CASCADE on delete, so anything not moved here is lost silently.
+    // Move what doesn't collide; drop the rest (survivor's value wins).
+
     await client.query(
       `UPDATE ai_memories m SET customer_id=$1 WHERE customer_id=$2
          AND NOT EXISTS (SELECT 1 FROM ai_memories x
@@ -123,6 +126,41 @@ async function mergeCustomers(survivorId, mergedId, matchedOn = 'phone') {
       [survivorId, mergedId]
     );
     await client.query('DELETE FROM ai_memories WHERE customer_id=$1', [mergedId]);
+
+    await client.query(
+      `UPDATE customer_preferences p SET customer_id=$1 WHERE customer_id=$2
+         AND NOT EXISTS (SELECT 1 FROM customer_preferences x
+                         WHERE x.customer_id=$1 AND x.preference_type=p.preference_type
+                           AND x.preference_key=p.preference_key)`,
+      [survivorId, mergedId]
+    );
+    await client.query('DELETE FROM customer_preferences WHERE customer_id=$1', [mergedId]);
+
+    // One profile row per customer: move it if the survivor has none,
+    // otherwise fill the survivor's blank fields from it.
+    const hasProfile = await client.query(
+      'SELECT 1 FROM customer_profiles WHERE customer_id=$1 LIMIT 1',
+      [survivorId]
+    );
+    if (hasProfile.rowCount === 0) {
+      await client.query('UPDATE customer_profiles SET customer_id=$1 WHERE customer_id=$2', [survivorId, mergedId]);
+    } else {
+      await client.query(
+        `UPDATE customer_profiles s SET
+           household_size    = COALESCE(s.household_size, m.household_size),
+           has_children      = COALESCE(s.has_children, m.has_children),
+           has_elderly       = COALESCE(s.has_elderly, m.has_elderly),
+           health_concerns   = COALESCE(s.health_concerns, m.health_concerns),
+           dietary_prefs     = COALESCE(s.dietary_prefs, m.dietary_prefs),
+           allergies         = COALESCE(s.allergies, m.allergies),
+           price_sensitivity = COALESCE(s.price_sensitivity, m.price_sensitivity),
+           ai_notes          = COALESCE(s.ai_notes, '{}'::jsonb) || COALESCE(m.ai_notes, '{}'::jsonb)
+         FROM customer_profiles m
+         WHERE s.customer_id=$1 AND m.customer_id=$2`,
+        [survivorId, mergedId]
+      );
+      await client.query('DELETE FROM customer_profiles WHERE customer_id=$1', [mergedId]);
+    }
 
     // Fill any blank field on the survivor from the merged record.
     await client.query(
@@ -498,6 +536,32 @@ async function trackEvent(customerId, sessionId, eventType, eventData = {}) {
   }
 }
 
+/**
+ * Give an identity row to any customer that lacks one — covers rows written
+ * while the app was running an older build. Cheap and idempotent.
+ */
+async function healIdentities(client) {
+  try {
+    const r = await client.query(`
+      INSERT INTO customer_identities (customer_id, channel, external_id)
+      SELECT c.id,
+             CASE
+               WHEN c.zalo_user_id LIKE 'bot\\_%'  THEN 'bot'
+               WHEN c.zalo_user_id LIKE 'test\\_%' THEN 'test'
+               WHEN c.zalo_user_id = 'debug_user'  THEN 'test'
+               ELSE 'oa'
+             END,
+             c.zalo_user_id
+      FROM customers c
+      WHERE c.zalo_user_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM customer_identities i WHERE i.customer_id = c.id)
+      ON CONFLICT (channel, external_id) DO NOTHING`);
+    if (r.rowCount > 0) console.log(`🔗 Healed ${r.rowCount} missing customer identities`);
+  } catch (e) {
+    console.warn('Identity heal skipped:', e.message);
+  }
+}
+
 // ============================================================
 // initDB — migration runner
 // Applies every supabase/migrations/*.sql that hasn't run yet,
@@ -557,6 +621,7 @@ async function initDB() {
 
     if (pending.length === 0) {
       console.log('✅ Database schema up to date');
+      await healIdentities(client);
       return;
     }
 
@@ -577,6 +642,7 @@ async function initDB() {
         throw new Error(`${file}: ${e.message}`);
       }
     }
+    await healIdentities(client);
   } catch (err) {
     console.error('❌ DB init failed:', err.message);
     console.error('   Bot keeps running without persistence.');
