@@ -223,9 +223,14 @@ async function executeTool(toolName, toolInput, customer) {
       if (looksLikePhone) {
         const phone = db.normalizePhone(toolInput.memory_value);
         if (phone) {
-          const survivor = await db.setPhoneAndMerge(customer.id, phone);
-          if (survivor && survivor !== customer.id) {
-            return `Đã lưu số điện thoại và nhận ra đây là khách cũ — đã gộp lịch sử hai kênh.`;
+          // A merge failure must never break the conversation.
+          try {
+            const survivor = await db.setPhoneAndMerge(customer.id, phone);
+            if (survivor && survivor !== customer.id) {
+              return 'Đã lưu số điện thoại và nhận ra đây là khách cũ — đã gộp lịch sử hai kênh.';
+            }
+          } catch (mergeErr) {
+            console.error('⚠️  Phone merge failed:', mergeErr.message);
           }
         }
       }

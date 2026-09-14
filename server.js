@@ -173,6 +173,32 @@ app.get('/debug/identity', async (req, res) => {
   }
 });
 
+// GET /debug/merge?key=...&phone=... — force the phone-merge and surface any error
+app.get('/debug/merge', async (req, res) => {
+  if (!debugAuth(req, res)) return;
+  try {
+    const phone = db.normalizePhone(req.query.phone);
+    if (!phone) return res.json({ ok: false, error: 'bad phone' });
+    const rows = await db.pool.query(
+      'SELECT id, zalo_user_id, first_seen_at FROM customers WHERE phone=$1 ORDER BY first_seen_at ASC',
+      [phone]
+    );
+    if (rows.rows.length < 2) {
+      return res.json({ ok: true, merged: false, reason: 'only one customer with that phone', rows: rows.rows });
+    }
+    const survivor = rows.rows[0].id;
+    const merged = [];
+    for (const r of rows.rows.slice(1)) {
+      await db.mergeCustomers(survivor, r.id, 'phone-manual');
+      merged.push(r.id);
+    }
+    const identities = await db.getIdentities(survivor);
+    res.json({ ok: true, merged: true, survivor, absorbed: merged, identities });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message, stack: (e.stack || '').split('\n').slice(0, 4) });
+  }
+});
+
 // GET /debug/knowledge?key=...&q=... — inspect the product knowledge base
 app.get('/debug/knowledge', (req, res) => {
   if (!debugAuth(req, res)) return;
