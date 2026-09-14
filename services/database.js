@@ -41,23 +41,175 @@ async function getCustomer(zaloUserId) {
   return getCustomerByZaloId(zaloUserId);
 }
 
+// ============================================================
+// CROSS-CHANNEL IDENTITY
+// Zalo gives a different id per channel (OA vs Bot). We keep a
+// mapping table and merge two customers once a shared phone proves
+// they are the same person.
+// ============================================================
+
+/** "bot_123" → {channel:'bot', id:'123'};  "98765" → {channel:'oa', id:'98765'} */
+function parseKey(externalKey) {
+  const s = String(externalKey || '');
+  if (s.startsWith('bot_')) return { channel: 'bot', id: s };
+  if (s.startsWith('test_') || s === 'debug_user') return { channel: 'test', id: s };
+  return { channel: 'oa', id: s };
+}
+
+/** Resolve a channel-scoped key to its customer, following merges. */
+async function getCustomerByExternalId(externalKey) {
+  if (!DB_ENABLED) return null;
+  const { channel, id } = parseKey(externalKey);
+  const r = await pool.query(
+    `SELECT c.* FROM customers c
+     JOIN customer_identities i ON i.customer_id = c.id
+     WHERE i.channel = $1 AND i.external_id = $2`,
+    [channel, id]
+  );
+  if (r.rows[0]) return r.rows[0];
+  // Fall back to the legacy column for rows created before 002.
+  return getCustomerByZaloId(externalKey);
+}
+
+async function linkIdentity(customerId, externalKey) {
+  if (!DB_ENABLED) return;
+  const { channel, id } = parseKey(externalKey);
+  await pool.query(
+    `INSERT INTO customer_identities (customer_id, channel, external_id)
+     VALUES ($1, $2, $3) ON CONFLICT (channel, external_id) DO NOTHING`,
+    [customerId, channel, id]
+  );
+}
+
+/** Every channel key that belongs to this customer. */
+async function getIdentities(customerId) {
+  if (!DB_ENABLED) return [];
+  const r = await pool.query(
+    'SELECT channel, external_id FROM customer_identities WHERE customer_id = $1',
+    [customerId]
+  );
+  return r.rows;
+}
+
+/**
+ * Fold `mergedId` into `survivorId`: move all history, keep the richer
+ * profile fields, and record the merge. Idempotent-ish and transactional.
+ */
+async function mergeCustomers(survivorId, mergedId, matchedOn = 'phone') {
+  if (!DB_ENABLED || survivorId === mergedId) return null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    await client.query('UPDATE customer_identities SET customer_id=$1 WHERE customer_id=$2', [survivorId, mergedId]);
+    await client.query('UPDATE messages SET customer_id=$1 WHERE customer_id=$2', [survivorId, mergedId]);
+    await client.query('UPDATE conversation_sessions SET customer_id=$1 WHERE customer_id=$2', [survivorId, mergedId]);
+    await client.query('UPDATE orders SET customer_id=$1 WHERE customer_id=$2', [survivorId, mergedId]);
+    await client.query('UPDATE events SET customer_id=$1 WHERE customer_id=$2', [survivorId, mergedId]);
+
+    // Memories/preferences have a unique key per customer — skip collisions.
+    await client.query(
+      `UPDATE ai_memories m SET customer_id=$1 WHERE customer_id=$2
+         AND NOT EXISTS (SELECT 1 FROM ai_memories x
+                         WHERE x.customer_id=$1 AND x.memory_type=m.memory_type AND x.memory_key=m.memory_key)`,
+      [survivorId, mergedId]
+    );
+    await client.query('DELETE FROM ai_memories WHERE customer_id=$1', [mergedId]);
+
+    // Fill any blank field on the survivor from the merged record.
+    await client.query(
+      `UPDATE customers s SET
+         phone        = COALESCE(s.phone, m.phone),
+         full_name    = COALESCE(s.full_name, m.full_name),
+         display_name = COALESCE(s.display_name, m.display_name),
+         full_address = COALESCE(s.full_address, m.full_address),
+         city         = COALESCE(s.city, m.city),
+         first_seen_at = LEAST(s.first_seen_at, m.first_seen_at),
+         last_seen_at  = GREATEST(s.last_seen_at, m.last_seen_at),
+         updated_at   = NOW()
+       FROM customers m
+       WHERE s.id=$1 AND m.id=$2`,
+      [survivorId, mergedId]
+    );
+
+    await client.query(
+      'INSERT INTO customer_merges (survivor_id, merged_id, matched_on) VALUES ($1,$2,$3)',
+      [survivorId, mergedId, matchedOn]
+    );
+    await client.query('DELETE FROM customers WHERE id=$1', [mergedId]);
+
+    await client.query('COMMIT');
+    console.log(`🔗 Merged customer ${mergedId} → ${survivorId} (matched on ${matchedOn})`);
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('Merge failed:', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  await updateCustomerLtv(survivorId);
+  return survivorId;
+}
+
+/** Normalize VN phone numbers so 0912…, +8491…, 8491… all compare equal. */
+function normalizePhone(raw) {
+  let p = String(raw || '').replace(/[^\d+]/g, '');
+  if (p.startsWith('+84')) p = '0' + p.slice(3);
+  else if (p.startsWith('84') && p.length >= 10) p = '0' + p.slice(2);
+  if (!p.startsWith('0')) p = '0' + p;
+  return p.length >= 9 && p.length <= 11 ? p : null;
+}
+
+/**
+ * Record a phone for this customer and merge any other customer that
+ * already has it — this is what links an OA chat to a Bot chat.
+ * Returns the surviving customer id.
+ */
+async function setPhoneAndMerge(customerId, rawPhone) {
+  if (!DB_ENABLED || !customerId) return customerId;
+  const phone = normalizePhone(rawPhone);
+  if (!phone) return customerId;
+
+  await pool.query('UPDATE customers SET phone=$1, updated_at=NOW() WHERE id=$2', [phone, customerId]);
+
+  const dupes = await pool.query(
+    'SELECT id, first_seen_at FROM customers WHERE phone=$1 AND id <> $2 ORDER BY first_seen_at ASC',
+    [phone, customerId]
+  );
+  if (dupes.rows.length === 0) return customerId;
+
+  // Oldest record wins, so the longest history is preserved.
+  const all = [...dupes.rows.map(r => r.id), customerId];
+  const survivorRow = await pool.query(
+    'SELECT id FROM customers WHERE id = ANY($1::uuid[]) ORDER BY first_seen_at ASC LIMIT 1',
+    [all]
+  );
+  const survivor = survivorRow.rows[0].id;
+
+  for (const id of all) {
+    if (id !== survivor) await mergeCustomers(survivor, id, 'phone');
+  }
+  return survivor;
+}
+
 async function getOrCreateCustomer(zaloUserId, name = null) {
   if (!DB_ENABLED) return null;
-  const existing = await getCustomerByZaloId(zaloUserId);
+  const existing = await getCustomerByExternalId(zaloUserId);
   if (existing) {
-    // Update last_seen
-    await pool.query(
-      'UPDATE customers SET last_seen_at = NOW() WHERE zalo_user_id = $1',
-      [zaloUserId]
-    );
+    await pool.query('UPDATE customers SET last_seen_at = NOW() WHERE id = $1', [existing.id]);
+    // Heals rows created before the identity table existed.
+    await linkIdentity(existing.id, zaloUserId);
     return existing;
   }
+
+  const { channel } = parseKey(zaloUserId);
   const result = await pool.query(
-    `INSERT INTO customers (zalo_user_id, display_name, full_name, last_seen_at)
-     VALUES ($1, $2, $2, NOW()) RETURNING *`,
-    [zaloUserId, name]
+    `INSERT INTO customers (zalo_user_id, display_name, full_name, acquisition_channel, last_seen_at)
+     VALUES ($1, $2, $2, $3, NOW()) RETURNING *`,
+    [zaloUserId, name, channel === 'bot' ? 'zalo_bot' : 'zalo_oa']
   );
-  // Create empty LTV record
+  await linkIdentity(result.rows[0].id, zaloUserId);
   await pool.query(
     'INSERT INTO customer_ltv (customer_id) VALUES ($1) ON CONFLICT DO NOTHING',
     [result.rows[0].id]
@@ -111,7 +263,7 @@ async function getOrCreateSession(zaloUserId, customerId = null) {
 
 async function saveMessage(zaloUserId, role, content, options = {}) {
   if (!DB_ENABLED) { memPush(zaloUserId, role, content); return; }
-  const customer = await getCustomerByZaloId(zaloUserId);
+  const customer = await getCustomerByExternalId(zaloUserId);
   const session = await getOrCreateSession(zaloUserId, customer?.id);
 
   await pool.query(
@@ -139,13 +291,20 @@ async function saveMessage(zaloUserId, role, content, options = {}) {
 
 async function getConversationHistory(zaloUserId, limit = 10) {
   if (!DB_ENABLED) return (memHistory.get(zaloUserId) || []).slice(-limit);
-  const result = await pool.query(
-    `SELECT role, content, created_at
-     FROM messages
-     WHERE zalo_user_id = $1
-     ORDER BY created_at DESC LIMIT $2`,
-    [zaloUserId, limit]
-  );
+
+  // Prefer customer_id so history spans every channel after a merge.
+  const customer = await getCustomerByExternalId(zaloUserId);
+  const result = customer
+    ? await pool.query(
+        `SELECT role, content, created_at FROM messages
+         WHERE customer_id = $1 ORDER BY created_at DESC LIMIT $2`,
+        [customer.id, limit]
+      )
+    : await pool.query(
+        `SELECT role, content, created_at FROM messages
+         WHERE zalo_user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+        [zaloUserId, limit]
+      );
   return result.rows.reverse();
 }
 
@@ -326,45 +485,38 @@ async function trackEvent(customerId, sessionId, eventType, eventData = {}) {
 }
 
 // ============================================================
-// LEGACY initDB — runs migration if tables don't exist
-// Just ensures the DB is usable on fresh start
+// initDB — migration runner
+// Applies every supabase/migrations/*.sql that hasn't run yet,
+// in filename order, recording each in _migrations.
 // ============================================================
 async function initDB() {
   if (!DB_ENABLED) {
     console.log('ℹ️  DATABASE_URL not set — running without database (no persistent memory/orders).');
     return;
   }
+  const fs = require('fs');
+  const path = require('path');
+  const dir = path.join(__dirname, '..', 'supabase', 'migrations');
   const client = await pool.connect();
+
   try {
-    // Check if new schema is already applied
-    const check = await client.query(`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables
-        WHERE table_name = 'ai_memories'
-      ) as exists`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS _migrations (
+        filename   TEXT PRIMARY KEY,
+        applied_at TIMESTAMPTZ DEFAULT NOW()
+      )`);
 
-    if (check.rows[0].exists) {
-      console.log('✅ Database schema up to date');
-      return;
+    // Databases migrated before the runner existed already have 001 applied.
+    const legacy = await client.query(
+      `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name='ai_memories') AS e`
+    );
+    if (legacy.rows[0].e) {
+      await client.query(
+        `INSERT INTO _migrations (filename) VALUES ('001_full_schema.sql') ON CONFLICT DO NOTHING`
+      );
     }
-
-    // ---- Auto-apply the migration on a fresh database ----
-    const fs = require('fs');
-    const path = require('path');
-    const sqlPath = path.join(__dirname, '..', 'supabase', 'migrations', '001_full_schema.sql');
-
-    if (!fs.existsSync(sqlPath)) {
-      console.error('❌ Migration file not found:', sqlPath);
-      return;
-    }
-
-    console.log('🔧 Fresh database detected — applying schema...');
-    let sql = fs.readFileSync(sqlPath, 'utf8');
 
     // Extensions are environment-dependent (Railway Postgres has no pgvector).
-    // Try them individually; adapt the script to whatever is available.
-    sql = sql.replace(/CREATE EXTENSION IF NOT EXISTS\s+"?[\w-]+"?\s*;/gi, '');
-
     let hasUuidOssp = false;
     try {
       await client.query('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"');
@@ -372,18 +524,45 @@ async function initDB() {
     } catch (e) {
       console.warn('⚠️  uuid-ossp unavailable → using built-in gen_random_uuid()');
     }
-    if (!hasUuidOssp) {
-      sql = sql.replace(/uuid_generate_v4\(\)/g, 'gen_random_uuid()');
-    }
-
     try {
       await client.query('CREATE EXTENSION IF NOT EXISTS vector');
     } catch (e) {
-      // pgvector not present — schema has no vector columns, safe to skip.
+      // pgvector not present — no vector columns in our schema, safe to skip.
     }
 
-    await client.query(sql);
-    console.log('✅ Schema applied — persistent memory, orders and analytics are live.');
+    if (!fs.existsSync(dir)) {
+      console.error('❌ Migrations folder not found:', dir);
+      return;
+    }
+
+    const done = new Set(
+      (await client.query('SELECT filename FROM _migrations')).rows.map(r => r.filename)
+    );
+    const files = fs.readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
+    const pending = files.filter(f => !done.has(f));
+
+    if (pending.length === 0) {
+      console.log('✅ Database schema up to date');
+      return;
+    }
+
+    for (const file of pending) {
+      let sql = fs.readFileSync(path.join(dir, file), 'utf8');
+      sql = sql.replace(/CREATE EXTENSION IF NOT EXISTS\s+"?[\w-]+"?\s*;/gi, '');
+      if (!hasUuidOssp) sql = sql.replace(/uuid_generate_v4\(\)/g, 'gen_random_uuid()');
+
+      console.log(`🔧 Applying migration ${file}...`);
+      await client.query('BEGIN');
+      try {
+        await client.query(sql);
+        await client.query('INSERT INTO _migrations (filename) VALUES ($1)', [file]);
+        await client.query('COMMIT');
+        console.log(`✅ ${file} applied`);
+      } catch (e) {
+        await client.query('ROLLBACK');
+        throw new Error(`${file}: ${e.message}`);
+      }
+    }
   } catch (err) {
     console.error('❌ DB init failed:', err.message);
     console.error('   Bot keeps running without persistence.');
@@ -396,6 +575,14 @@ module.exports = {
   pool,
   DB_ENABLED,
   initDB,
+  // Identity
+  getCustomerByExternalId,
+  linkIdentity,
+  getIdentities,
+  mergeCustomers,
+  setPhoneAndMerge,
+  normalizePhone,
+  parseKey,
   // Customer
   getCustomerByZaloId,
   getCustomer,

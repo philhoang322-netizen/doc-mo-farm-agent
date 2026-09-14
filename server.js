@@ -151,6 +151,28 @@ app.get('/debug/test-send', async (req, res) => {
   }
 });
 
+// GET /debug/identity?key=...&id=<any channel key> — see a customer's linked channels
+app.get('/debug/identity', async (req, res) => {
+  if (!debugAuth(req, res)) return;
+  try {
+    const customer = await db.getCustomerByExternalId(req.query.id);
+    if (!customer) return res.json({ found: false });
+    const identities = await db.getIdentities(customer.id);
+    const msgs = await db.pool.query(
+      'SELECT COUNT(*)::int AS n FROM messages WHERE customer_id=$1',
+      [customer.id]
+    );
+    res.json({
+      found: true,
+      customer: { id: customer.id, name: customer.display_name, phone: customer.phone, tier: customer.customer_tier },
+      identities,
+      message_count: msgs.rows[0].n,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /debug/knowledge?key=...&q=... — inspect the product knowledge base
 app.get('/debug/knowledge', (req, res) => {
   if (!debugAuth(req, res)) return;

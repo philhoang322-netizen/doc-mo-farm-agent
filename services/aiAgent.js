@@ -65,6 +65,8 @@ KHI KHÁCH ĐẶT HÀNG: Gọi tool create_order để tạo đơn hàng.
 KHI KHÁCH HỎI SẢN PHẨM: Gọi tool search_products để tìm.
 KHI KHÁCH HỎI CHI TIẾT (thành phần, cách dùng, bảo quản, ai dùng được, vì sao có cặn...): Gọi tool search_knowledge.
 KHI BIẾT THÔNG TIN MỚI VỀ KHÁCH (tên, số điện thoại, địa chỉ, sở thích): Gọi tool save_memory.
+SỐ ĐIỆN THOẠI: nếu khách hỏi mua hoặc quan tâm nghiêm túc, hãy hỏi số điện thoại một cách
+tự nhiên (để farm tiện liên hệ và giữ lịch sử đơn). Lưu ngay bằng save_memory với key "so_dien_thoai".
 
 QUAN TRỌNG: Chỉ nói những gì có trong tài liệu trên. Không tự nghĩ ra công dụng,
 thành phần hay con số. Không hứa chữa bệnh. Nếu không biết, nói thật là sẽ hỏi lại farm.`;
@@ -116,6 +118,7 @@ const tools = [
           },
           description: 'Danh sách sản phẩm đặt mua'
         },
+        customer_phone: { type: 'string', description: 'Số điện thoại khách (rất nên hỏi khi chốt đơn)' },
         delivery_address: { type: 'string', description: 'Địa chỉ giao hàng' },
         customer_note: { type: 'string', description: 'Ghi chú của khách' },
         payment_method: {
@@ -189,6 +192,9 @@ async function executeTool(toolName, toolInput, customer) {
 
     if (toolName === 'create_order') {
       if (!customer) return 'Chưa xác định được khách hàng.';
+      if (toolInput.customer_phone) {
+        await db.setPhoneAndMerge(customer.id, toolInput.customer_phone);
+      }
       const order = await db.createOrderNew(
         customer.id,
         toolInput.items,
@@ -209,6 +215,20 @@ async function executeTool(toolName, toolInput, customer) {
         toolInput.memory_value,
         toolInput.importance || 3
       );
+
+      // A phone number is the one fact that can prove an OA chat and a Bot
+      // chat are the same person — use it to merge their histories.
+      const key = String(toolInput.memory_key || '').toLowerCase();
+      const looksLikePhone = /phone|dien_thoai|điện thoại|sdt|sđt|so_dt/.test(key);
+      if (looksLikePhone) {
+        const phone = db.normalizePhone(toolInput.memory_value);
+        if (phone) {
+          const survivor = await db.setPhoneAndMerge(customer.id, phone);
+          if (survivor && survivor !== customer.id) {
+            return `Đã lưu số điện thoại và nhận ra đây là khách cũ — đã gộp lịch sử hai kênh.`;
+          }
+        }
+      }
       return `Đã lưu: ${toolInput.memory_key}`;
     }
 
@@ -238,8 +258,8 @@ async function executeTool(toolName, toolInput, customer) {
 // Called from webhook for every incoming Zalo message
 // ============================================================
 async function respond(zaloUserId, userMessage, sessionId = null) {
-  // 1. Load customer context
-  const customer = await db.getCustomerByZaloId(zaloUserId);
+  // 1. Load customer context (resolves across channels)
+  const customer = await db.getCustomerByExternalId(zaloUserId);
   let memories = [], recentOrders = [], preferences = [];
 
   if (customer) {
