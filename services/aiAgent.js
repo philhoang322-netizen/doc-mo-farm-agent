@@ -237,10 +237,17 @@ async function executeTool(toolName, toolInput, customer, zaloUserId) {
       );
       const total = toolInput.items.reduce((s, i) => s + i.quantity * i.unit_price, 0);
       // Flag it so the farm gets a Zalo ping about the new order.
+      // Carry the SKU through so KiotViet can match the product by code.
+      const withSku = (toolInput.items || []).map(i => {
+        const hit = catalog.rows().find(p =>
+          p.name_vi && i.product_name &&
+          p.name_vi.toLowerCase().includes(String(i.product_name).toLowerCase().slice(0, 12)));
+        return { ...i, sku: i.sku || hit?.sku || null };
+      });
       pendingOrder.set(zaloUserId, {
         order_number: order.order_number,
         total,
-        items: toolInput.items,
+        items: withSku,
         phone: toolInput.customer_phone || customer.phone || null,
         address: toolInput.delivery_address || null,
         note: toolInput.customer_note || null,

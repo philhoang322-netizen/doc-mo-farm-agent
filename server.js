@@ -405,6 +405,7 @@ app.post('/bot/webhook', async (req, res) => {
       msgId: evt.messageId,
       senderName: evt.senderName,
       send: (to, text) => botService.sendMessage(to, text),
+      sendPhoto: (to, url, caption) => botService.sendPhoto(to, url, caption),
       typing: (to) => botService.sendTyping(to),
       log: logEvent,
     });

@@ -10,6 +10,8 @@ const knowledge = require('./knowledge');
 const zaloService = require('./zaloService');
 const botService = require('./zaloBotService');
 const ops = require('./ops');
+const vietqr = require('./vietqr');
+const kiotviet = require('./kiotviet');
 
 const DEFAULT_INTERVAL_H = Number(process.env.HEALTH_CHECK_INTERVAL_HOURS || 24);
 const FIRST_RUN_DELAY_MS = 60 * 1000; // let the app finish booting
@@ -27,6 +29,8 @@ async function gather() {
     oa_token_present: !!zaloService.getTokens().accessToken,
     oa_last_error: zaloService.getLastError(),
     active_locks: ops.activeLocks(),
+    vietqr_configured: vietqr.configured(),
+    kiotviet: await kiotviet.ping(),
   };
 
   if (db.DB_ENABLED) {
@@ -92,6 +96,12 @@ function findProblems(h) {
   }
   if (h.migrations && !h.migrations.includes('002_identities.sql')) {
     p.push('Migration 002 chưa chạy.');
+  }
+  if (h.kiotviet?.enabled && h.kiotviet.ok === false) {
+    p.push(`KiotViet không gọi được: ${h.kiotviet.error || 'không rõ'} — đơn sẽ phải nhập tay.`);
+  }
+  if (h.active_locks > 50) {
+    p.push(`${h.active_locks} khoá đang treo — có thể một câu trả lời bị kẹt.`);
   }
   return p;
 }

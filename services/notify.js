@@ -59,6 +59,20 @@ async function newOrder(o) {
   ];
   if (o.address) lines.push(`📍 ${o.address}`);
   if (o.note) lines.push(`📝 ${o.note}`);
+
+  if (o.kiot) {
+    if (o.kiot.ok) {
+      lines.push('', `🧾 KiotViet: đã tạo đơn ${o.kiot.kiotOrderCode || ''}`.trim());
+    } else if (o.kiot.missing?.length) {
+      lines.push(
+        '',
+        `⚠️ Chưa đẩy được sang KiotViet — thiếu hàng hoá: ${o.kiot.missing.join(', ')}`,
+        'Thêm sản phẩm vào KiotViet với đúng mã, rồi tạo đơn tay lần này.'
+      );
+    } else if (o.kiot.error && o.kiot.error !== 'KiotViet tắt') {
+      lines.push('', `⚠️ KiotViet lỗi: ${o.kiot.error}`, 'Cần tạo đơn tay trên KiotViet.');
+    }
+  }
   return send(lines.join('\n'));
 }
 

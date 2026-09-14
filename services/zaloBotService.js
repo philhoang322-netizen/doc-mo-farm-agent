@@ -59,6 +59,20 @@ async function sendMessage(chatId, text) {
   return last;
 }
 
+/** Send an image by URL, with an optional caption. */
+async function sendPhoto(chatId, photoUrl, caption) {
+  if (!chatId || !photoUrl) return null;
+  const payload = { chat_id: String(chatId), photo: photoUrl };
+  if (caption) payload.caption = String(caption).slice(0, MAX_MSG_LEN);
+  const res = await call('sendPhoto', payload);
+  // Not every bot tier supports photos — fall back to a link so the
+  // customer still gets their payment QR.
+  if (!res) {
+    return sendMessage(chatId, `${caption ? caption + '\n\n' : ''}${photoUrl}`);
+  }
+  return res;
+}
+
 /** Typing indicator (best effort — ignored if unsupported). */
 async function sendTyping(chatId) {
   return call('sendChatAction', { chat_id: String(chatId), action: 'typing' });
@@ -109,6 +123,7 @@ function parseTextEvent(body) {
 module.exports = {
   getMe,
   sendMessage,
+  sendPhoto,
   sendTyping,
   setWebhook,
   getWebhookInfo,

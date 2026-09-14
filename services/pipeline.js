@@ -9,6 +9,8 @@ const db = require('./database');
 const ops = require('./ops');
 const aiAgent = require('./aiAgent');
 const notify = require('./notify');
+const vietqr = require('./vietqr');
+const kiotviet = require('./kiotviet');
 
 const FALLBACK_REPLY =
   'Dạ farm đang bận xử lý một chút, bạn nhắn lại giúp mình sau ít phút nha 🌿 ' +
@@ -74,8 +76,10 @@ async function handleMessage(p) {
         send_ok: !!sent,
       });
 
-      // 4. Tell the farm about anything that needs a person.
-      if (newOrder) await notify.newOrder(newOrder);
+      // 4. Order follow-through: pay-by-QR for the customer, POS + alert for the farm.
+      if (newOrder) {
+        await afterOrder(newOrder, p, log);
+      }
       if (handoff) await notify.handoff(handoff, customer, p.text);
 
       return { ok: true, tokensUsed, handoff: !!handoff, order: newOrder?.order_number || null };
@@ -88,6 +92,44 @@ async function handleMessage(p) {
       return { ok: false, error: err.message };
     }
   });
+}
+
+/**
+ * Everything that happens once an order exists: send the customer a VietQR
+ * payment code, push the order into KiotViet, and tell the farm.
+ *
+ * Runs after the reply has already been delivered, and each step is wrapped
+ * on its own — a POS outage must not cost the customer their confirmation.
+ */
+async function afterOrder(order, p, log) {
+  // a) Payment QR — skip for cash on delivery, it would only confuse.
+  try {
+    const cod = String(order.payment || 'cod').toLowerCase() === 'cod';
+    const url = vietqr.imageUrl(order.total, order.order_number);
+    if (!cod && url) {
+      if (p.sendPhoto) await p.sendPhoto(p.replyTo, url, vietqr.caption(order));
+      else await p.send(p.replyTo, `${vietqr.caption(order)}\n\n${url}`);
+      log({ type: 'qr_sent', order: order.order_number });
+    }
+  } catch (e) {
+    console.error('QR send failed:', e.message);
+  }
+
+  // b) KiotViet
+  let kiot = { ok: false, error: 'KiotViet tắt' };
+  if (kiotviet.enabled()) {
+    kiot = await kiotviet.pushOrder(order);
+    log({ type: 'kiotviet_push', order: order.order_number, ok: kiot.ok, error: kiot.error || null });
+    if (kiot.ok && db.DB_ENABLED) {
+      await db.pool.query(
+        `UPDATE orders SET description = COALESCE(description,'') || $2 WHERE order_number = $1`,
+        [order.order_number, ` [KiotViet: ${kiot.kiotOrderCode || 'đã tạo'}]`]
+      ).catch(() => {});
+    }
+  }
+
+  // c) Farm alert, including whatever went wrong with the POS push.
+  await notify.newOrder({ ...order, kiot });
 }
 
 /**
