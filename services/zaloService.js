@@ -93,7 +93,13 @@ async function postMessage(payload, attempt = 1) {
   }
 
   console.error('❌ Zalo send failed:', JSON.stringify(data));
+  lastError = data;
   return null;
+}
+
+let lastError = null;
+function getLastError() {
+  return lastError;
 }
 
 // Send text message via Zalo OA (chunks long texts)
@@ -158,4 +164,5 @@ module.exports = {
   refreshAccessToken,
   setTokens,
   getTokens,
+  getLastError,
 };

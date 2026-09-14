@@ -145,7 +145,7 @@ app.get('/debug/test-send', async (req, res) => {
   if (!debugAuth(req, res)) return;
   try {
     const result = await zaloService.sendTextMessage(req.query.uid, req.query.text || 'Test từ Dốc Mơ Farm bot 🌿');
-    res.json({ ok: !!result, zalo_response: result });
+    res.json({ ok: !!result, zalo_response: result, last_error: zaloService.getLastError() });
   } catch (e) {
     res.json({ ok: false, error: e.message });
   }
