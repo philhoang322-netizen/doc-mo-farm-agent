@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const crypto  = require('crypto');
 const zaloService = require('./services/zaloService');
+const botService  = require('./services/zaloBotService');
 const db          = require('./services/database');
 const aiAgent     = require('./services/aiAgent');
 const faqService  = require('./services/faqService');
@@ -20,7 +21,16 @@ db.initDB().catch(err => console.error('DB init error:', err));
 // HEALTH CHECK
 // ============================================================
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'Doc Mo Farm AI Agent', version: '2.0' });
+  res.json({
+    status: 'ok',
+    service: 'Doc Mo Farm AI Agent',
+    version: '3.0',
+    channels: {
+      oa_webhook: '/webhook',
+      bot_webhook: '/bot/webhook',
+      bot_enabled: !!process.env.ZALO_BOT_TOKEN,
+    },
+  });
 });
 
 // ============================================================
@@ -99,6 +109,7 @@ app.get('/webhook', (req, res) => {
 // DEBUG — ring buffer of recent webhook events + outcomes
 // ============================================================
 const lastEvents = [];
+const seenBotMessages = new Set();
 function logEvent(entry) {
   lastEvents.push({ at: new Date().toISOString(), ...entry });
   while (lastEvents.length > 30) lastEvents.shift();
@@ -137,6 +148,87 @@ app.get('/debug/test-send', async (req, res) => {
     res.json({ ok: !!result, zalo_response: result });
   } catch (e) {
     res.json({ ok: false, error: e.message });
+  }
+});
+
+// ============================================================
+// ZALO BOT API (free channel — no OA Tier Package required)
+// ============================================================
+
+// GET /bot/setup?key=... — register the bot webhook with Zalo
+app.get('/bot/setup', async (req, res) => {
+  if (!debugAuth(req, res)) return;
+  const url = req.query.url || `${process.env.PUBLIC_URL || 'https://docmofarm.com'}/bot/webhook`;
+  const secret = process.env.ZALO_BOT_WEBHOOK_SECRET || process.env.ZALO_WEBHOOK_TOKEN;
+  const result = await botService.setWebhook(url, secret);
+  const info = await botService.getWebhookInfo();
+  res.json({ ok: !!result, set: result, info });
+});
+
+// GET /bot/info?key=... — bot identity + current webhook registration
+app.get('/bot/info', async (req, res) => {
+  if (!debugAuth(req, res)) return;
+  const [me, webhook] = await Promise.all([botService.getMe(), botService.getWebhookInfo()]);
+  res.json({ me, webhook });
+});
+
+// GET /bot/test-send?key=...&chat=...&text=...
+app.get('/bot/test-send', async (req, res) => {
+  if (!debugAuth(req, res)) return;
+  const result = await botService.sendMessage(req.query.chat, req.query.text || 'Test Bot Dốc Mơ Farm 🌿');
+  res.json({ ok: !!result, response: result });
+});
+
+// POST /bot/webhook — inbound messages from the Zalo Bot API
+app.post('/bot/webhook', async (req, res) => {
+  // Answer fast; Zalo retries if we are slow.
+  res.status(200).json({ ok: true });
+
+  const secret = process.env.ZALO_BOT_WEBHOOK_SECRET || process.env.ZALO_WEBHOOK_TOKEN;
+  const got = req.headers['x-bot-api-secret-token'];
+  if (secret && got && got !== secret) {
+    logEvent({ type: 'bot_bad_secret' });
+    return;
+  }
+
+  logEvent({ type: 'bot_incoming', body: req.body });
+
+  const evt = botService.parseTextEvent(req.body);
+  if (!evt) {
+    logEvent({ type: 'bot_skipped', event_name: req.body?.event_name });
+    return;
+  }
+
+  // Drop duplicate deliveries of the same message
+  if (evt.messageId) {
+    if (seenBotMessages.has(evt.messageId)) return;
+    seenBotMessages.add(evt.messageId);
+    if (seenBotMessages.size > 500) {
+      seenBotMessages.delete(seenBotMessages.values().next().value);
+    }
+  }
+
+  try {
+    console.log(`🤖 [bot ${evt.chatId}] ${evt.text}`);
+    botService.sendTyping(evt.chatId).catch(() => {});
+
+    const userKey = `bot_${evt.chatId}`;
+    await db.getOrCreateCustomer(userKey, evt.senderName);
+    await db.saveMessage(userKey, 'user', evt.text);
+
+    const { text: aiReply, tokensUsed } = await aiAgent.respond(userKey, evt.text);
+
+    await db.saveMessage(userKey, 'assistant', aiReply, {
+      model: 'claude-sonnet-4-6',
+      tokensUsed,
+    });
+
+    const sent = await botService.sendMessage(evt.chatId, aiReply);
+    console.log(`✓ Bot replied [${tokensUsed} tokens]: ${aiReply.substring(0, 80)}...`);
+    logEvent({ type: 'bot_replied', to: evt.chatId, reply: aiReply.substring(0, 120), tokensUsed, send_ok: !!sent });
+  } catch (error) {
+    console.error('Bot webhook error:', error);
+    logEvent({ type: 'bot_error', error: error.message });
   }
 });
 
