@@ -55,6 +55,14 @@ async function render(key, opts = {}) {
     groups.get(r.product).push(r);
   }
 
+  // A product the farm sells but has written nothing about is the thing the
+  // bot will fail on, and it is invisible unless the page says so. Show those
+  // as empty groups rather than letting them silently not exist.
+  const missing = products
+    .map(p => p.name_vi)
+    .filter(n => !groups.has(n));
+  for (const n of missing) groups.set(n, []);
+
   const productOptions = [...new Set([
     ...products.map(p => p.name_vi),
     ...groups.keys(),
@@ -125,10 +133,26 @@ async function render(key, opts = {}) {
       </form>
     </div>`;
 
-  const sections = [...groups.entries()].map(([prod, list]) => `
-    <section class="group" data-group="${esc(norm(prod))}">
-      <h2>${esc(prod)} <span class="count">${list.length}</span></h2>
-      ${list.map(item).join('')}
+  // Products with nothing written come first: that is the work to do.
+  const ordered = [...groups.entries()].sort((a, b) => {
+    if (a[1].length === 0 && b[1].length > 0) return -1;
+    if (b[1].length === 0 && a[1].length > 0) return 1;
+    return a[0].localeCompare(b[0], 'vi');
+  });
+
+  const sections = ordered.map(([prod, list]) => `
+    <section class="group ${list.length ? '' : 'empty-group'}" data-group="${esc(norm(prod))}">
+      <h2>${esc(prod)}
+        <span class="count ${list.length ? '' : 'zero'}">${list.length || 'chưa có câu nào'}</span>
+      </h2>
+      ${list.length ? list.map(item).join('') : `
+        <div class="nudge">
+          Bot chưa biết gì về <b>${esc(prod)}</b> ngoài giá bán.
+          Khách hỏi chi tiết là nó phải nói "farm sẽ hỏi lại".
+          <a href="#them" onclick="document.getElementById('them').open=true;
+             document.querySelector('#them select').value=${JSON.stringify(prod)};">
+             Viết câu đầu tiên cho ${esc(prod)} →</a>
+        </div>`}
     </section>`).join('');
 
   const addForm = `
@@ -160,8 +184,9 @@ async function render(key, opts = {}) {
           --green:#4a7c59; --warn:#b8860b; --card:#fff; }
   * { box-sizing:border-box }
   body { margin:0; background:var(--bg); color:var(--ink);
-         font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
-  .wrap { max-width:860px; margin:0 auto; padding:0 16px 80px }
+         font:17px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+         -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:1100px; margin:0 auto; padding:0 24px 80px }
   header { position:sticky; top:0; z-index:20; background:var(--bg);
            padding:18px 0 12px; border-bottom:1px solid var(--line) }
   h1 { font-size:20px; margin:0 0 3px; font-weight:650 }
@@ -227,6 +252,12 @@ async function render(key, opts = {}) {
         background:var(--green); color:#fff; padding:11px 18px; border-radius:99px;
         font-size:14px; font-weight:600; box-shadow:0 6px 20px rgba(0,0,0,.18) }
   .empty { color:var(--soft); padding:26px 0; text-align:center }
+  .count.zero { background:#fdf3e0; color:var(--warn) }
+  .empty-group h2 { color:var(--warn) }
+  .nudge { background:var(--card); border:1px dashed #efdfba; border-radius:12px;
+           padding:16px 18px; color:var(--soft); font-size:15px; line-height:1.6 }
+  .nudge b { color:var(--ink) }
+  .nudge a { display:inline-block; margin-top:8px; font-weight:650 }
   .busy { opacity:.55; pointer-events:none }
   @media (max-width:640px){ .cols { grid-template-columns:1fr } }
   @media (prefers-reduced-motion:reduce){ * { transition:none !important; animation:none !important } }
@@ -236,8 +267,11 @@ ${flash ? `<div class="ok" id="flash">${esc(flash)}</div>` : ''}
 <div class="wrap">
   <header>
     <h1>Câu hỏi thường gặp</h1>
-    <div class="sub">${rows.length} câu · ${groups.size} nhóm ·
-      <a href="/admin?key=${encodeURIComponent(key)}">← Về trang quản trị</a></div>
+    <div class="sub">${rows.length} câu · ${groups.size} sản phẩm${
+      missing.length
+        ? ` · <b style="color:var(--warn)">${missing.length} sản phẩm chưa có câu nào</b>`
+        : ''
+    } · <a href="/admin?key=${encodeURIComponent(key)}">← Về trang quản trị</a></div>
     <div class="tools">
       <input id="q" class="in" type="search" placeholder="Tìm câu hỏi, nội dung, sản phẩm…"
              autocomplete="off" aria-label="Tìm trong FAQ">

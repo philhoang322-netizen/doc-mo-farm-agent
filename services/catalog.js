@@ -52,17 +52,60 @@ function touch() {
   if (Date.now() - cache.at > TTL_MS) refresh().catch(() => {});
 }
 
-/** The block injected into the system prompt. */
+const INLINE_LIMIT = 40; // products we can afford to list in full
+
+function line(p) {
+  const price = Number(p.sale_price || p.base_price).toLocaleString('vi');
+  const sale = p.sale_price ? ` (đang giảm từ ${Number(p.base_price).toLocaleString('vi')}đ)` : '';
+  const low = p.stock_qty != null && p.stock_qty > 0 && p.stock_qty <= 5
+    ? ' — sắp hết hàng' : '';
+  return `- ${p.name_vi} (${p.sku}): ${price}đ/${p.unit}${sale}${low}`;
+}
+
+/**
+ * The block injected into the system prompt.
+ *
+ * A farm with a few dozen products can carry its whole price list in every
+ * message. With several hundred that would cost thousands of tokens per reply
+ * and bury the useful context, so past a threshold the agent gets a map of the
+ * categories — what exists, roughly what it costs — and looks up the exact
+ * item with search_products. It must never quote a price from memory.
+ */
 function promptBlock() {
   touch();
-  const lines = rows().map(p => {
-    const price = Number(p.sale_price || p.base_price).toLocaleString('vi');
-    const sale = p.sale_price ? ` (đang giảm từ ${Number(p.base_price).toLocaleString('vi')}đ)` : '';
-    const low = p.stock_qty != null && p.stock_qty > 0 && p.stock_qty <= 5
-      ? ' — sắp hết hàng' : '';
-    return `- ${p.name_vi} (${p.sku}): ${price}đ/${p.unit}${sale}${low}`;
-  });
-  return `\nSản phẩm Doc Mo Farm (bảng giá chính thức, luôn dùng con số này):\n${lines.join('\n')}`;
+  const all = rows();
+
+  if (all.length <= INLINE_LIMIT) {
+    return `\nSản phẩm Doc Mo Farm (bảng giá chính thức, luôn dùng con số này):\n` +
+           all.map(line).join('\n');
+  }
+
+  const byCat = new Map();
+  for (const p of all) {
+    const c = p.category || 'Khác';
+    if (!byCat.has(c)) byCat.set(c, []);
+    byCat.get(c).push(p);
+  }
+
+  const summary = [...byCat.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([cat, list]) => {
+      const prices = list.map(p => Number(p.sale_price || p.base_price)).filter(n => n > 0);
+      const lo = Math.min(...prices), hi = Math.max(...prices);
+      const examples = list.slice(0, 4).map(p => p.name_vi).join(', ');
+      return `● ${cat} — ${list.length} mặt hàng, ${lo.toLocaleString('vi')}đ đến ${hi.toLocaleString('vi')}đ` +
+             `\n   ví dụ: ${examples}${list.length > 4 ? '…' : ''}`;
+    }).join('\n');
+
+  return `
+Doc Mo Farm đang bán ${all.length} mặt hàng, chia theo nhóm:
+${summary}
+
+BẮT BUỘC: bảng giá đầy đủ KHÔNG nằm ở đây. Khách hỏi bất kỳ sản phẩm nào,
+hoặc hỏi giá, hoặc hỏi farm có bán gì — PHẢI gọi tool search_products trước khi trả lời.
+TUYỆT ĐỐI KHÔNG đọc giá từ trí nhớ, không suy ra giá, không ước chừng.
+Nếu search_products không tìm thấy, nói thật là farm không có mặt hàng đó
+hoặc sẽ hỏi lại farm — đừng đoán.`;
 }
 
 module.exports = { refresh, rows, promptBlock, SEED };

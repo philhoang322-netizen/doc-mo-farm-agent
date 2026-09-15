@@ -55,6 +55,19 @@ async function render(key, flash = null) {
      FROM products ORDER BY is_available DESC, name_vi`
   );
 
+  let zones = [];
+  let shipTerms = '';
+  try {
+    zones = await q(
+      `SELECT id, name, keywords, fee, free_from, eta, is_active
+       FROM shipping_zones ORDER BY sort_order, name`
+    );
+    const t = await q(`SELECT value FROM app_state WHERE key = 'shipping_terms'`);
+    shipTerms = t[0]?.value || '';
+  } catch (e) {
+    // Migration 010 not applied yet.
+  }
+
   let lessons = [];
   let botRules = '';
   try {
@@ -213,52 +226,79 @@ async function render(key, flash = null) {
 <meta name="robots" content="noindex,nofollow">
 <title>Dốc Mơ Farm — Quản trị</title>
 <style>
-  :root { --bg:#faf8f5; --ink:#2c2a26; --soft:#8a8580; --line:#e8e3dc; --green:#4a7c59; --warn:#b8860b; }
+  :root { --bg:#faf8f5; --ink:#241f1a; --soft:#7d766e; --line:#e6e0d7; --green:#3f6b4c;
+          --warn:#a8760a; --card:#fff;
+          --sp:20px; --radius:14px; }
   * { box-sizing:border-box }
+  /* 17px base: this is read on a laptop across a room and on a phone in a
+     packing shed. The old 15px with 11px labels was genuinely hard to read. */
   body { margin:0; background:var(--bg); color:var(--ink);
-         font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
-  header { padding:20px 16px 8px; }
-  h1 { font-size:20px; margin:0 0 2px; font-weight:650 }
-  .sub { color:var(--soft); font-size:12px }
-  .wrap { padding:0 16px 40px; max-width:960px; margin:0 auto }
-  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; margin:16px 0 24px }
-  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px 14px }
-  .card .lbl { font-size:11px; color:var(--soft); text-transform:uppercase; letter-spacing:.04em }
-  .card .val { font-size:22px; font-weight:650; margin-top:2px }
+         font:17px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+         -webkit-font-smoothing:antialiased; }
+  header { padding:26px 0 14px; border-bottom:1px solid var(--line); margin-bottom:8px }
+  h1 { font-size:26px; margin:0 0 4px; font-weight:680; letter-spacing:-.015em }
+  .sub { color:var(--soft); font-size:14px }
+  /* Was capped at 960px, which left half of a desktop screen empty while the
+     tables inside were cramped. 1440 is wide enough to use the screen and
+     narrow enough that rows stay scannable. */
+  .wrap { padding:0 28px 64px; max-width:1440px; margin:0 auto }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+           gap:14px; margin:22px 0 34px }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+          padding:16px 18px }
+  .card .lbl { font-size:12px; color:var(--soft); text-transform:uppercase; letter-spacing:.06em;
+               font-weight:600 }
+  .card .val { font-size:30px; font-weight:680; margin-top:4px; letter-spacing:-.02em;
+               font-variant-numeric:tabular-nums }
   .card .val.green { color:var(--green) } .card .val.warn { color:var(--warn) }
-  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.05em; color:var(--soft);
-       margin:28px 0 10px; font-weight:600 }
-  table { width:100%; border-collapse:collapse; background:#fff;
-          border:1px solid var(--line); border-radius:12px; overflow:hidden }
-  th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.04em;
-       color:var(--soft); padding:10px 12px; border-bottom:1px solid var(--line); font-weight:600 }
-  td { padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:top }
+  h2 { font-size:15px; text-transform:uppercase; letter-spacing:.07em; color:var(--soft);
+       margin:38px 0 14px; font-weight:650; display:flex; align-items:center; gap:10px }
+  table { width:100%; border-collapse:collapse; background:var(--card);
+          border:1px solid var(--line); border-radius:var(--radius); overflow:hidden }
+  th { text-align:left; font-size:12px; text-transform:uppercase; letter-spacing:.05em;
+       color:var(--soft); padding:13px 16px; border-bottom:1px solid var(--line); font-weight:650 }
+  td { padding:14px 16px; border-bottom:1px solid var(--line); vertical-align:top; font-size:16px }
   tr:last-child td { border-bottom:none }
+  tbody tr:hover { background:#fdfcfa }
   .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap }
-  code { font-size:12px; background:#f2efe9; padding:1px 5px; border-radius:4px }
-  .tag { font-size:11px; background:#eef2ee; color:var(--green); padding:2px 7px; border-radius:20px }
-  .tag.warn { background:#fdf4e3; color:var(--warn) }
-  .msg { background:#fff; border:1px solid var(--line); border-radius:10px; padding:9px 12px; margin-bottom:8px }
-  .msg.assistant { background:#f6f8f6 }
-  .msg .who { font-size:11px; color:var(--soft); margin-bottom:3px }
-  .msg .body { white-space:pre-wrap; font-size:14px }
+  code { font-size:14px; background:#f3f0ea; padding:2px 7px; border-radius:5px;
+         font-family:ui-monospace,SFMono-Regular,Menlo,monospace }
+  .tag { font-size:12px; background:#eaf1ec; color:var(--green); padding:3px 10px;
+         border-radius:20px; font-weight:600; white-space:nowrap }
+  .tag.warn { background:#fdf3e0; color:var(--warn) }
+  .msg { background:var(--card); border:1px solid var(--line); border-radius:12px;
+         padding:13px 16px; margin-bottom:10px; max-width:74ch }
+  .msg.assistant { background:#f5f8f5 }
+  .msg .who { font-size:12px; color:var(--soft); margin-bottom:5px; font-weight:600 }
+  .msg .body { white-space:pre-wrap; font-size:16px; line-height:1.6 }
   .scroll { max-height:520px; overflow:auto }
   form.inline { margin:0 }
-  select, .in { font:inherit; color:inherit; background:#fff; border:1px solid var(--line);
-                border-radius:7px; padding:5px 7px; width:100% }
-  .in.name { font-weight:600 }
-  button { font:inherit; font-weight:600; background:var(--green); color:#fff; border:0;
-           border-radius:8px; padding:7px 16px; cursor:pointer }
-  .prods { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px }
-  .prod { background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px }
-  .prod.off { opacity:.55 }
-  .prod.new { border-style:dashed }
-  .prod-head { display:flex; gap:8px; align-items:center; margin-bottom:8px }
-  .prod-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px }
-  .prod-grid label { font-size:11px; color:var(--soft) }
-  .prod-foot { display:flex; justify-content:space-between; align-items:center; margin-top:10px; gap:8px }
-  .chk { font-size:13px; display:flex; gap:5px; align-items:center }
-  .chk input { width:auto }
+  select, .in { font:inherit; font-size:16px; color:inherit; background:var(--card);
+                border:1px solid var(--line); border-radius:9px; padding:9px 11px; width:100%;
+                transition:border-color .2s, box-shadow .2s }
+  .in:hover, select:hover { border-color:#d4ccbf }
+  .in:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible,
+  summary:focus-visible { outline:2px solid var(--green); outline-offset:2px }
+  .in.name { font-weight:650; font-size:17px }
+  input[type=number].in { font-variant-numeric:tabular-nums }
+  /* 44px minimum: these get tapped on a phone with one hand while packing. */
+  button { font:inherit; font-size:16px; font-weight:650; background:var(--green); color:#fff;
+           border:1px solid transparent; border-radius:10px; padding:11px 20px; cursor:pointer;
+           min-height:44px; transition:filter .2s, transform .08s }
+  button:hover { filter:brightness(1.08) }
+  button:active { transform:translateY(1px) }
+  .prods { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:14px }
+  .prod { background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+          padding:16px }
+  .prod.off { opacity:.5 }
+  .prod.new { border-style:dashed; background:transparent }
+  .prod-head { display:flex; gap:10px; align-items:center; margin-bottom:12px }
+  .prod-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px }
+  .prod-grid label { font-size:12px; color:var(--soft); font-weight:600 }
+  .prod-foot { display:flex; justify-content:space-between; align-items:center;
+               margin-top:14px; gap:10px; flex-wrap:wrap }
+  .chk { font-size:15px; display:flex; gap:8px; align-items:center; cursor:pointer }
+  .chk input { width:auto; min-height:auto; width:18px; height:18px; accent-color:var(--green) }
   /* Fixed, not inline: the farm is usually scrolled far down when they save,
      and a banner at the top of the document would go unseen. */
   .ok { position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:99;
@@ -274,7 +314,14 @@ async function render(key, flash = null) {
   .teach label, .prod label.sub { display:block; font-size:11px; color:var(--soft) }
   .teach label input, .teach label textarea { margin-top:3px }
   .prod label.sub + label.sub { margin-top:8px }
-  @media (max-width:600px){ .card .val{font-size:19px} td,th{padding:8px 9px} }
+  @media (max-width:760px){
+    .wrap { padding:0 16px 48px }
+    h1 { font-size:22px }
+    .card .val { font-size:24px }
+    td, th { padding:11px 12px }
+    .prod-grid { grid-template-columns:1fr }
+  }
+  @media (prefers-reduced-motion:reduce){ * { transition:none !important; animation:none !important } }
 </style></head>
 <body>
 <header class="wrap">
@@ -304,6 +351,49 @@ async function render(key, flash = null) {
   <h2>Đơn hàng</h2>
   <table><thead><tr><th>Mã</th><th>Khách</th><th class="num">Tổng</th><th>Trạng thái</th><th>Lúc</th></tr></thead>
   <tbody>${rowsOrders || '<tr><td colspan="5" class="sub">Chưa có đơn nào.</td></tr>'}</tbody></table>
+
+  <h2 id="giaohang">Giao hàng — bot dùng đúng con số này khi khách hỏi</h2>
+  <div class="prods">
+    ${zones.map(z => `
+      <form method="post" action="/admin/shipping" class="prod ${z.is_active ? '' : 'off'}">
+        <input type="hidden" name="key" value="${esc(key)}">
+        <input type="hidden" name="id" value="${esc(z.id)}">
+        <input name="name" class="in name" value="${esc(z.name)}">
+        <div class="prod-grid">
+          <label>Phí ship<input name="fee" type="number" step="1000" value="${Number(z.fee)}" class="in"></label>
+          <label>Freeship từ<input name="free_from" type="number" step="10000" value="${z.free_from ?? ''}" placeholder="—" class="in"></label>
+          <label>Thời gian<input name="eta" value="${esc(z.eta || '')}" placeholder="2-3 ngày" class="in"></label>
+          <label>Đang dùng<input type="checkbox" name="is_active" ${z.is_active ? 'checked' : ''}></label>
+        </div>
+        <label class="sub">Từ khoá nhận diện khu vực (cách nhau bởi dấu phẩy)
+          <input name="keywords" class="in" value="${esc(z.keywords || '')}"></label>
+        <div class="prod-foot">
+          <button type="submit" name="delete" value="1" class="danger">Xoá</button>
+          <button type="submit">Lưu</button>
+        </div>
+      </form>`).join('')}
+
+    <form method="post" action="/admin/shipping" class="prod new">
+      <input type="hidden" name="key" value="${esc(key)}">
+      <input name="name" class="in name" placeholder="Tên khu vực mới" required>
+      <div class="prod-grid">
+        <label>Phí ship<input name="fee" type="number" step="1000" placeholder="0" class="in" required></label>
+        <label>Freeship từ<input name="free_from" type="number" step="10000" placeholder="—" class="in"></label>
+        <label>Thời gian<input name="eta" placeholder="2-3 ngày" class="in"></label>
+      </div>
+      <label class="sub">Từ khoá nhận diện<input name="keywords" class="in" placeholder="da nang, hue, quang nam"></label>
+      <div class="prod-foot"><span class="sub">Thêm khu vực</span><button type="submit">Thêm</button></div>
+    </form>
+  </div>
+
+  <form method="post" action="/admin/rules" style="margin-top:12px">
+    <input type="hidden" name="key" value="${esc(key)}">
+    <input type="hidden" name="which" value="shipping_terms">
+    <label class="sub">Điều kiện khác: đơn tối thiểu, COD, đóng gói, ngày gửi hàng
+      <textarea name="rules" class="in" rows="5">${esc(shipTerms)}</textarea></label>
+    <div class="prod-foot"><span class="sub">Bot đọc nguyên văn phần này</span>
+      <button type="submit">Lưu điều kiện</button></div>
+  </form>
 
   <h2 id="quytac">Quy tắc chung cho bot</h2>
   ${rulesForm}

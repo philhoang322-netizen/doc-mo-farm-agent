@@ -6,6 +6,7 @@ const ops = require('./ops');
 const catalog = require('./catalog');
 const honorific = require('./honorific');
 const drift = require('./drift');
+const shipping = require('./shipping');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -35,6 +36,7 @@ NGUYÊN TẮC GIAO TIẾP:
 - Không hứa hẹn điều trị bệnh
 - Dùng emoji nhẹ nhàng khi phù hợp 🌿
 ${catalog.promptBlock()}
+${shipping.promptBlock()}
 ${knowledge.systemPromptBlock()}${knowledge.taughtPromptBlock()}
 
 KHI KHÁCH ĐẶT HÀNG: Gọi tool create_order để tạo đơn hàng.
@@ -241,6 +243,20 @@ const tools = [
     }
   },
   {
+    name: 'check_shipping',
+    description:
+      'Tra phí giao hàng và thời gian cho một khu vực cụ thể. Dùng khi khách nói rõ nơi nhận ' +
+      '(tỉnh, quận, thành phố), nhất là lúc sắp chốt đơn.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        place: { type: 'string', description: 'Nơi khách nhận hàng, vd: "Quận 7", "Đà Nẵng", "Biên Hoà"' },
+        order_total: { type: 'number', description: 'Tổng tiền hàng, để biết có đủ miễn phí ship chưa' },
+      },
+      required: ['place'],
+    },
+  },
+  {
     name: 'log_interest',
     description:
       'Ghi nhận khách đang quan tâm sản phẩm nào và đang ở bước nào. Gọi NGAY khi khách ' +
@@ -341,6 +357,10 @@ async function executeTool(toolName, toolInput, customer, zaloUserId) {
       return result.rows.map(p =>
         `${p.name_vi}: ${Number(p.base_price).toLocaleString('vi')}đ/${p.unit}`
       ).join('\n');
+    }
+
+    if (toolName === 'check_shipping') {
+      return shipping.quote(toolInput.place, toolInput.order_total || 0);
     }
 
     if (toolName === 'log_interest') {

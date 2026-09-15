@@ -18,6 +18,7 @@ const state       = require('./services/state');
 const faqPage     = require('./services/faqPage');
 const rewrite     = require('./services/rewrite');
 const followup    = require('./services/followup');
+const shipping    = require('./services/shipping');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -33,6 +34,7 @@ db.initDB()
   .then(() => ops.pruneEvents(3))
   .then(() => catalog.refresh())
   .then(() => knowledge.refreshTaught())
+  .then(() => shipping.refresh())
   .catch(err => console.error('Startup error:', err));
 
 // ============================================================
@@ -325,12 +327,55 @@ app.post('/admin/lesson', async (req, res) => {
   }
 });
 
-// POST /admin/rules — house rules applied to every reply.
+// POST /admin/shipping — add, edit or remove one delivery zone.
+app.post('/admin/shipping', async (req, res) => {
+  const key = req.body.key;
+  if (key !== process.env.ZALO_WEBHOOK_TOKEN) return res.status(403).send('Forbidden');
+  const back = (msg) =>
+    res.redirect(`/admin?key=${encodeURIComponent(key)}&ok=${encodeURIComponent(msg)}#giaohang`);
+  try {
+    const num = (v) => (v === '' || v == null ? null : Number(v));
+    const active = req.body.is_active === 'on';
+
+    if (req.body.id && req.body.delete) {
+      await db.pool.query('DELETE FROM shipping_zones WHERE id=$1', [req.body.id]);
+      await shipping.refresh();
+      return back('Đã xoá khu vực');
+    }
+    if (!req.body.name?.trim()) return back('Thiếu tên khu vực');
+
+    if (req.body.id) {
+      await db.pool.query(
+        `UPDATE shipping_zones SET name=$2, keywords=$3, fee=$4, free_from=$5,
+                                   eta=$6, is_active=$7, updated_at=NOW()
+         WHERE id=$1`,
+        [req.body.id, req.body.name.trim(), req.body.keywords || null,
+         num(req.body.fee) ?? 0, num(req.body.free_from), req.body.eta || null, active]
+      );
+    } else {
+      await db.pool.query(
+        `INSERT INTO shipping_zones (name, keywords, fee, free_from, eta)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [req.body.name.trim(), req.body.keywords || null,
+         num(req.body.fee) ?? 0, num(req.body.free_from), req.body.eta || null]
+      );
+    }
+    await shipping.refresh();
+    return back('Đã lưu khu vực giao hàng');
+  } catch (e) {
+    return back(`Lỗi: ${e.message}`);
+  }
+});
+
+// POST /admin/rules — house rules, or the delivery terms block.
 app.post('/admin/rules', async (req, res) => {
   const key = req.body.key;
   if (key !== process.env.ZALO_WEBHOOK_TOKEN) return res.status(403).send('Forbidden');
   try {
-    await state.set('bot_rules', String(req.body.rules || '').slice(0, 4000));
+    // The same form handles two different text blocks; `which` says so.
+    const target = req.body.which === 'shipping_terms' ? 'shipping_terms' : 'bot_rules';
+    await state.set(target, String(req.body.rules || '').slice(0, 4000));
+    if (target === 'shipping_terms') await shipping.refresh();
     await knowledge.refreshTaught();
     res.redirect(`/admin?key=${encodeURIComponent(key)}&ok=${encodeURIComponent('Đã lưu quy tắc')}`);
   } catch (e) {
