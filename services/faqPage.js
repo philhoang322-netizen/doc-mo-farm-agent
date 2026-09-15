@@ -180,17 +180,21 @@ async function render(key, opts = {}) {
 <meta name="robots" content="noindex,nofollow">
 <title>FAQ — Dốc Mơ Farm</title>
 <style>
-  :root { --bg:#faf8f5; --ink:#2c2a26; --soft:#8a8580; --line:#e8e3dc;
+  :root { --bg:#faf8f5; --ink:#100d0a; --soft:#3a352e; --line:#e8e3dc;
           --green:#4a7c59; --warn:#b8860b; --card:#fff; }
   * { box-sizing:border-box }
   body { margin:0; background:var(--bg); color:var(--ink);
-         font:17px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+         font:18px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
          -webkit-font-smoothing:antialiased; }
-  .wrap { max-width:1100px; margin:0 auto; padding:0 24px 80px }
+  /* Same width as /admin so the two pages don't jump when you switch. */
+  .wrap { max-width:1440px; margin:0 auto; padding:0 28px 80px }
+  /* Answers stay in a readable column even though the page is wide —
+     a 1400px line of text is hard to track back to the next line. */
+  .faq-body, details.faq > div { max-width:88ch }
   header { position:sticky; top:0; z-index:20; background:var(--bg);
            padding:18px 0 12px; border-bottom:1px solid var(--line) }
-  h1 { font-size:20px; margin:0 0 3px; font-weight:650 }
-  .sub { color:var(--soft); font-size:13px }
+  h1 { font-size:21px; margin:0 0 3px; font-weight:650 }
+  .sub { color:var(--soft); font-size:14px }
   a { color:var(--green) }
   .tools { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap }
   #q { flex:1; min-width:200px }
@@ -207,9 +211,9 @@ async function render(key, opts = {}) {
            text-decoration:none; display:inline-flex; align-items:center }
   .danger { background:transparent; color:#a33; border-color:#e3cccc }
   button:hover, .btn:hover { filter:brightness(.96); transition:filter .2s }
-  h2 { font-size:15px; margin:26px 0 8px; font-weight:650;
+  h2 { font-size:16px; margin:26px 0 8px; font-weight:650;
        display:flex; align-items:center; gap:8px }
-  .count { font-size:11px; font-weight:600; color:var(--soft);
+  .count { font-size:14px; font-weight:600; color:var(--soft);
            background:var(--line); border-radius:99px; padding:2px 8px }
   details.faq { background:var(--card); border:1px solid var(--line);
                 border-radius:12px; margin-bottom:8px; overflow:hidden }
@@ -220,16 +224,16 @@ async function render(key, opts = {}) {
   details.faq[open] > summary::before { content:'▾' }
   details.faq[open] > summary { border-bottom:1px solid var(--line); background:#fcfbf9 }
   .q { font-weight:600 }
-  .tag.off { font-size:11px; background:#f2efe9; color:var(--soft);
+  .tag.off { font-size:14px; background:#f2efe9; color:var(--soft);
              padding:1px 8px; border-radius:99px; margin-left:auto }
   .ans { padding:14px 15px }
   .grid { display:grid; gap:12px }
-  label { display:block; font-size:12px; color:var(--soft) }
+  label { display:block; font-size:14px; color:var(--soft) }
   label .in, label select { margin-top:5px }
   .row { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap }
   .row.end { justify-content:flex-end }
   .grow { flex:1; min-width:180px }
-  .chk { display:flex; align-items:center; gap:6px; font-size:14px; color:var(--ink);
+  .chk { display:flex; align-items:center; gap:6px; font-size:15px; color:var(--ink);
          padding-bottom:10px }
   .chk input { width:auto; min-height:auto }
   details.add { background:var(--card); border:1px dashed var(--line);
@@ -238,11 +242,11 @@ async function render(key, opts = {}) {
   details.add[open] > summary { border-bottom:1px solid var(--line) }
   details.add .grid { padding:14px 15px }
   .proposal { border:1px solid var(--green); border-radius:12px; padding:14px; background:#f7faf7 }
-  .warnhead { font-size:13px; margin-bottom:10px }
+  .warnhead { font-size:14px; margin-bottom:10px }
   .warn { background:#fdf4e3; border:1px solid #efdfba; color:#7a5c12;
-          padding:9px 11px; border-radius:9px; font-size:13px; margin-bottom:12px }
+          padding:9px 11px; border-radius:9px; font-size:14px; margin-bottom:12px }
   .cols { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px }
-  .collab { font-size:11px; color:var(--soft); text-transform:uppercase;
+  .collab { font-size:14px; color:var(--soft); text-transform:uppercase;
             letter-spacing:.05em; margin-bottom:4px; font-weight:600 }
   .collab.new { color:var(--green) }
   pre { margin:0; white-space:pre-wrap; word-break:break-word; font:inherit;
@@ -250,12 +254,12 @@ async function render(key, opts = {}) {
   pre.new { border-color:#cfe3d5; background:#fff }
   .ok { position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:99;
         background:var(--green); color:#fff; padding:11px 18px; border-radius:99px;
-        font-size:14px; font-weight:600; box-shadow:0 6px 20px rgba(0,0,0,.18) }
+        font-size:15px; font-weight:600; box-shadow:0 6px 20px rgba(0,0,0,.18) }
   .empty { color:var(--soft); padding:26px 0; text-align:center }
   .count.zero { background:#fdf3e0; color:var(--warn) }
   .empty-group h2 { color:var(--warn) }
   .nudge { background:var(--card); border:1px dashed #efdfba; border-radius:12px;
-           padding:16px 18px; color:var(--soft); font-size:15px; line-height:1.6 }
+           padding:16px 18px; color:var(--soft); font-size:16px; line-height:1.6 }
   .nudge b { color:var(--ink) }
   .nudge a { display:inline-block; margin-top:8px; font-weight:650 }
   .busy { opacity:.55; pointer-events:none }

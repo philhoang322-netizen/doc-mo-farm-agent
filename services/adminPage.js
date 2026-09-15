@@ -226,18 +226,18 @@ async function render(key, flash = null) {
 <meta name="robots" content="noindex,nofollow">
 <title>Dốc Mơ Farm — Quản trị</title>
 <style>
-  :root { --bg:#faf8f5; --ink:#241f1a; --soft:#7d766e; --line:#e6e0d7; --green:#3f6b4c;
+  :root { --bg:#faf8f5; --ink:#100d0a; --soft:#3a352e; --line:#e6e0d7; --green:#3f6b4c;
           --warn:#a8760a; --card:#fff;
           --sp:20px; --radius:14px; }
   * { box-sizing:border-box }
   /* 17px base: this is read on a laptop across a room and on a phone in a
      packing shed. The old 15px with 11px labels was genuinely hard to read. */
   body { margin:0; background:var(--bg); color:var(--ink);
-         font:17px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+         font:18px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
          -webkit-font-smoothing:antialiased; }
   header { padding:26px 0 14px; border-bottom:1px solid var(--line); margin-bottom:8px }
-  h1 { font-size:26px; margin:0 0 4px; font-weight:680; letter-spacing:-.015em }
-  .sub { color:var(--soft); font-size:14px }
+  h1 { font-size:27px; margin:0 0 4px; font-weight:680; letter-spacing:-.015em }
+  .sub { color:var(--soft); font-size:15px }
   /* Was capped at 960px, which left half of a desktop screen empty while the
      tables inside were cramped. 1440 is wide enough to use the screen and
      narrow enough that rows stay scannable. */
@@ -246,43 +246,43 @@ async function render(key, flash = null) {
            gap:14px; margin:22px 0 34px }
   .card { background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
           padding:16px 18px }
-  .card .lbl { font-size:12px; color:var(--soft); text-transform:uppercase; letter-spacing:.06em;
+  .card .lbl { font-size:13px; color:var(--soft); text-transform:uppercase; letter-spacing:.06em;
                font-weight:600 }
-  .card .val { font-size:30px; font-weight:680; margin-top:4px; letter-spacing:-.02em;
+  .card .val { font-size:31px; font-weight:680; margin-top:4px; letter-spacing:-.02em;
                font-variant-numeric:tabular-nums }
   .card .val.green { color:var(--green) } .card .val.warn { color:var(--warn) }
-  h2 { font-size:15px; text-transform:uppercase; letter-spacing:.07em; color:var(--soft);
+  h2 { font-size:16px; text-transform:uppercase; letter-spacing:.07em; color:var(--soft);
        margin:38px 0 14px; font-weight:650; display:flex; align-items:center; gap:10px }
   table { width:100%; border-collapse:collapse; background:var(--card);
           border:1px solid var(--line); border-radius:var(--radius); overflow:hidden }
-  th { text-align:left; font-size:12px; text-transform:uppercase; letter-spacing:.05em;
+  th { text-align:left; font-size:13px; text-transform:uppercase; letter-spacing:.05em;
        color:var(--soft); padding:13px 16px; border-bottom:1px solid var(--line); font-weight:650 }
-  td { padding:14px 16px; border-bottom:1px solid var(--line); vertical-align:top; font-size:16px }
+  td { padding:14px 16px; border-bottom:1px solid var(--line); vertical-align:top; font-size:17px }
   tr:last-child td { border-bottom:none }
   tbody tr:hover { background:#fdfcfa }
   .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap }
-  code { font-size:14px; background:#f3f0ea; padding:2px 7px; border-radius:5px;
+  code { font-size:15px; background:#f3f0ea; padding:2px 7px; border-radius:5px;
          font-family:ui-monospace,SFMono-Regular,Menlo,monospace }
-  .tag { font-size:12px; background:#eaf1ec; color:var(--green); padding:3px 10px;
+  .tag { font-size:13px; background:#eaf1ec; color:var(--green); padding:3px 10px;
          border-radius:20px; font-weight:600; white-space:nowrap }
   .tag.warn { background:#fdf3e0; color:var(--warn) }
   .msg { background:var(--card); border:1px solid var(--line); border-radius:12px;
          padding:13px 16px; margin-bottom:10px; max-width:74ch }
   .msg.assistant { background:#f5f8f5 }
-  .msg .who { font-size:12px; color:var(--soft); margin-bottom:5px; font-weight:600 }
-  .msg .body { white-space:pre-wrap; font-size:16px; line-height:1.6 }
+  .msg .who { font-size:13px; color:var(--soft); margin-bottom:5px; font-weight:600 }
+  .msg .body { white-space:pre-wrap; font-size:17px; line-height:1.6 }
   .scroll { max-height:520px; overflow:auto }
   form.inline { margin:0 }
-  select, .in { font:inherit; font-size:16px; color:inherit; background:var(--card);
+  select, .in { font:inherit; font-size:17px; color:inherit; background:var(--card);
                 border:1px solid var(--line); border-radius:9px; padding:9px 11px; width:100%;
                 transition:border-color .2s, box-shadow .2s }
   .in:hover, select:hover { border-color:#d4ccbf }
   .in:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible,
   summary:focus-visible { outline:2px solid var(--green); outline-offset:2px }
-  .in.name { font-weight:650; font-size:17px }
+  .in.name { font-weight:650; font-size:18px }
   input[type=number].in { font-variant-numeric:tabular-nums }
   /* 44px minimum: these get tapped on a phone with one hand while packing. */
-  button { font:inherit; font-size:16px; font-weight:650; background:var(--green); color:#fff;
+  button { font:inherit; font-size:17px; font-weight:650; background:var(--green); color:#fff;
            border:1px solid transparent; border-radius:10px; padding:11px 20px; cursor:pointer;
            min-height:44px; transition:filter .2s, transform .08s }
   button:hover { filter:brightness(1.08) }
@@ -294,30 +294,31 @@ async function render(key, flash = null) {
   .prod.new { border-style:dashed; background:transparent }
   .prod-head { display:flex; gap:10px; align-items:center; margin-bottom:12px }
   .prod-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px }
-  .prod-grid label { font-size:12px; color:var(--soft); font-weight:600 }
+  .prod-grid label { font-size:13px; color:var(--soft); font-weight:600 }
   .prod-foot { display:flex; justify-content:space-between; align-items:center;
                margin-top:14px; gap:10px; flex-wrap:wrap }
-  .chk { font-size:15px; display:flex; gap:8px; align-items:center; cursor:pointer }
+  .chk { font-size:16px; display:flex; gap:8px; align-items:center; cursor:pointer }
   .chk input { width:auto; min-height:auto; width:18px; height:18px; accent-color:var(--green) }
   /* Fixed, not inline: the farm is usually scrolled far down when they save,
      and a banner at the top of the document would go unseen. */
   .ok { position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:99;
         background:var(--green); color:#fff; border:0;
-        padding:11px 18px; border-radius:999px; font-size:14px; font-weight:600;
+        padding:11px 18px; border-radius:999px; font-size:15px; font-weight:600;
         box-shadow:0 6px 20px rgba(0,0,0,.18); animation:pop .25s ease }
   @keyframes pop { from{opacity:0;transform:translate(-50%,-8px)} to{opacity:1} }
-  textarea.in { resize:vertical; font-size:14px; line-height:1.45 }
+  textarea.in { resize:vertical; font-size:17px; line-height:1.5 }
   button.danger { background:transparent; color:#a33; border:1px solid #e3cccc; margin-left:6px }
   .teach { margin-top:8px; border-top:1px dashed var(--line); padding-top:7px }
-  .teach summary { cursor:pointer; font-size:12px; color:var(--soft); user-select:none }
+  .teach summary { cursor:pointer; font-size:13px; color:var(--soft); user-select:none }
   .teach form { margin-top:8px; display:grid; gap:8px }
-  .teach label, .prod label.sub { display:block; font-size:11px; color:var(--soft) }
+  .teach label, .prod label.sub { display:block; font-size:14px; color:var(--soft);
+                                 font-weight:600 }
   .teach label input, .teach label textarea { margin-top:3px }
   .prod label.sub + label.sub { margin-top:8px }
   @media (max-width:760px){
     .wrap { padding:0 16px 48px }
-    h1 { font-size:22px }
-    .card .val { font-size:24px }
+    h1 { font-size:23px }
+    .card .val { font-size:25px }
     td, th { padding:11px 12px }
     .prod-grid { grid-template-columns:1fr }
   }
