@@ -68,6 +68,19 @@ async function render(key, flash = null) {
     // Migration 010 not applied yet.
   }
 
+  let promos = [];
+  try {
+    promos = await q(
+      `SELECT p.id, p.sku, p.title, p.detail, p.starts_on, p.ends_on, p.is_active,
+              pr.name_vi
+         FROM promotions p
+         LEFT JOIN products pr ON pr.sku = p.sku
+        ORDER BY p.sku NULLS FIRST, p.created_at`
+    );
+  } catch (e) {
+    // Migration 012 chưa chạy.
+  }
+
   let lessons = [];
   let botRules = '';
   try {
@@ -352,6 +365,57 @@ async function render(key, flash = null) {
   <h2>Đơn hàng</h2>
   <table><thead><tr><th>Mã</th><th>Khách</th><th class="num">Tổng</th><th>Trạng thái</th><th>Lúc</th></tr></thead>
   <tbody>${rowsOrders || '<tr><td colspan="5" class="sub">Chưa có đơn nào.</td></tr>'}</tbody></table>
+
+  <h2 id="khuyenmai">Khuyến mãi — bot chỉ được nhắc đúng những dòng ở đây</h2>
+  <div class="nudge-row sub" style="margin-bottom:10px">
+    Để trống ô sản phẩm là chính sách chung, áp cho mọi đơn. Chọn một sản phẩm là
+    khuyến mãi riêng, bot chỉ nhắc khi khách hỏi đúng món đó.
+    Hết ngày kết thúc thì chương trình tự ngưng, không cần vào tắt tay.
+  </div>
+  <div class="prods">
+    ${promos.map(k => `
+      <form method="post" action="/admin/promo" class="prod ${k.is_active ? '' : 'off'}">
+        <input type="hidden" name="key" value="${esc(key)}">
+        <input type="hidden" name="id" value="${esc(k.id)}">
+        <input name="title" class="in name" value="${esc(k.title)}" placeholder="Tên chương trình">
+        <label class="sub">Câu bot nói với khách — viết đúng như muốn khách đọc
+          <textarea name="detail" class="in" rows="3">${esc(k.detail)}</textarea></label>
+        <div class="prod-grid">
+          <label>Sản phẩm
+            <select name="sku" class="in">
+              <option value="">— Chung cho mọi đơn —</option>
+              ${products.filter(p => p.is_available).map(p =>
+                `<option value="${esc(p.sku)}"${p.sku === k.sku ? ' selected' : ''}>${esc(p.name_vi)}</option>`
+              ).join('')}
+            </select></label>
+          <label>Đang chạy<input type="checkbox" name="is_active" ${k.is_active ? 'checked' : ''}></label>
+          <label>Bắt đầu<input type="date" name="starts_on" class="in" value="${k.starts_on ? new Date(k.starts_on).toISOString().slice(0,10) : ''}"></label>
+          <label>Kết thúc<input type="date" name="ends_on" class="in" value="${k.ends_on ? new Date(k.ends_on).toISOString().slice(0,10) : ''}"></label>
+        </div>
+        <div class="prod-foot">
+          <button type="submit" name="delete" value="1" class="danger">Xoá</button>
+          <button type="submit">Lưu</button>
+        </div>
+      </form>`).join('')}
+
+    <form method="post" action="/admin/promo" class="prod new">
+      <input type="hidden" name="key" value="${esc(key)}">
+      <input name="title" class="in name" placeholder="Tên chương trình mới" required>
+      <label class="sub">Câu bot nói với khách
+        <textarea name="detail" class="in" rows="3" placeholder="Mua 2 chai tặng 1 hũ tiêu chín ạ." required></textarea></label>
+      <div class="prod-grid">
+        <label>Sản phẩm
+          <select name="sku" class="in">
+            <option value="">— Chung cho mọi đơn —</option>
+            ${products.filter(p => p.is_available).map(p =>
+              `<option value="${esc(p.sku)}">${esc(p.name_vi)}</option>`).join('')}
+          </select></label>
+        <label>Bắt đầu<input type="date" name="starts_on" class="in"></label>
+        <label>Kết thúc<input type="date" name="ends_on" class="in"></label>
+      </div>
+      <div class="prod-foot"><span class="sub">Thêm khuyến mãi</span><button type="submit">Thêm</button></div>
+    </form>
+  </div>
 
   <h2 id="giaohang">Giao hàng — bot dùng đúng con số này khi khách hỏi</h2>
   <div class="prods">

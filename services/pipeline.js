@@ -16,6 +16,9 @@ const zaloService = require('./zaloService');
 const memory = require('./memory');
 const drift = require('./drift');
 const followup = require('./followup');
+const priceMemo = require('./priceMemo');
+const catalog = require('./catalog');
+const money = require('./money');
 
 const FALLBACK_REPLY =
   'Dạ farm đang bận xử lý một chút, bạn nhắn lại giúp mình sau ít phút nha 🌿 ' +
@@ -145,6 +148,15 @@ async function handleMessage(p) {
         tokensUsed,
         send_ok: !!sent,
       });
+
+      // Món nào giá đã thật sự nói ra trong tin vừa gửi thì ghi lại, để lần
+      // sau câu kỹ thuật về món đó không lặp lại giá nữa. Ghi sau khi gửi, và
+      // chỉ ghi món có con số nằm trong tin — nếu ghi lúc tra cứu, gặp lúc bot
+      // bỏ mất giá thì khách sẽ không bao giờ được nghe giá món đó.
+      if (customer) {
+        const skus = priceMemo.skusTrongTin(reply, catalog.rows(), money);
+        if (skus.length) priceMemo.ghiNhan(customer.id, skus).catch(() => {});
+      }
 
       // Refresh the rolling summary in the background when it falls behind,
       // so the next turns still know what this conversation is about.

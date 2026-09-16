@@ -92,10 +92,10 @@ function systemPromptBlock() {
 }
 
 /** Keyword search across sections. Returns formatted text for a tool result. */
-function search(query, limit = 3) {
+function search(query, limit = 3, daBao = null) {
   // Once the FAQ is in the database it is the only source; searching the stale
   // file would reintroduce exactly the text the farm edited away.
-  if (mdDisabled) return searchLessons(query, limit);
+  if (mdDisabled) return searchLessons(query, limit, daBao);
   if (sections.length === 0) return 'Chưa có tài liệu sản phẩm.';
 
   const terms = normalize(query).split(/\s+/).filter(t => t.length > 1);
@@ -131,6 +131,8 @@ function stats() {
 // ============================================================
 const db = require('./database');
 const state = require('./state');
+const money = require('./money');
+const catalog = require('./catalog');
 
 let lessons = [];
 let rules = '';
@@ -142,7 +144,7 @@ async function refreshTaught() {
   if (!db.DB_ENABLED) return;
   try {
     const r = await db.pool.query(
-      `SELECT id, question, answer, COALESCE(product, 'Chung') AS product
+      `SELECT id, question, answer, sku, COALESCE(product, 'Chung') AS product
        FROM bot_lessons WHERE is_active = TRUE
        ORDER BY product, sort_order, updated_at DESC LIMIT 600`
     );
@@ -176,7 +178,7 @@ function taughtPromptBlock() {
   const parts = [];
 
   if (lessons.length) {
-    const full = lessons.map(l => `Hỏi: ${l.question}\nTrả lời: ${l.answer}`).join('\n\n');
+    const full = lessons.map(l => `Hỏi: ${l.question}\nTrả lời: ${dienGiaVaoCau(l, null)}`).join('\n\n');
 
     if (full.length <= LESSON_BUDGET) {
       parts.push(
@@ -218,7 +220,21 @@ function taughtPromptBlock() {
  * writes it. Term overlap on the question, with a smaller weight on the answer
  * body, handles "để tủ lạnh hông" → "Có cần bảo quản lạnh không?".
  */
-function searchLessons(query, limit = 3) {
+/**
+ * Điền giá vào câu trả lời trước khi đưa cho bot.
+ *
+ * Câu trả lời trong database chứa ô trống {{gia}} chứ không chứa con số, nên
+ * giá luôn là giá hiện hành trong bảng products — sửa giá ở /admin là 264 câu
+ * đổi theo cùng lúc. daBao là tập sku đã báo giá cho khách này; nó quyết định
+ * ô {{gia1}} (chỉ hiện lần đầu) có hiện hay không.
+ */
+function dienGiaVaoCau(l, daBao) {
+  if (!money.coOGia(l.answer)) return l.answer;
+  const p = l.sku ? catalog.rows().find(x => x.sku === l.sku) : null;
+  return money.dienGia(l.answer, p, daBao ? daBao.has(l.sku) : false);
+}
+
+function searchLessons(query, limit = 3, daBao = null) {
   touchTaught();
   if (!lessons.length) return 'Chưa có câu trả lời nào do farm soạn.';
 
@@ -246,7 +262,7 @@ function searchLessons(query, limit = 3) {
     return 'Không có trong tài liệu farm. Hãy nói thật là chưa rõ và sẽ hỏi lại farm, đừng tự nghĩ ra câu trả lời.';
   }
   return scored
-    .map(x => `[${x.l.product || 'Chung'}] ${x.l.question}\n${x.l.answer}`)
+    .map(x => `[${x.l.product || 'Chung'}] ${x.l.question}\n${dienGiaVaoCau(x.l, daBao)}`)
     .join('\n\n');
 }
 

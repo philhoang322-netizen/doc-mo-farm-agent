@@ -7,6 +7,9 @@ const catalog = require('./catalog');
 const honorific = require('./honorific');
 const drift = require('./drift');
 const shipping = require('./shipping');
+const money = require('./money');
+const promo = require('./promo');
+const priceMemo = require('./priceMemo');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -37,7 +40,30 @@ NGUYÊN TẮC GIAO TIẾP:
 - Dùng emoji nhẹ nhàng khi phù hợp 🌿
 ${catalog.promptBlock()}
 ${shipping.promptBlock()}
+${promo.promptBlock()}
 ${knowledge.systemPromptBlock()}${knowledge.taughtPromptBlock()}
+
+════════════════════════════════════════
+CÁCH NÓI GIÁ — làm sai là khách chuyển khoản sai số tiền.
+
+a) BÁO GIÁ trong câu chat: viết tắt hàng nghìn thành K.
+   320.000đ  →  320K        195.000đ  →  195K        2.500.000đ  →  2.500K
+   Số lẻ không tròn nghìn thì để nguyên: 2.500đ/gram viết là 2.500đ/gram.
+
+b) LÊN ĐƠN, TỔNG TIỀN, MÃ QR CHUYỂN KHOẢN: viết ĐẦY ĐỦ, không viết tắt.
+   "Tổng đơn 640.000đ" — để khách chuyển khoản đúng số.
+   KHÔNG BAO GIỜ viết "tổng 640K" khi chốt đơn.
+
+c) Con số phải lấy từ kết quả tool search_products hoặc search_knowledge.
+   TUYỆT ĐỐI không đọc giá từ trí nhớ, không suy ra, không ước chừng, không làm tròn.
+   Tra cứu không ra giá thì nói thật là farm sẽ kiểm rồi báo lại.
+
+d) Khách hỏi dung tích, khối lượng, quy cách, hay còn hàng không —
+   trả lời xong thì kèm luôn đơn giá: "Dầu gội đóng chai 480ml ạ. (320K/chai)"
+
+e) Câu kỹ thuật (thành phần, cách dùng, bảo quản, hạn dùng): kết quả tra cứu
+   đã tự kèm giá ở lần đầu và tự bỏ giá ở những lần sau. Cứ theo đúng kết quả
+   tra cứu — đừng tự thêm giá vào, cũng đừng tự bỏ giá đi.
 
 KHI KHÁCH ĐẶT HÀNG: Gọi tool create_order để tạo đơn hàng.
 
@@ -72,8 +98,8 @@ MỤC TIÊU LÀ BÁN ĐƯỢC HÀNG — nhưng bán theo cách farm bán, không
 1. KHÔNG BAO GIỜ KẾT THÚC BẰNG NGÕ CỤT
 Mỗi câu trả lời khép lại bằng ĐÚNG MỘT câu hỏi dễ trả lời, hoặc một bước kế cụ thể.
 Trả lời xong rồi im là mất khách — khách không biết nói gì tiếp thì họ đi.
-  Tệ:  "Dạ nước nghệ 95.000đ/chai ạ."
-  Tốt: "Dạ nước nghệ 95.000đ/chai ạ. Mình uống thử hay mua cho cả nhà để farm tư vấn số lượng nhen?"
+  Tệ:  "Dạ nước gừng lên men 160K/chai ạ."
+  Tốt: "Dạ nước gừng lên men 160K/chai ạ. Mình uống thử hay mua cho cả nhà để farm tư vấn số lượng nhen?"
 Chỉ MỘT câu hỏi. Hỏi hai ba câu cùng lúc là khách bỏ luôn.
 
 2. KHÁCH DO DỰ — đi theo ba nhịp: LÀM RÕ → ĐỔI KHUNG → ĐỀ XUẤT
@@ -84,7 +110,9 @@ Khách chê đắt:
   "Dạ mình đang so với loại nào ạ?"
   → "Farm làm mẻ nhỏ, nguyên liệu organic, lên men thủ công nên giá vậy."
   → "Mình lấy một chai uống thử trước cho chắc nhen?"
-TUYỆT ĐỐI KHÔNG tự bịa giảm giá, khuyến mãi, quà tặng, freeship. Farm chưa cho thì không có.
+TUYỆT ĐỐI KHÔNG tự bịa giảm giá, khuyến mãi, quà tặng, freeship.
+Chỉ được nhắc đúng những khuyến mãi ghi trong phần KHUYẾN MÃI ĐANG CHẠY ở trên,
+hoặc ghi kèm sản phẩm trong kết quả search_products. Ngoài hai chỗ đó thì farm chưa cho.
 
 3. ĐỪNG HỎI THÔNG TIN QUÁ SỚM
 Khách mới hỏi giá mà đã đòi số điện thoại thì họ thấy bị ép. Tư vấn trước đã.
@@ -316,7 +344,7 @@ const tools = [
 const pendingHandoff = new Map();
 const pendingOrder = new Map();
 
-async function executeTool(toolName, toolInput, customer, zaloUserId) {
+async function executeTool(toolName, toolInput, customer, zaloUserId, daBaoGia = null) {
   try {
     if (toolName === 'request_human') {
       const info = {
@@ -340,11 +368,11 @@ async function executeTool(toolName, toolInput, customer, zaloUserId) {
         const q = String(toolInput.query || '').toLowerCase();
         const hit = catalog.rows().filter(p => p.name_vi.toLowerCase().includes(q));
         return hit.length
-          ? hit.map(p => `${p.name_vi}: ${Number(p.base_price).toLocaleString('vi')}đ/${p.unit}`).join('\n')
+          ? hit.map(p => `${p.name_vi}: ${money.donGia(p)}`).join('\n')
           : 'Không tìm thấy sản phẩm phù hợp.';
       }
       const result = await db.pool.query(
-        `SELECT name_vi, base_price, unit, is_available
+        `SELECT sku, name_vi, base_price, sale_price, unit, is_available
          FROM products
          WHERE (name_vi ILIKE $1 OR name ILIKE $1 OR $2 = ANY(tags))
            AND is_available = true
@@ -354,9 +382,12 @@ async function executeTool(toolName, toolInput, customer, zaloUserId) {
       if (result.rows.length === 0) {
         return 'Không tìm thấy sản phẩm phù hợp.';
       }
-      return result.rows.map(p =>
-        `${p.name_vi}: ${Number(p.base_price).toLocaleString('vi')}đ/${p.unit}`
-      ).join('\n');
+      // Khuyến mãi riêng của món đi kèm ngay đây, để bot khỏi phải nhớ hàng
+      // chục chương trình trong prompt và khỏi mời nhầm sang món khác.
+      return result.rows.map(p => {
+        const km = promo.theoSku(p.sku).map(k => `\n   Khuyến mãi: ${k.detail}`).join('');
+        return `${p.name_vi}: ${money.donGia(p)}${km}`;
+      }).join('\n');
     }
 
     if (toolName === 'check_shipping') {
@@ -378,7 +409,7 @@ async function executeTool(toolName, toolInput, customer, zaloUserId) {
     }
 
     if (toolName === 'search_knowledge') {
-      const found = knowledge.search(toolInput.query);
+      const found = knowledge.search(toolInput.query, 3, daBaoGia);
       // Repeated dead ends mean the bot is answering from outside the farm's
       // own documents — a drift signal, not just an empty result.
       if (/Không có trong tài liệu|Chưa có câu trả lời|Không tìm thấy/.test(found)) {
@@ -546,11 +577,16 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
   const customer = await db.getCustomerByExternalId(zaloUserId);
   let memories = [], recentOrders = [], preferences = [];
 
+  // Những món đã báo giá cho khách này. Quyết định câu kỹ thuật lần này còn
+  // kèm giá nữa hay thôi — xem services/priceMemo.js.
+  let daBaoGia = new Set();
+
   if (customer) {
-    [memories, recentOrders, preferences] = await Promise.all([
+    [memories, recentOrders, preferences, daBaoGia] = await Promise.all([
       db.getTopMemories(customer.id, 8),
       db.getRecentOrders(customer.id, 3),
-      db.getCustomerPreferences(customer.id)
+      db.getCustomerPreferences(customer.id),
+      priceMemo.daBao(customer.id)
     ]);
   }
 
@@ -597,7 +633,7 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
     const toolResults = [];
 
     for (const block of toolUseBlocks) {
-      const result = await executeTool(block.name, block.input, customer, zaloUserId);
+      const result = await executeTool(block.name, block.input, customer, zaloUserId, daBaoGia);
       console.log(`🔧 Tool [${block.name}]:`, JSON.stringify(block.input), '→', result);
       toolResults.push({
         type: 'tool_result',

@@ -35,6 +35,7 @@ db.initDB()
   .then(() => catalog.refresh())
   .then(() => knowledge.refreshTaught())
   .then(() => shipping.refresh())
+  .then(() => promo.refresh())
   .catch(err => console.error('Startup error:', err));
 
 // ============================================================
@@ -362,6 +363,48 @@ app.post('/admin/shipping', async (req, res) => {
     }
     await shipping.refresh();
     return back('Đã lưu khu vực giao hàng');
+  } catch (e) {
+    return back(`Lỗi: ${e.message}`);
+  }
+});
+
+// POST /admin/promo — thêm, sửa hoặc xoá một chương trình khuyến mãi.
+// Không có sku là chính sách chung; có sku là khuyến mãi của riêng món đó.
+app.post('/admin/promo', async (req, res) => {
+  const key = req.body.key;
+  if (key !== process.env.ZALO_WEBHOOK_TOKEN) return res.status(403).send('Forbidden');
+  const back = (msg) =>
+    res.redirect(`/admin?key=${encodeURIComponent(key)}&ok=${encodeURIComponent(msg)}#khuyenmai`);
+  try {
+    const day = (v) => (v && String(v).trim() ? String(v).trim() : null);
+    const sku = req.body.sku && String(req.body.sku).trim() ? String(req.body.sku).trim() : null;
+
+    if (req.body.id && req.body.delete) {
+      await db.pool.query('DELETE FROM promotions WHERE id=$1', [req.body.id]);
+      await promo.refresh();
+      return back('Đã xoá khuyến mãi');
+    }
+    if (!req.body.title?.trim())  return back('Thiếu tên chương trình');
+    if (!req.body.detail?.trim()) return back('Thiếu câu bot nói với khách');
+
+    if (req.body.id) {
+      await db.pool.query(
+        `UPDATE promotions SET sku=$2, title=$3, detail=$4, starts_on=$5, ends_on=$6,
+                               is_active=$7, updated_at=NOW()
+         WHERE id=$1`,
+        [req.body.id, sku, req.body.title.trim(), req.body.detail.trim(),
+         day(req.body.starts_on), day(req.body.ends_on), req.body.is_active === 'on']
+      );
+    } else {
+      await db.pool.query(
+        `INSERT INTO promotions (sku, title, detail, starts_on, ends_on)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [sku, req.body.title.trim(), req.body.detail.trim(),
+         day(req.body.starts_on), day(req.body.ends_on)]
+      );
+    }
+    await promo.refresh();
+    return back('Đã lưu khuyến mãi');
   } catch (e) {
     return back(`Lỗi: ${e.message}`);
   }

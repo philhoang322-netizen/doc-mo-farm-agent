@@ -14,6 +14,7 @@
  *  - Auto-refresh is absent here on purpose: this is a writing surface.
  */
 const db = require('./database');
+const money = require('./money');
 
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, c =>
@@ -41,7 +42,8 @@ async function render(key, opts = {}) {
        FROM bot_lessons ORDER BY product, sort_order, question`
     )).rows;
     products = (await db.pool.query(
-      `SELECT name_vi, sku FROM products WHERE is_available = TRUE ORDER BY name_vi`
+      `SELECT name_vi, name, sku, base_price, sale_price, unit
+         FROM products WHERE is_available = TRUE ORDER BY name_vi`
     )).rows;
   } catch (e) {
     return `<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;padding:2rem">
@@ -58,9 +60,14 @@ async function render(key, opts = {}) {
   // A product the farm sells but has written nothing about is the thing the
   // bot will fail on, and it is invisible unless the page says so. Show those
   // as empty groups rather than letting them silently not exist.
+  // Tên trong bảng giá và tên khách hay gọi thường khác nhau ("Relax Spa" và
+  // "Thư giãn cân bằng" là một chai). Nên một sản phẩm được coi là đã có FAQ
+  // khi khớp mã hàng, hoặc khớp một trong hai tên — nếu chỉ so name_vi thì cả
+  // chục món đã có đủ câu vẫn bị báo là trống.
+  const coSku = new Set(rows.map(r => r.sku).filter(Boolean));
   const missing = products
-    .map(p => p.name_vi)
-    .filter(n => !groups.has(n));
+    .filter(p => !coSku.has(p.sku) && !groups.has(p.name_vi) && !groups.has(p.name))
+    .map(p => p.name || p.name_vi);
   for (const n of missing) groups.set(n, []);
 
   const productOptions = [...new Set([
@@ -82,6 +89,22 @@ async function render(key, opts = {}) {
       </div>
     </details>`;
 
+  // Câu trả lời chứa ô trống {{gia}} chứ không chứa con số. Farm nhìn vào ô
+  // soạn thảo sẽ thấy dấu ngoặc nhọn và không biết khách đọc ra cái gì, nên
+  // hiện luôn câu đã điền giá ngay bên dưới.
+  const giaHint = (r) => {
+    if (!money.coOGia(r.answer)) return '';
+    const p = products.find(x => x.sku === r.sku);
+    if (!p) {
+      return `<div class="warn">Câu này có ô điền giá nhưng chưa gắn mã hàng,
+        nên khách sẽ không thấy giá. Chọn đúng sản phẩm ở /admin rồi lưu lại.</div>`;
+    }
+    return `<div class="nudge" style="padding:10px 12px;margin:0 0 4px">
+      Khách sẽ đọc thấy: <b>${esc(money.dienGia(r.answer, p, false))}</b><br>
+      <span class="sub">{{gia}} luôn hiện giá · {{gia1}} chỉ hiện lần đầu ·
+      sửa giá ở trang Quản trị là câu này đổi theo</span></div>`;
+  };
+
   const editForm = (k, r, opts2) => `
     <form method="post" action="/faq/save" class="grid">
       <input type="hidden" name="key" value="${esc(k)}">
@@ -90,6 +113,7 @@ async function render(key, opts = {}) {
         <input name="question" class="in" value="${esc(r.question)}" required></label>
       <label>Câu trả lời của bot
         <textarea name="answer" class="in" rows="7" required>${esc(r.answer)}</textarea></label>
+      ${giaHint(r)}
       <div class="row">
         <label class="grow">Thuộc sản phẩm
           <select name="product" class="in">
