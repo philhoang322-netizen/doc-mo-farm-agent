@@ -403,6 +403,8 @@ function draftSnapshot(draft) {
     invoice_code: draft.invoice_code,
     customer_code: draft.customer_code,
     qr_image_url: draft.qr_image_url,
+    triage_level: draft.triage_level || null,
+    triage_label: draft.triage_label || null,
   };
 }
 

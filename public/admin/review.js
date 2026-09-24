@@ -18,6 +18,12 @@
     rejected: 'Từ chối',
   };
   const TYPE_LABEL = { follower: 'Follower', zns: 'ZNS', broadcast: 'Broadcast' };
+  const TRIAGE_LABEL = { hot: 'Nóng', urgent: 'Khẩn', normal: 'Thường' };
+  const TRIAGE_NOTE = {
+    hot: 'Nóng — khách có ý mua, đặt số lượng, hoặc thanh toán. Bản nháp chờ duyệt, chưa gửi.',
+    urgent: 'Khẩn — khiếu nại, đổi trả, hoặc hoàn tiền. Chưa xác nhận đã duyệt. Cần người thật xem trước khi gửi.',
+    normal: 'Thường — hỏi sản phẩm, giá, hoặc giao hàng. Bản nháp chờ duyệt, chưa gửi.',
+  };
 
   const listEl = document.getElementById('list');
   const detailEl = document.getElementById('detail');
@@ -30,6 +36,7 @@
   const channelEl = document.getElementById('channels');
   const tabs = [...document.querySelectorAll('[data-ops]')];
   const typeTabs = [...document.querySelectorAll('[data-type]')];
+  const triageTabs = [...document.querySelectorAll('[data-triage]')];
 
   if (actorInput) {
     actorInput.value = localStorage.getItem(ACTOR_KEY) || '';
@@ -45,6 +52,7 @@
   const params = new URLSearchParams(location.search);
   let ops = OPS.includes(params.get('ops')) ? params.get('ops') : 'pending';
   let messageType = Object.prototype.hasOwnProperty.call(TYPE_LABEL, params.get('type')) ? params.get('type') : '';
+  let triage = Object.prototype.hasOwnProperty.call(TRIAGE_LABEL, params.get('triage')) ? params.get('triage') : '';
   let salesChannel = params.get('kenh') || 'farm';
   let channels = [];
   let drafts = [];
@@ -65,6 +73,7 @@
     q.set('ops', ops);
     q.set('kenh', salesChannel);
     if (messageType) q.set('type', messageType);
+    if (triage) q.set('triage', triage);
     const hash = selectedId ? '#' + selectedId : '';
     history.replaceState(null, '', location.pathname + '?' + q.toString() + hash);
   }
@@ -94,6 +103,14 @@
       const next = btn.dataset.type || '';
       if (next === messageType) return;
       guardSwitch(() => { messageType = next; });
+    });
+  });
+
+  triageTabs.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const next = btn.dataset.triage || '';
+      if (next === triage) return;
+      guardSwitch(() => { triage = next; });
     });
   });
 
@@ -141,6 +158,7 @@
       e.target.reset();
       ops = 'pending';
       messageType = '';
+      triage = '';
       selectedId = res.draft.id;
       dirty = false;
       toast('Đã đưa vào chờ xử lý.');
@@ -164,6 +182,9 @@
     });
     typeTabs.forEach(btn => {
       btn.setAttribute('aria-selected', (btn.dataset.type || '') === messageType ? 'true' : 'false');
+    });
+    triageTabs.forEach(btn => {
+      btn.setAttribute('aria-selected', (btn.dataset.triage || '') === triage ? 'true' : 'false');
     });
   }
 
@@ -316,6 +337,7 @@
     q.set('ops', ops);
     q.set('kenh', salesChannel);
     if (messageType) q.set('type', messageType);
+    if (triage) q.set('triage', triage);
     try {
       const [data, stats] = await Promise.all([
         api('/admin/api/drafts?' + q.toString()),
@@ -378,6 +400,8 @@
       btn.appendChild(el('div', { class: 'name', text: d.customer_name || 'Khách chưa có tên' }));
       btn.appendChild(el('div', { class: 'intent', text: d.customer_intent || d.draft_reply || '' }));
       const meta = el('div', { class: 'meta' });
+      const badge = triageBadge(d);
+      if (badge) meta.appendChild(badge);
       meta.appendChild(el('span', {
         class: 'tag ' + (d.ops_status || 'pending'),
         text: OPS_LABEL[d.ops_status] || OPS_LABEL.pending,
@@ -411,6 +435,14 @@
     if (!selectedId) showPlaceholder();
   }
 
+  function triageBadge(d) {
+    if (!d || !TRIAGE_LABEL[d.triage_level]) return null;
+    return el('span', {
+      class: 'tag triage ' + d.triage_level,
+      text: d.triage_label || TRIAGE_LABEL[d.triage_level],
+    });
+  }
+
   function currentDraft() {
     return drafts.find(d => d.id === selectedId) || null;
   }
@@ -441,6 +473,21 @@
     form.addEventListener('submit', e => e.preventDefault());
     form.appendChild(back);
     form.appendChild(el('h2', { text: d.customer_name || 'Khách chưa có tên' }));
+    const pills = el('div', { class: 'triage-pills', role: 'group', 'aria-label': 'Mức của tin này' });
+    Object.keys(TRIAGE_LABEL).forEach(level => {
+      const on = d.triage_level === level;
+      pills.appendChild(el('span', {
+        class: 'tag triage ' + level + (on ? ' on' : ' off'),
+        text: TRIAGE_LABEL[level],
+      }));
+    });
+    form.appendChild(pills);
+    if (TRIAGE_NOTE[d.triage_level]) {
+      form.appendChild(el('p', {
+        class: 'banner ' + (d.triage_level === 'urgent' ? 'bad' : d.triage_level === 'hot' ? 'ok' : 'normal'),
+        text: TRIAGE_NOTE[d.triage_level],
+      }));
+    }
     form.appendChild(el('p', {
       class: 'sub',
       text: (OPS_LABEL[d.ops_status] || OPS_LABEL.pending) + ' · ' + when(d.created_at),

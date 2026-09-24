@@ -17,6 +17,7 @@ const llm = require('./llm');
 const pii = require('./pii');
 const stations = require('./stations');
 const trainingLog = require('./trainingLog');
+const triage = require('./triage');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -749,6 +750,23 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
   // A previous turn that threw must not leak its score into this one.
   pendingConfidence.delete(zaloUserId);
 
+  // Refunds, returns, exchanges, complaints, and anger are drafted locally.
+  // The model must not invent an approval.
+  const triaged = triage.classify(userMessage);
+  if (triaged.skipModel) {
+    return {
+      text: triage.customerReply(triaged),
+      tokensUsed: 0,
+      handoff: null,
+      newOrder: null,
+      stockHold: null,
+      confidence: 1,
+      customer: null,
+      piiNote: null,
+      triage: triaged,
+    };
+  }
+
   // 1. Load customer context (resolves across channels)
   const customer = await db.getCustomerByExternalId(zaloUserId);
   let memories = [], recentOrders = [], preferences = [];
@@ -784,7 +802,7 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
   const routed = stations.filterAndRoute(userMessage);
   messages.push({
     role: 'user',
-    content: stations.llmUserTurn(userMessage, routed),
+    content: stations.llmUserTurn(userMessage, routed, triaged),
   });
 
   // 3. Call Claude with tools

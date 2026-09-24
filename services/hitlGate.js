@@ -20,6 +20,7 @@
  */
 const drafts = require('./drafts');
 const stations = require('./stations');
+const triage = require('./triage');
 
 const FALSEY = /^(0|false|no|off)$/i;
 
@@ -89,25 +90,30 @@ function httpUrl(value) {
  */
 async function releaseToCustomer(p, text, extra = {}) {
   const body = String(text ?? '').replace(/\0/g, '').trim();
-  // Stock warnings must wait for a person even if the emergency auto-send
-  // switch is off. Messenger never auto-sends. forceHold never calls p.send
-  // with the customer body.
+  const source = extra.intent != null ? extra.intent : p.text;
+  const triaged = coerceTriage(extra.triage, source);
+  // Stock warnings, Messenger, and Urgent inbox rows wait for a person
+  // even if the emergency auto-send switch is off. forceHold never calls
+  // p.send with the customer body.
   const messengerHold = isMessenger(p);
-  const forceHold = extra.forceHold === true || messengerHold;
+  const urgentHold = triaged.level === 'urgent';
+  const forceHold = extra.forceHold === true || messengerHold || urgentHold;
 
   if (!hitlRequired() && !forceHold) {
     if (!body) return { held: false, sent: false, draft: null, acked: false, assignment: null };
     const sent = !!(await p.send(p.replyTo, body));
-    const assignment = await maybeHandover(p, null, extra);
-    return { held: false, sent, draft: null, acked: false, assignment };
+    const assignment = await maybeHandover(p, null, { ...extra, triage: triaged });
+    return { held: false, sent, draft: null, acked: false, assignment, triage: triaged.level };
   }
 
-  if (!body) return { held: false, sent: false, draft: null, acked: false, assignment: null };
+  if (!body) return { held: false, sent: false, draft: null, acked: false, assignment: null, triage: triaged.level };
 
   // Filter station. Runs for Zalo and Messenger. Does not send.
-  const source = extra.intent != null ? extra.intent : p.text;
-  const routed = stations.filterAndRoute(source, extra.route);
-  const ticketDefault = routed.route === 'needs-human' ? 'Cần người thật' : 'Mới tiếp nhận';
+  const routeForce = extra.route || (urgentHold ? 'needs-human' : undefined);
+  const routed = stations.filterAndRoute(source, routeForce);
+  const ticketDefault = urgentHold
+    ? 'NEEDS_HUMAN'
+    : (routed.route === 'needs-human' ? 'Cần người thật' : 'Mới tiếp nhận');
 
   const draft = await drafts.createDraft({
     channel: draftChannel(p),
@@ -120,11 +126,13 @@ async function releaseToCustomer(p, text, extra = {}) {
     qr_image_url: httpUrl(extra.qr_image_url),
     kiot_summary: clip(extra.kiot_summary, 4000),
     pii_note: clip(extra.pii_note, 300),
+    triage_level: triaged.level,
+    triage_label: triaged.label,
   });
 
   let acked = false;
-  // Messenger stays silent until Approve & Send. Do not push HITL_ACK_MESSAGE.
-  const ack = messengerHold || extra.ack === false ? '' : ackMessage();
+  // Messenger and Urgent stay silent until Approve & Send.
+  const ack = messengerHold || urgentHold || extra.ack === false ? '' : ackMessage();
   if (ack) {
     try {
       acked = !!(await p.send(p.replyTo, ack));
@@ -141,15 +149,42 @@ async function releaseToCustomer(p, text, extra = {}) {
       draft_id: draft.id,
       approval_status: draft.approval_status,
       route: routed.route,
+      triage: triaged.level,
       ack: acked,
     });
   }
   console.log(
-    `📝 HITL ${draft.approval_status} ${draft.id} route=${routed.route} (${p.channel} ${draft.customer_user_id || '?'}) — not sent`
+    `📝 HITL ${draft.approval_status} ${draft.id} route=${routed.route} triage=${triaged.level} (${p.channel} ${draft.customer_user_id || '?'}) — not sent`
   );
 
-  const assignment = await maybeHandover(p, draft, { ...extra, route: routed.route });
-  return { held: true, sent: false, draft, acked, assignment, route: routed.route };
+  const assignment = await maybeHandover(p, draft, {
+    ...extra,
+    route: routed.route,
+    triage: triaged,
+    ticket_status: draft.ticket_status,
+    needsHuman: extra.needsHuman === true || urgentHold,
+    urgency: extra.urgency || (urgentHold ? 'high' : undefined),
+    reason: extra.reason || (urgentHold ? triaged.reason : undefined),
+  });
+  return { held: true, sent: false, draft, acked, assignment, route: routed.route, triage: triaged.level };
+}
+
+function coerceTriage(given, source) {
+  const computed = triage.classify(source);
+  if (!given || !given.level) return computed;
+  let level;
+  try {
+    level = triage.parseLevel(given.level);
+  } catch {
+    return computed;
+  }
+  if (!level) return computed;
+  return {
+    ...computed,
+    ...given,
+    level,
+    label: triage.labelFor(level),
+  };
 }
 
 /**

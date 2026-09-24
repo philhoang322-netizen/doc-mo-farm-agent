@@ -61,6 +61,22 @@ These run inside the agent. They do not call Make.com, and they do not send the 
 2. **Prompt station.** The suggested reply still comes from the existing farm agent (sales rules, prices, KiotViet stock, taught lessons). The system prompt starts with: "Bạn là bộ lọc thông minh. Hãy đọc câu hỏi của khách, trích xuất nhu cầu chính và viết câu trả lời ngắn gọn, lịch sự bằng tiếng Việt." The current turn also carries the route and the main need. The reply is saved as `PENDING_REVIEW`. Messenger stays in that state even if `HITL_REQUIRE_APPROVAL` is off.
 3. **Response station** (`services/drafts.js` → `deliver()`). Only **Duyệt và gửi** on `/admin` sends the approved text. Messenger calls Graph `me/messages` with the PSID in `fb_<PSID>`. Zalo OA and Zalo Bot keep their existing send paths and user ids.
 
+## Inbox triage (Nóng / Khẩn / Thường)
+
+`services/triage.js` reads every inbound Zalo OA, Zalo Bot, and Messenger text before a model draft. The four station routes stay (`sales`, `faq`, `needs-human`, `other`). The draft also stores `triage_level` and a Vietnamese label:
+
+| Level | Label | What it is |
+|---|---|---|
+| `hot` | Nóng | Buy intent, an order, a price together with a quantity, or checkout |
+| `urgent` | Khẩn | Complaint, return, exchange, refund, anger, or “gặp người thật” about a problem |
+| `normal` | Thường | Product, price, or shipping questions that are not an order |
+
+`/admin` shows the label as a badge and filters the queue with Nóng / Khẩn / Thường.
+
+A price or how-to question can still become a short polite draft. That draft is `PENDING_REVIEW` until **Duyệt và gửi**. Urgent rows are held even when `HITL_REQUIRE_APPROVAL` is off, and no ack is sent for them.
+
+Returns, exchanges, and refunds do not go to the model. The canned draft only says the request was received and asks for the order code, phone, product, and reason. It does not say the request was approved. The route is `needs-human`, ticket status is `NEEDS_HUMAN`, and the existing roster handover assigns whoever is on shift.
+
 ## Stock check before chốt đơn
 
 `create_order` reads live KiotViet stock before it inserts an order or pushes one. Sellable qty is `onHand` minus `reserved` at `KIOTVIET_BRANCH_ID` (or the first branch). The call is `GET /products/code/{sku}` and, if that payload has no inventories, `GET /products/{id}` then `GET /productOnHands`. The product-list cache is not the number we sell against.

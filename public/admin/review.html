@@ -12,7 +12,7 @@
 <header class="top">
   <div>
     <h1><span id="product-name">{{PRODUCT_NAME}}</span> <span class="ver" id="app-version">{{VERSION_LABEL}}</span></h1>
-    <p class="sub">Duyệt trước khi gửi. Xem trạng thái, loại tin và kênh bán.</p>
+    <p class="sub">Duyệt trước khi gửi. Lọc Nóng, Khẩn, Thường. Tin chỉ đi khi bấm Duyệt và gửi.</p>
   </div>
   <div class="top-actions">
     <label class="actor-field">Tên người duyệt
@@ -48,6 +48,12 @@
   <button type="button" role="tab" data-type="follower">Follower</button>
   <button type="button" role="tab" data-type="zns">ZNS</button>
   <button type="button" role="tab" data-type="broadcast">Broadcast</button>
+</div>
+<div class="types triage-tabs" id="triage-tabs" role="tablist" aria-label="Mức hộp thư">
+  <button type="button" role="tab" data-triage="" aria-selected="true">Mọi mức</button>
+  <button type="button" role="tab" data-triage="hot">Nóng</button>
+  <button type="button" role="tab" data-triage="urgent">Khẩn</button>
+  <button type="button" role="tab" data-triage="normal">Thường</button>
 </div>
 <div class="tabs" role="tablist" aria-label="Trạng thái tin">
   <button type="button" role="tab" data-ops="success">Thành công <b class="count"></b></button>

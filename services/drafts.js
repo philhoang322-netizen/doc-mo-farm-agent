@@ -18,6 +18,7 @@ const zaloService = require('./zaloService');
 const botService = require('./zaloBotService');
 const messenger = require('./messenger');
 const trainingLog = require('./trainingLog');
+const triage = require('./triage');
 
 const STATUSES = ['PENDING_REVIEW', 'APPROVED', 'REJECTED', 'SENT'];
 const STATUS_SET = new Set(STATUSES);
@@ -114,6 +115,8 @@ function blankDraft(fields) {
     delivery_phase: null,
     customer_query: fields.customer_query || fields.customer_intent || null,
     ai_draft_version: fields.draft_reply,
+    triage_level: fields.triage_level || null,
+    triage_label: fields.triage_label || null,
   };
 }
 
@@ -180,6 +183,8 @@ function fromRow(row) {
     delivery_phase: row.delivery_phase || null,
     customer_query: row.customer_query || null,
     ai_draft_version: row.ai_draft_version || null,
+    triage_level: row.triage_level || null,
+    triage_label: row.triage_label || null,
   });
 }
 
@@ -213,7 +218,9 @@ CREATE TABLE IF NOT EXISTS outbound_drafts (
     sales_channel       TEXT,
     delivery_phase      TEXT,
     customer_query      TEXT,
-    ai_draft_version    TEXT
+    ai_draft_version    TEXT,
+    triage_level        TEXT,
+    triage_label        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_outbound_drafts_status_created
     ON outbound_drafts (approval_status, created_at DESC);
@@ -223,6 +230,10 @@ ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS sales_channel TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS delivery_phase TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS customer_query TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS ai_draft_version TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS triage_level TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS triage_label TEXT;
+CREATE INDEX IF NOT EXISTS idx_outbound_drafts_triage
+    ON outbound_drafts (triage_level, created_at DESC);
 CREATE TABLE IF NOT EXISTS sales_channels (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
@@ -372,9 +383,23 @@ function fieldsFrom(body, { requireReply }) {
     customer_code: cleanText('customer_code', body.customer_code),
     qr_image_url: cleanUrl(body.qr_image_url),
     pii_note: cleanText('pii_note', body.pii_note),
+    ...cleanTriage(body),
     message_type: cleanMessageType(body.message_type),
     template_name: cleanText('template_name', body.template_name),
     customer_query: cleanText('customer_query', body.customer_query),
+  };
+}
+
+function cleanTriage(body) {
+  let level = null;
+  try {
+    level = triage.parseLevel(body && body.triage_level);
+  } catch (e) {
+    throw new DraftError(e.status || 400, e.message);
+  }
+  return {
+    triage_level: level,
+    triage_label: level ? triage.labelFor(level) : null,
   };
 }
 
@@ -419,9 +444,9 @@ async function insertDraft(draft) {
        draft_reply, approval_status, kiot_summary, invoice_code, customer_code,
        qr_image_url, pii_note, reviewed_at, sent_at, send_error, send_via, send_hook,
        message_type, template_name, sales_channel, delivery_phase,
-       customer_query, ai_draft_version
+       customer_query, ai_draft_version, triage_level, triage_label
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
      ) RETURNING *`,
     [
       draft.id, draft.created_at, draft.updated_at, draft.channel,
@@ -434,6 +459,7 @@ async function insertDraft(draft) {
       draft.send_hook, draft.message_type, draft.template_name,
       draft.sales_channel, draft.delivery_phase,
       draft.customer_query, draft.ai_draft_version,
+      draft.triage_level, draft.triage_label,
     ]
   );
   return fromRow(r.rows[0]);
@@ -454,7 +480,8 @@ async function saveDraft(draft) {
        customer_code=$13, qr_image_url=$14, pii_note=$15, reviewed_at=$16, sent_at=$17,
        send_error=$18, send_via=$19, send_hook=$20, updated_at=$21,
        message_type=$22, template_name=$23, sales_channel=$24, delivery_phase=$25,
-       customer_query=$26, ai_draft_version=$27
+       customer_query=$26, ai_draft_version=$27,
+       triage_level=$28, triage_label=$29
      WHERE id=$1
      RETURNING *`,
     [
@@ -466,6 +493,7 @@ async function saveDraft(draft) {
       draft.send_via, draft.send_hook, draft.updated_at,
       draft.message_type, draft.template_name, draft.sales_channel, draft.delivery_phase,
       draft.customer_query, draft.ai_draft_version,
+      draft.triage_level, draft.triage_label,
     ]
   );
   return fromRow(r.rows[0]);
@@ -505,6 +533,7 @@ function normalizeListQuery(query) {
     ops: query.ops || null,
     type: query.type || null,
     salesChannel: query.salesChannel || null,
+    triage: query.triage || null,
   };
 }
 
@@ -512,6 +541,7 @@ function matchesScope(d, q) {
   const sales = d.sales_channel || 'farm';
   if (q.salesChannel && sales !== q.salesChannel) return false;
   if (q.type && d.message_type !== q.type) return false;
+  if (q.triage && d.triage_level !== q.triage) return false;
   return true;
 }
 
@@ -526,6 +556,7 @@ async function listDrafts(query) {
   if (q.ops && !OPS_SET.has(q.ops)) throw new DraftError(400, 'ops không hợp lệ');
   if (q.type && !MESSAGE_TYPE_SET.has(q.type)) throw new DraftError(400, 'Loại tin không hợp lệ');
   if (q.salesChannel) await assertSalesChannel(q.salesChannel);
+  if (q.triage && !triage.LABEL[q.triage]) throw new DraftError(400, 'triage không hợp lệ');
 
   const all = db.DB_ENABLED
     ? (await db.pool.query('SELECT * FROM outbound_drafts ORDER BY created_at DESC LIMIT 500')).rows.map(fromRow)
