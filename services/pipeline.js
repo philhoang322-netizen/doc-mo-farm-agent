@@ -24,6 +24,7 @@ const money = require('./money');
 const hitl = require('./hitlGate');
 const stockGate = require('./stockGate');
 const confidenceGate = require('./confidenceGate');
+const audit = require('./audit');
 
 const FALLBACK_REPLY =
   'Dạ farm đang bận xử lý một chút, bạn nhắn lại giúp mình sau ít phút nha 🌿 ' +
@@ -54,6 +55,7 @@ async function handleMessage(p) {
   //    replies built from the same stale history.
   return ops.withLock(`${p.channel}:${p.externalKey}`, async () => {
     try {
+      await noteInbound(p, p.text);
       if (p.typing) p.typing(p.replyTo).catch(() => {});
 
       let customer = await db.getOrCreateCustomer(p.externalKey, p.senderName);
@@ -472,9 +474,11 @@ async function afterOrder(order, p, log, askedTransfer = false) {
         decision: stock.decision,
         summary: stock.summary,
       });
+      await noteOrderPush(order, p, 'order.push_blocked', kiot);
     } else {
       kiot = await kiotviet.pushOrder(order);
       log({ type: 'kiotviet_push', order: order.order_number, ok: kiot.ok, error: kiot.error || null });
+      await noteOrderPush(order, p, kiot.ok ? 'order.pushed' : 'order.push_failed', kiot);
       if (kiot.ok && db.DB_ENABLED) {
         await db.pool.query(
           `UPDATE orders SET description = COALESCE(description,'') || $2 WHERE order_number = $1`,
@@ -506,6 +510,7 @@ async function handleNonText(p) {
 
   try {
     const customer = await db.getOrCreateCustomer(p.externalKey, p.senderName);
+    await noteInbound(p, shown);
     await db.saveMessage(p.externalKey, 'user', shown);
 
     // An image is very often a bank transfer receipt — the farm should look.
@@ -544,6 +549,49 @@ async function handleFollow(p) {
   } catch (e) {
     return { ok: false, error: e.message };
   }
+}
+
+async function noteInbound(p, text) {
+  const conversation = String(p.externalKey || '').trim();
+  if (!conversation) return;
+  await audit.record({
+    actor: 'system',
+    action: 'message.received',
+    entity_type: 'conversation',
+    entity_id: conversation,
+    before: null,
+    after: {
+      received_at: new Date().toISOString(),
+      channel: p.channel || null,
+      sender_name: p.senderName || null,
+      summary: audit.summarize(text),
+    },
+    meta: {
+      conversation_id: conversation,
+      channel: p.channel || null,
+      msg_id: p.msgId || null,
+    },
+  });
+}
+
+async function noteOrderPush(order, p, action, kiot) {
+  const orderNumber = String(order && order.order_number || '').trim();
+  if (!orderNumber) return;
+  const conversation = String(p.externalKey || '').trim() || null;
+  await audit.record({
+    actor: order.staff_name ? audit.staffActor(order.staff_name) : 'system',
+    action,
+    entity_type: 'order',
+    entity_id: orderNumber,
+    before: null,
+    after: audit.orderSnapshot(order, kiot),
+    meta: {
+      conversation_id: conversation,
+      order_number: orderNumber,
+      source: 'kiotviet',
+      automated: !order.staff_name,
+    },
+  });
 }
 
 module.exports = { handleMessage, handleNonText, handleFollow, FALLBACK_REPLY };

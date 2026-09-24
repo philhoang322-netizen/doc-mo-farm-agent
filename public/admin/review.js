@@ -11,7 +11,20 @@
   const detailEl = document.getElementById('detail');
   const storageEl = document.getElementById('storage');
   const toastEl = document.getElementById('toast');
+  const actorInput = document.getElementById('actor-name');
   const tabs = [...document.querySelectorAll('[data-status]')];
+  const ACTOR_KEY = 'dmf_actor_name';
+
+  if (actorInput) {
+    actorInput.value = localStorage.getItem(ACTOR_KEY) || '';
+    actorInput.addEventListener('input', () => {
+      localStorage.setItem(ACTOR_KEY, actorInput.value.trim());
+    });
+  }
+
+  function actorName() {
+    return actorInput ? actorInput.value.trim() : '';
+  }
 
   const initial = new URLSearchParams(location.search).get('status');
   let status = STATUSES.includes(initial) ? initial : 'PENDING_REVIEW';
@@ -336,6 +349,7 @@
       invoice_code: data.invoice_code,
       customer_code: data.customer_code,
       qr_image_url: data.qr_image_url,
+      actor_name: actorName(),
     }, extra || {});
   }
 
@@ -373,7 +387,9 @@
 
   function save() { return patch(payload(), 'Đã lưu.'); }
   function reject() { return patch(payload({ approval_status: 'REJECTED' }), 'Đã từ chối.'); }
-  function reopen() { return patch({ approval_status: 'PENDING_REVIEW' }, 'Đã đưa về chờ duyệt.'); }
+  function reopen() {
+    return patch({ approval_status: 'PENDING_REVIEW', actor_name: actorName() }, 'Đã đưa về chờ duyệt.');
+  }
   function send() {
     const data = readForm();
     const msg = data.channel === 'messenger'

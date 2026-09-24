@@ -15,9 +15,15 @@
     <h1>Duyệt tin trước khi gửi</h1>
     <p class="sub">Sửa bản nháp, rồi mới gửi cho khách.</p>
   </div>
-  <form method="post" action="/admin/logout">
-    <button class="ghost" type="submit">Đăng xuất</button>
-  </form>
+  <div class="top-actions">
+    <label class="actor-field">Tên người duyệt
+      <input id="actor-name" maxlength="80" autocomplete="name" placeholder="Ví dụ: Lan">
+    </label>
+    <a class="ghost" href="/admin/audit">Nhật ký</a>
+    <form method="post" action="/admin/logout">
+      <button class="ghost" type="submit">Đăng xuất</button>
+    </form>
+  </div>
 </header>
 <p id="storage" class="note warn" hidden></p>
 <div class="tabs" role="tablist" aria-label="Trạng thái bản nháp">
