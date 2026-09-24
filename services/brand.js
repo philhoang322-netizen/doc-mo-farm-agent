@@ -5,7 +5,6 @@
 const pkg = require('../package.json');
 
 const PRODUCT_NAME = 'Omni Sale DMF';
-const FARM_NAME = 'Dốc Mơ Farm';
 const VERSION = String(pkg.version || '').trim();
 
 if (!VERSION) {
@@ -25,7 +24,6 @@ function esc(s) {
 function clientConfig() {
   return {
     product: PRODUCT_NAME,
-    farm: FARM_NAME,
     version: VERSION,
     label: versionLabel(),
   };
@@ -38,7 +36,6 @@ function clientJson() {
 function applyTemplate(html) {
   return String(html)
     .replaceAll('{{PRODUCT_NAME}}', esc(PRODUCT_NAME))
-    .replaceAll('{{FARM_NAME}}', esc(FARM_NAME))
     .replaceAll('{{VERSION}}', esc(VERSION))
     .replaceAll('{{VERSION_LABEL}}', esc(versionLabel()))
     .replaceAll('{{BRAND_JSON}}', clientJson());
@@ -46,7 +43,6 @@ function applyTemplate(html) {
 
 module.exports = {
   PRODUCT_NAME,
-  FARM_NAME,
   VERSION,
   versionLabel,
   clientConfig,

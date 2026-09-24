@@ -94,8 +94,7 @@ const GATE_CSS = `
          border-radius:999px; background:#efeae3; color:#5c564e;
          font-size:.46em; font-weight:700; letter-spacing:.02em;
          vertical-align:middle; line-height:1.2; white-space:nowrap; }
-  .farm { margin:8px 0 0; font-size:14px; font-weight:700; color:#2f6b45; }
-  .sub { color:#5c564e; font-size:15px; }
+  .sub { margin:8px 0 0; color:#5c564e; font-size:15px; }
   label { display:block; margin-top:16px; font-size:13px; font-weight:700; color:#5c564e; }
   input { width:100%; margin-top:4px; font:inherit; font-size:17px; color:#1c1712;
           border:1px solid #e4ddd3; border-radius:12px; padding:12px; min-height:48px; }
@@ -118,7 +117,6 @@ function loginHtml(error) {
 <body>
   <form class="login" method="post" action="/admin/login">
     <h1><span id="product-name">{{PRODUCT_NAME}}</span> <span class="ver" id="app-version">{{VERSION_LABEL}}</span></h1>
-    <p class="farm">{{FARM_NAME}}</p>
     <p class="sub">Duyệt tin nội bộ. Nhập mật khẩu quản trị để xem bản nháp trước khi gửi.</p>
     ${error ? `<p class="err">${esc(error)}</p>` : ''}
     <label>Mật khẩu
@@ -142,7 +140,6 @@ function unconfiguredHtml() {
 <body>
   <div class="login">
     <h1><span id="product-name">{{PRODUCT_NAME}}</span> <span class="ver" id="app-version">{{VERSION_LABEL}}</span></h1>
-    <p class="farm">{{FARM_NAME}}</p>
     <p class="sub">Chưa mở trang duyệt. Đặt biến ADMIN_PASSWORD trên Railway rồi khởi động lại service. Trang này không công khai khi thiếu mật khẩu.</p>
   </div>
   <script>window.OMNI_SALE={{BRAND_JSON}};</script>
