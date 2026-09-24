@@ -405,6 +405,7 @@ function draftSnapshot(draft) {
     qr_image_url: draft.qr_image_url,
     triage_level: draft.triage_level || null,
     triage_label: draft.triage_label || null,
+    review_form: draft.review_form || null,
   };
 }
 

@@ -117,6 +117,7 @@ function blankDraft(fields) {
     ai_draft_version: fields.draft_reply,
     triage_level: fields.triage_level || null,
     triage_label: fields.triage_label || null,
+    review_form: fields.review_form || emptyReviewForm(),
   };
 }
 
@@ -132,7 +133,11 @@ function opsStatus(d) {
 
 function decorate(d) {
   if (!d) return null;
-  return { ...d, ops_status: opsStatus(d) };
+  return {
+    ...d,
+    ops_status: opsStatus(d),
+    review_form: parseStoredReviewForm(d.review_form),
+  };
 }
 
 function vietnamDay(iso) {
@@ -185,6 +190,7 @@ function fromRow(row) {
     ai_draft_version: row.ai_draft_version || null,
     triage_level: row.triage_level || null,
     triage_label: row.triage_label || null,
+    review_form: row.review_form || null,
   });
 }
 
@@ -220,7 +226,8 @@ CREATE TABLE IF NOT EXISTS outbound_drafts (
     customer_query      TEXT,
     ai_draft_version    TEXT,
     triage_level        TEXT,
-    triage_label        TEXT
+    triage_label        TEXT,
+    review_form         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_outbound_drafts_status_created
     ON outbound_drafts (approval_status, created_at DESC);
@@ -232,6 +239,7 @@ ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS customer_query TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS ai_draft_version TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS triage_level TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS triage_label TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS review_form TEXT;
 CREATE INDEX IF NOT EXISTS idx_outbound_drafts_triage
     ON outbound_drafts (triage_level, created_at DESC);
 CREATE TABLE IF NOT EXISTS sales_channels (
@@ -387,7 +395,83 @@ function fieldsFrom(body, { requireReply }) {
     message_type: cleanMessageType(body.message_type),
     template_name: cleanText('template_name', body.template_name),
     customer_query: cleanText('customer_query', body.customer_query),
+    review_form: Object.prototype.hasOwnProperty.call(body, 'review_form')
+      ? cleanReviewForm(body.review_form)
+      : emptyReviewForm(),
   };
+}
+
+const REFUND_DECISIONS = new Set(['hoan', 'doi', 'hoi']);
+const DELIVERY_SLOTS = new Set(['all', 'sang', 'chieu', 'toi']);
+
+function emptyReviewForm() {
+  return {
+    refund_decision: null,
+    refund_amount: null,
+    internal_note: null,
+    kiot_ref: null,
+    province_id: null,
+    province_name: null,
+    district_id: null,
+    district_name: null,
+    ward_id: null,
+    ward_name: null,
+    address_detail: null,
+    delivery_slot: null,
+  };
+}
+
+function cleanShort(key, v, max) {
+  if (v == null) return null;
+  const s = String(v).replace(/\0/g, '').trim();
+  if (!s) return null;
+  if (s.length > max) throw new DraftError(400, `${key} quá dài`);
+  return s;
+}
+
+function cleanReviewForm(value) {
+  if (value == null || value === '') return emptyReviewForm();
+  let src = value;
+  if (typeof src === 'string') {
+    try { src = JSON.parse(src); } catch { throw new DraftError(400, 'review_form không hợp lệ'); }
+  }
+  if (!src || typeof src !== 'object' || Array.isArray(src)) {
+    throw new DraftError(400, 'review_form không hợp lệ');
+  }
+  const out = emptyReviewForm();
+  if (src.refund_decision != null && String(src.refund_decision).trim() !== '') {
+    const d = String(src.refund_decision).trim();
+    if (!REFUND_DECISIONS.has(d)) throw new DraftError(400, 'Quyết định hoàn tiền không hợp lệ');
+    out.refund_decision = d;
+  }
+  if (src.delivery_slot != null && String(src.delivery_slot).trim() !== '') {
+    const slot = String(src.delivery_slot).trim();
+    if (!DELIVERY_SLOTS.has(slot)) throw new DraftError(400, 'Thời gian hẹn giao không hợp lệ');
+    out.delivery_slot = slot;
+  }
+  out.refund_amount = cleanShort('refund_amount', src.refund_amount, 40);
+  out.internal_note = cleanShort('internal_note', src.internal_note, 500);
+  out.kiot_ref = cleanShort('kiot_ref', src.kiot_ref, 80);
+  out.province_id = cleanShort('province_id', src.province_id, 32);
+  out.province_name = cleanShort('province_name', src.province_name, 80);
+  out.district_id = cleanShort('district_id', src.district_id, 32);
+  out.district_name = cleanShort('district_name', src.district_name, 80);
+  out.ward_id = cleanShort('ward_id', src.ward_id, 32);
+  out.ward_name = cleanShort('ward_name', src.ward_name, 80);
+  out.address_detail = cleanShort('address_detail', src.address_detail, 200);
+  return out;
+}
+
+function parseStoredReviewForm(raw) {
+  try {
+    return cleanReviewForm(raw);
+  } catch {
+    return emptyReviewForm();
+  }
+}
+
+function reviewFormJson(form) {
+  return JSON.stringify(cleanReviewForm(form || emptyReviewForm()));
 }
 
 function cleanTriage(body) {
@@ -427,6 +511,9 @@ function applyEdits(draft, body) {
   if (Object.prototype.hasOwnProperty.call(body, 'template_name')) {
     next.template_name = cleanText('template_name', body.template_name);
   }
+  if (Object.prototype.hasOwnProperty.call(body, 'review_form')) {
+    next.review_form = cleanReviewForm(body.review_form);
+  }
   next.updated_at = new Date().toISOString();
   return next;
 }
@@ -444,9 +531,9 @@ async function insertDraft(draft) {
        draft_reply, approval_status, kiot_summary, invoice_code, customer_code,
        qr_image_url, pii_note, reviewed_at, sent_at, send_error, send_via, send_hook,
        message_type, template_name, sales_channel, delivery_phase,
-       customer_query, ai_draft_version, triage_level, triage_label
+       customer_query, ai_draft_version, triage_level, triage_label, review_form
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31
      ) RETURNING *`,
     [
       draft.id, draft.created_at, draft.updated_at, draft.channel,
@@ -460,6 +547,7 @@ async function insertDraft(draft) {
       draft.sales_channel, draft.delivery_phase,
       draft.customer_query, draft.ai_draft_version,
       draft.triage_level, draft.triage_label,
+      reviewFormJson(draft.review_form),
     ]
   );
   return fromRow(r.rows[0]);
@@ -481,7 +569,7 @@ async function saveDraft(draft) {
        send_error=$18, send_via=$19, send_hook=$20, updated_at=$21,
        message_type=$22, template_name=$23, sales_channel=$24, delivery_phase=$25,
        customer_query=$26, ai_draft_version=$27,
-       triage_level=$28, triage_label=$29
+       triage_level=$28, triage_label=$29, review_form=$30
      WHERE id=$1
      RETURNING *`,
     [
@@ -494,6 +582,7 @@ async function saveDraft(draft) {
       draft.message_type, draft.template_name, draft.sales_channel, draft.delivery_phase,
       draft.customer_query, draft.ai_draft_version,
       draft.triage_level, draft.triage_label,
+      reviewFormJson(draft.review_form),
     ]
   );
   return fromRow(r.rows[0]);
@@ -561,9 +650,18 @@ async function listDrafts(query) {
   const all = db.DB_ENABLED
     ? (await db.pool.query('SELECT * FROM outbound_drafts ORDER BY created_at DESC LIMIT 500')).rows.map(fromRow)
     : [...memory.values()].map(d => decorate(d));
-  const scoped = all.filter(d => matchesScope(d, q));
+  const channelScoped = all.filter(d => matchesScope(d, { ...q, triage: null }));
   const counts = emptyOpsCounts();
-  for (const d of scoped) counts[opsStatus(d)] = (counts[opsStatus(d)] || 0) + 1;
+  for (const d of channelScoped) counts[opsStatus(d)] = (counts[opsStatus(d)] || 0) + 1;
+  const triageCounts = { hot: 0, urgent: 0, normal: 0 };
+  for (const d of channelScoped) {
+    if (q.ops && opsStatus(d) !== q.ops) continue;
+    if (q.status && d.approval_status !== q.status) continue;
+    if (Object.prototype.hasOwnProperty.call(triageCounts, d.triage_level)) {
+      triageCounts[d.triage_level] += 1;
+    }
+  }
+  const scoped = channelScoped.filter(d => matchesScope(d, q));
   const drafts = scoped
     .filter(d => {
       if (q.status && d.approval_status !== q.status) return false;
@@ -572,7 +670,7 @@ async function listDrafts(query) {
     })
     .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
     .slice(0, 200);
-  return { drafts, counts, storage: db.DB_ENABLED ? 'postgres' : 'memory' };
+  return { drafts, counts, triageCounts, storage: db.DB_ENABLED ? 'postgres' : 'memory' };
 }
 
 async function messageStats(salesChannel) {
@@ -859,7 +957,8 @@ const CONTENT_KEYS = [
 ];
 
 function contentChanged(before, after) {
-  return CONTENT_KEYS.some(key => !sameText(before[key], after[key]));
+  if (CONTENT_KEYS.some(key => !sameText(before[key], after[key]))) return true;
+  return JSON.stringify(before.review_form || null) !== JSON.stringify(after.review_form || null);
 }
 
 async function writeDraftAudit(existing, saved, { actor, wantSend, send }) {
