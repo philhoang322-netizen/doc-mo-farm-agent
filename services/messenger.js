@@ -67,28 +67,133 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(left, right);
 }
 
+const SIGNATURE_NOTE = {
+  missing_secret: 'Thiếu FB_APP_SECRET',
+  missing_header: 'Meta không gửi X-Hub-Signature-256',
+  bad_prefix: 'Header không phải dạng sha256=. Xem scheme.',
+  mismatch: 'HMAC không khớp. So expectedPrefix với gotPrefix.',
+  raw_body: 'Không đọc được byte thô của POST',
+};
+
+function rawBuffer(rawBody) {
+  if (Buffer.isBuffer(rawBody)) return rawBody;
+  if (rawBody instanceof Uint8Array) {
+    return Buffer.from(rawBody.buffer, rawBody.byteOffset, rawBody.byteLength);
+  }
+  if (rawBody == null) return Buffer.alloc(0);
+  return Buffer.from(String(rawBody), 'utf8');
+}
+
+function unquote(value) {
+  const text = String(value || '').replace(/^\uFEFF/, '').trim();
+  if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
+    return text.slice(1, -1).trim();
+  }
+  return text;
+}
+
+/** One header may be repeated and joined with a comma. Each piece is a candidate. */
+function headerTokens(signatureHeader) {
+  const list = Array.isArray(signatureHeader) ? signatureHeader : [signatureHeader];
+  const out = [];
+  for (const item of list) {
+    if (item == null) continue;
+    const text = unquote(item);
+    if (!text) continue;
+    for (const part of text.split(',')) {
+      const token = unquote(part);
+      if (token) out.push(token);
+    }
+  }
+  return out;
+}
+
+function splitScheme(token) {
+  const trimmed = unquote(token);
+  const eq = trimmed.indexOf('=');
+  if (eq <= 0) return { scheme: '', value: trimmed };
+  const scheme = trimmed.slice(0, eq).trim().toLowerCase();
+  return {
+    scheme: /^[a-z0-9]{1,16}$/.test(scheme) ? scheme : '',
+    value: unquote(trimmed.slice(eq + 1)),
+  };
+}
+
+/** First 8 hex chars of a full SHA-256 digest. Anything else is omitted so a secret is not logged. */
+function digestPrefix(hex) {
+  const s = String(hex || '').trim().toLowerCase();
+  return /^[0-9a-f]{64}$/.test(s) ? s.slice(0, 8) : undefined;
+}
+
 /**
  * Meta signs the raw request bytes: `sha256=` + hex HMAC-SHA256(FB_APP_SECRET).
- * @returns {{ok:boolean, reason?:string}}
+ * The prefix and the hex digest are compared case-insensitively. Hex is
+ * case-insensitive by definition; a strict `sha256=` / lowercase compare
+ * rejects a valid Meta signature.
+ * Hash the captured bytes, not JSON.stringify(req.body). Meta signs the
+ * escaped-unicode payload (`ä` on the wire is `\u00e4`).
+ * @returns {{ok:boolean, reason?:string, expectedPrefix?:string, gotPrefix?:string, bodySha256Prefix?:string, gotLen?:number, scheme?:string}}
  */
 function verifySignature(rawBody, signatureHeader) {
   const secret = appSecret();
   if (!secret) return { ok: false, reason: 'missing_secret' };
-  const header = signatureHeader == null ? '' : String(signatureHeader);
-  if (!header) return { ok: false, reason: 'missing_header' };
-  if (!header.startsWith('sha256=')) return { ok: false, reason: 'bad_signature' };
-  const raw = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8');
+
+  const tokens = headerTokens(signatureHeader);
+  if (tokens.length === 0) return { ok: false, reason: 'missing_header' };
+
+  const raw = rawBuffer(rawBody);
   const expected = crypto.createHmac('sha256', secret).update(raw).digest('hex');
-  const got = header.slice('sha256='.length);
-  if (!safeEqual(got, expected)) return { ok: false, reason: 'bad_signature' };
-  return { ok: true };
+  const bodySha256Prefix = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 8);
+
+  let sawSha256 = false;
+  let gotHex = '';
+  let scheme = '';
+
+  for (const token of tokens) {
+    const parsed = splitScheme(token);
+    if (parsed.scheme === 'sha256') scheme = 'sha256';
+    else if (!scheme && parsed.scheme) scheme = parsed.scheme;
+    if (parsed.scheme !== 'sha256') continue;
+    sawSha256 = true;
+    const hex = parsed.value.trim().toLowerCase();
+    if (!gotHex) gotHex = hex;
+    if (/^[0-9a-f]{64}$/.test(hex) && safeEqual(hex, expected)) return { ok: true };
+  }
+
+  const diag = {
+    expectedPrefix: expected.slice(0, 8),
+    bodySha256Prefix,
+  };
+  if (scheme) diag.scheme = scheme;
+
+  if (!sawSha256) {
+    const sample = splitScheme(tokens[0]).value.trim().toLowerCase();
+    const gotPrefix = digestPrefix(sample);
+    return {
+      ok: false,
+      reason: 'bad_prefix',
+      ...diag,
+      gotLen: sample.length,
+      ...(gotPrefix ? { gotPrefix } : {}),
+    };
+  }
+
+  const gotPrefix = digestPrefix(gotHex);
+  return {
+    ok: false,
+    reason: 'mismatch',
+    ...diag,
+    gotLen: gotHex.length,
+    ...(gotPrefix ? { gotPrefix } : {}),
+  };
 }
 
 /**
  * Read the exact POST bytes for /messenger/webhook before express.json.
  * Meta signs those bytes. A JSON parser that skips a non-json content type
  * would otherwise leave req.rawBody unset and every Page POST looks unsigned.
- * Sets req._body so the later global JSON parser does not read the stream again.
+ * Sets req._body after the stream is consumed. body-parser 2 then skips the
+ * request because the stream is already finished.
  */
 function captureRawBody(req, res, next) {
   if (req.method !== 'POST') return next();
@@ -96,12 +201,18 @@ function captureRawBody(req, res, next) {
     if (err) {
       console.error('messenger_bad_signature', {
         reason: 'raw_body',
+        note: SIGNATURE_NOTE.raw_body,
         rawBodyLength: 0,
         signatureHeaderPresent: Boolean(req.get('x-hub-signature-256')),
       });
       return res.status(err.status || 400).json({ ok: false, error: 'bad_body' });
     }
-    const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const raw = Buffer.isBuffer(req.body)
+      ? req.body
+      : (req.body instanceof Uint8Array ? rawBuffer(req.body) : null);
+    // Parser skipped (no body). Do not invent an empty buffer: that would
+    // block express.json from keeping the real bytes on req.rawBody.
+    if (!raw) return next();
     req.rawBody = raw;
     req._body = true;
     if (!raw.length) {
@@ -119,18 +230,36 @@ function captureRawBody(req, res, next) {
   });
 }
 
-function signatureDetail(req, reason) {
+function safeContentType(req) {
+  if (typeof req.get !== 'function') return undefined;
+  const match = String(req.get('content-type') || '').toLowerCase()
+    .match(/^\s*([a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+)\s*(?:;\s*charset\s*=\s*"?([a-z0-9._-]+)"?)?/);
+  if (!match) return undefined;
+  return match[2] ? `${match[1]}; charset=${match[2]}` : match[1];
+}
+
+function signatureDetail(req, result) {
+  const reason = typeof result === 'string' ? result : (result && result.reason) || 'bad_signature';
   const raw = Buffer.isBuffer(req.rawBody) ? req.rawBody : null;
-  const header = req.get('x-hub-signature-256');
-  return {
+  const header = typeof req.get === 'function' ? req.get('x-hub-signature-256') : '';
+  const detail = {
     reason,
+    note: SIGNATURE_NOTE[reason] || 'Chữ ký webhook không hợp lệ',
     rawBodyLength: raw ? raw.length : 0,
     signatureHeaderPresent: Boolean(header),
   };
+  const contentType = safeContentType(req);
+  if (contentType) detail.contentType = contentType;
+  if (result && typeof result === 'object') {
+    for (const key of ['expectedPrefix', 'gotPrefix', 'bodySha256Prefix', 'gotLen', 'scheme']) {
+      if (result[key] !== undefined && result[key] !== '') detail[key] = result[key];
+    }
+  }
+  return detail;
 }
 
 function signBody(rawBody, secret = appSecret()) {
-  const raw = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8');
+  const raw = rawBuffer(rawBody);
   return 'sha256=' + crypto.createHmac('sha256', secret).update(raw).digest('hex');
 }
 
@@ -333,7 +462,7 @@ function mount(app, deps) {
     }
     const sig = verifySignature(req.rawBody, req.get('x-hub-signature-256'));
     if (!sig.ok) {
-      const detail = signatureDetail(req, sig.reason);
+      const detail = signatureDetail(req, sig);
       // stdout/stderr, not only the in-memory debug log. Never include the
       // secret, the signature value, or the body.
       console.error('messenger_bad_signature', detail);
