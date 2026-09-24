@@ -213,8 +213,13 @@ function sendAsset(name, type) {
 
 async function list(req, res) {
   try {
-    const status = typeof req.query.status === 'string' && req.query.status ? req.query.status : null;
-    res.json(await drafts.listDrafts(status));
+    const q = req.query || {};
+    res.json(await drafts.listDrafts({
+      status: typeof q.status === 'string' && q.status ? q.status : null,
+      ops: typeof q.ops === 'string' && q.ops ? q.ops : null,
+      type: typeof q.type === 'string' && q.type ? q.type : null,
+      salesChannel: typeof q.kenh === 'string' && q.kenh ? q.kenh : null,
+    }));
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : 'Không tải được danh sách' });
   }
@@ -224,6 +229,33 @@ function actorNameFrom(req) {
   const bodyName = req.body && typeof req.body.actor_name === 'string' ? req.body.actor_name : '';
   const headerName = req.get('x-actor-name') || '';
   return bodyName || headerName;
+}
+
+async function stats(req, res) {
+  try {
+    const kenh = typeof req.query.kenh === 'string' && req.query.kenh ? req.query.kenh : null;
+    res.json(await drafts.messageStats(kenh));
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'Không tải được thống kê' });
+  }
+}
+
+async function channels(req, res) {
+  try {
+    res.json({ channels: await drafts.listChannels() });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'Không tải được kênh bán' });
+  }
+}
+
+async function createChannel(req, res) {
+  try {
+    const channel = await drafts.addChannel(req.body && req.body.name);
+    res.status(201).json({ channel });
+  } catch (e) {
+    const status = e.status || 500;
+    res.status(status).json({ error: e.status ? e.message : 'Không thêm được kênh' });
+  }
 }
 
 async function create(req, res) {
@@ -348,6 +380,9 @@ function mount(app) {
   app.get('/admin/audit.js', requirePageAsset, sendAsset('audit.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/audit', auditPage);
   app.get('/admin/api/audit', requireApi, listAudit);
+  app.get('/admin/api/channels', requireApi, channels);
+  app.post('/admin/api/channels', requireApi, createChannel);
+  app.get('/admin/api/stats', requireApi, stats);
   app.get('/admin/api/drafts', requireApi, list);
   app.post('/admin/api/drafts', requireApi, create);
   app.patch('/admin/api/drafts/:id', requireApi, patch);

@@ -5,24 +5,31 @@
     const verEl = document.getElementById('app-version');
     if (nameEl && brand.product) nameEl.textContent = brand.product;
     if (verEl && brand.label) verEl.textContent = brand.label;
-    if (brand.product) document.title = 'Duyệt tin nhắn — ' + brand.product;
+    if (brand.product) document.title = 'Tin nhắn — ' + brand.product;
   }
 
-  const STATUSES = ['PENDING_REVIEW', 'APPROVED', 'REJECTED', 'SENT'];
-  const LABELS = {
-    PENDING_REVIEW: 'Chờ duyệt',
-    APPROVED: 'Đã duyệt',
-    REJECTED: 'Từ chối',
-    SENT: 'Đã gửi',
+  const OPS = ['success', 'failure', 'pending', 'sending', 'queued', 'rejected'];
+  const OPS_LABEL = {
+    success: 'Thành công',
+    failure: 'Thất bại',
+    pending: 'Chờ xử lý',
+    sending: 'Đang gửi',
+    queued: 'Chờ gửi',
+    rejected: 'Từ chối',
   };
+  const TYPE_LABEL = { follower: 'Follower', zns: 'ZNS', broadcast: 'Broadcast' };
 
   const listEl = document.getElementById('list');
   const detailEl = document.getElementById('detail');
   const storageEl = document.getElementById('storage');
   const toastEl = document.getElementById('toast');
   const actorInput = document.getElementById('actor-name');
-  const tabs = [...document.querySelectorAll('[data-status]')];
   const ACTOR_KEY = 'dmf_actor_name';
+  const dayEl = document.getElementById('stats-day');
+  const tplEl = document.getElementById('stats-template');
+  const channelEl = document.getElementById('channels');
+  const tabs = [...document.querySelectorAll('[data-ops]')];
+  const typeTabs = [...document.querySelectorAll('[data-type]')];
 
   if (actorInput) {
     actorInput.value = localStorage.getItem(ACTOR_KEY) || '';
@@ -35,8 +42,11 @@
     return actorInput ? actorInput.value.trim() : '';
   }
 
-  const initial = new URLSearchParams(location.search).get('status');
-  let status = STATUSES.includes(initial) ? initial : 'PENDING_REVIEW';
+  const params = new URLSearchParams(location.search);
+  let ops = OPS.includes(params.get('ops')) ? params.get('ops') : 'pending';
+  let messageType = Object.prototype.hasOwnProperty.call(TYPE_LABEL, params.get('type')) ? params.get('type') : '';
+  let salesChannel = params.get('kenh') || 'farm';
+  let channels = [];
   let drafts = [];
   let counts = {};
   let selectedId = location.hash ? location.hash.slice(1) : null;
@@ -51,32 +61,108 @@
   }
 
   function rememberUrl() {
+    const q = new URLSearchParams();
+    q.set('ops', ops);
+    q.set('kenh', salesChannel);
+    if (messageType) q.set('type', messageType);
     const hash = selectedId ? '#' + selectedId : '';
-    history.replaceState(null, '', location.pathname + '?status=' + status + hash);
+    history.replaceState(null, '', location.pathname + '?' + q.toString() + hash);
+  }
+
+  function guardSwitch(next) {
+    if (dirty && !confirm('Bạn đang sửa dở. Đổi mục sẽ bỏ phần chưa lưu?')) return false;
+    dirty = false;
+    selectedId = null;
+    detailStamp = '';
+    document.body.classList.remove('show-detail');
+    next();
+    rememberUrl();
+    syncTabs();
+    load();
+    return true;
   }
 
   tabs.forEach(btn => {
     btn.addEventListener('click', () => {
-      if (btn.dataset.status === status) return;
-      if (dirty && !confirm('Bạn đang sửa dở. Đổi mục sẽ bỏ phần chưa lưu?')) return;
+      if (btn.dataset.ops === ops) return;
+      guardSwitch(() => { ops = btn.dataset.ops; });
+    });
+  });
+
+  typeTabs.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const next = btn.dataset.type || '';
+      if (next === messageType) return;
+      guardSwitch(() => { messageType = next; });
+    });
+  });
+
+  document.getElementById('add-channel').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = e.target.elements.name;
+    const name = input.value.trim();
+    if (!name) return;
+    try {
+      const res = await api('/admin/api/channels', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      });
+      input.value = '';
+      salesChannel = res.channel.id;
+      toast('Đã thêm kênh ' + res.channel.name + '.');
+      rememberUrl();
+      await loadChannels();
+      await load();
+    } catch (err) {
+      if (err.message !== 'unauthorized') toast(err.message);
+    }
+  });
+
+  document.getElementById('create-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(e.target).entries());
+    try {
+      const res = await api('/admin/api/drafts', {
+        method: 'POST',
+        body: JSON.stringify({
+          channel: 'zalo',
+          sales_channel: salesChannel,
+          customer_name: data.customer_name,
+          message_type: data.message_type,
+          template_name: data.template_name,
+          draft_reply: data.draft_reply,
+        }),
+      });
+      if (!res.draft || res.draft.approval_status !== 'PENDING_REVIEW') {
+        toast('Tin mới phải ở Chờ xử lý.');
+        return;
+      }
+      e.target.reset();
+      ops = 'pending';
+      messageType = '';
+      selectedId = res.draft.id;
       dirty = false;
-      status = btn.dataset.status;
-      selectedId = null;
-      detailStamp = '';
-      document.body.classList.remove('show-detail');
+      toast('Đã đưa vào chờ xử lý.');
       rememberUrl();
       syncTabs();
-      load();
-    });
+      listStamp = '';
+      detailStamp = '';
+      await load();
+    } catch (err) {
+      if (err.message !== 'unauthorized') toast(err.message);
+    }
   });
 
   function syncTabs() {
     tabs.forEach(btn => {
-      const on = btn.dataset.status === status;
+      const on = btn.dataset.ops === ops;
       btn.setAttribute('aria-selected', on ? 'true' : 'false');
-      const n = counts[btn.dataset.status];
+      const n = counts[btn.dataset.ops];
       const b = btn.querySelector('.count');
       b.textContent = n ? String(n) : '';
+    });
+    typeTabs.forEach(btn => {
+      btn.setAttribute('aria-selected', (btn.dataset.type || '') === messageType ? 'true' : 'false');
     });
   }
 
@@ -95,6 +181,12 @@
     if (diff < 3600) return Math.floor(diff / 60) + ' phút trước';
     if (diff < 86400) return Math.floor(diff / 3600) + ' giờ trước';
     return new Date(iso).toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
+  }
+
+  function formatDay(iso) {
+    const parts = String(iso || '').split('-');
+    if (parts.length !== 3) return iso || '';
+    return parts[2] + '/' + parts[1] + '/' + parts[0];
   }
 
   function el(tag, attrs, children) {
@@ -153,14 +245,86 @@
     return data;
   }
 
+  function switchChannel(id) {
+    if (id === salesChannel) return;
+    guardSwitch(() => { salesChannel = id; renderChannels(); });
+  }
+
+  function renderChannels() {
+    channelEl.textContent = '';
+    channels.forEach(c => {
+      const btn = el('button', {
+        type: 'button',
+        role: 'tab',
+        'aria-selected': c.id === salesChannel ? 'true' : 'false',
+        text: c.name,
+      });
+      btn.addEventListener('click', () => switchChannel(c.id));
+      channelEl.appendChild(btn);
+    });
+  }
+
+  function renderStats(data) {
+    dayEl.textContent = '';
+    tplEl.textContent = '';
+    const days = (data && data.byDay) || [];
+    const tpls = (data && data.byTemplate) || [];
+    if (!days.length) {
+      dayEl.appendChild(el('p', { class: 'empty', text: 'Chưa có tin gửi thành công trong 14 ngày.' }));
+    } else {
+      dayEl.appendChild(statTable(days.map(row => ({
+        label: formatDay(row.date),
+        count: row.count,
+      }))));
+    }
+    if (!tpls.length) {
+      tplEl.appendChild(el('p', { class: 'empty', text: 'Chưa có tin gửi thành công theo mẫu.' }));
+    } else {
+      tplEl.appendChild(statTable(tpls.map(row => ({
+        label: row.template_name || 'Chưa đặt mẫu',
+        count: row.count,
+      }))));
+    }
+  }
+
+  function statTable(rows) {
+    const max = Math.max(...rows.map(row => row.count), 1);
+    const table = el('table');
+    rows.forEach(row => {
+      const track = el('div', { class: 'bar' });
+      track.appendChild(el('span', { style: 'width:' + Math.round((row.count / max) * 100) + '%' }));
+      table.appendChild(el('tr', null, [
+        el('td', { text: row.label }),
+        el('td', { class: 'num', text: String(row.count) }),
+        el('td', null, [track]),
+      ]));
+    });
+    return table;
+  }
+
+  async function loadChannels() {
+    const data = await api('/admin/api/channels');
+    channels = data.channels || [];
+    if (!channels.some(c => c.id === salesChannel)) salesChannel = 'farm';
+    renderChannels();
+  }
+
   async function load() {
     if (!loadedOnce) listEl.textContent = 'Đang tải…';
+    const q = new URLSearchParams();
+    q.set('ops', ops);
+    q.set('kenh', salesChannel);
+    if (messageType) q.set('type', messageType);
     try {
-      const data = await api('/admin/api/drafts?status=' + encodeURIComponent(status));
+      const [data, stats] = await Promise.all([
+        api('/admin/api/drafts?' + q.toString()),
+        api('/admin/api/stats?kenh=' + encodeURIComponent(salesChannel)),
+      ]);
       drafts = data.drafts || [];
       counts = data.counts || {};
       loadedOnce = true;
       syncTabs();
+      renderStats(stats);
       if (data.storage && data.storage !== 'postgres') {
         storageEl.hidden = false;
         storageEl.textContent = 'Bản nháp đang nằm trong bộ nhớ của server. Khởi động lại máy sẽ mất hàng đợi. Trên Railway hãy đặt DATABASE_URL để lưu vào Postgres.';
@@ -203,7 +367,7 @@
     if (!drafts.length) {
       listEl.appendChild(el('p', {
         class: 'empty',
-        text: 'Chưa có tin nào ở mục này. Khi có bản nháp mới, tin sẽ hiện ở đây để bạn sửa rồi mới gửi.',
+        text: 'Chưa có tin nào ở mục này. Tin mới vào Chờ xử lý, chỉ gửi sau khi duyệt.',
       }));
       if (!selectedId) showPlaceholder();
       return;
@@ -214,9 +378,17 @@
       btn.appendChild(el('div', { class: 'intent', text: d.customer_intent || d.draft_reply || '' }));
       const meta = el('div', { class: 'meta' });
       meta.appendChild(el('span', {
+        class: 'tag ' + (d.ops_status || 'pending'),
+        text: OPS_LABEL[d.ops_status] || OPS_LABEL.pending,
+      }));
+      meta.appendChild(el('span', {
         class: 'tag' + (d.channel === 'messenger' ? ' messenger' : ''),
         text: d.channel === 'messenger' ? 'FB / Messenger' : 'Zalo',
       }));
+      if (d.message_type && TYPE_LABEL[d.message_type]) {
+        meta.appendChild(el('span', { class: 'tag muted', text: TYPE_LABEL[d.message_type] }));
+      }
+      if (d.template_name) meta.appendChild(el('span', { class: 'tag muted', text: d.template_name }));
       if (d.assigned_department) meta.appendChild(el('span', { class: 'tag muted', text: d.assigned_department }));
       if (needsHumanTicket(d)) {
         meta.appendChild(el('span', { class: 'tag warn', text: 'Cần human hỗ trợ khẩn cấp' }));
@@ -250,6 +422,10 @@
     return data;
   }
 
+  function channelOptions() {
+    return channels.map(c => ({ value: c.id, label: c.name }));
+  }
+
   function renderDetail() {
     const d = currentDraft();
     detailEl.textContent = '';
@@ -264,7 +440,10 @@
     form.addEventListener('submit', e => e.preventDefault());
     form.appendChild(back);
     form.appendChild(el('h2', { text: d.customer_name || 'Khách chưa có tên' }));
-    form.appendChild(el('p', { class: 'sub', text: LABELS[d.approval_status] + ' · ' + when(d.created_at) }));
+    form.appendChild(el('p', {
+      class: 'sub',
+      text: (OPS_LABEL[d.ops_status] || OPS_LABEL.pending) + ' · ' + when(d.created_at),
+    }));
     if (d.pii_note) {
       form.appendChild(el('p', { class: 'hint', text: d.pii_note }));
     }
@@ -286,8 +465,22 @@
     const grid = el('div', { class: 'grid' });
     grid.appendChild(field('customer_name', 'Tên khách', d.customer_name, { disabled: locked }));
     grid.appendChild(field('customer_phone', 'Số điện thoại', d.customer_phone, { disabled: locked }));
+    grid.appendChild(field('sales_channel', 'Kênh bán', d.sales_channel || 'farm', {
+      disabled: locked,
+      options: channelOptions(),
+    }));
+    grid.appendChild(field('message_type', 'Loại tin', d.message_type || '', {
+      disabled: locked,
+      options: [
+        { value: '', label: 'Chưa chọn' },
+        { value: 'follower', label: 'Follower' },
+        { value: 'zns', label: 'ZNS' },
+        { value: 'broadcast', label: 'Broadcast' },
+      ],
+    }));
+    grid.appendChild(field('template_name', 'Mẫu', d.template_name, { disabled: locked, wide: true }));
     grid.appendChild(field('customer_user_id', 'User id', d.customer_user_id, { disabled: locked, wide: true }));
-    grid.appendChild(field('channel', 'Kênh', d.channel, {
+    grid.appendChild(field('channel', 'Đường gửi', d.channel, {
       disabled: locked,
       options: [
         { value: 'zalo', label: 'Zalo' },
@@ -298,7 +491,7 @@
     form.appendChild(grid);
     form.appendChild(el('p', {
       class: 'hint',
-      text: 'Zalo OA: dán user id. Zalo Bot: bot_ rồi tới chat id. Messenger: fb_ rồi tới PSID. Bộ phận là tuyến lọc (Sales, FAQ, Người thật, Khác). Duyệt và gửi mới đẩy tin đi.',
+      text: '@Farm gửi qua Zalo sau khi duyệt. Zalo Bot dùng bot_ rồi tới chat id. Messenger dùng fb_ rồi tới PSID và chỉ gửi khi bật MESSENGER_ENABLED rồi bấm Duyệt và gửi. Shopee, FB và kênh tự thêm chưa có đường gửi — duyệt xong tin nằm ở Chờ gửi.',
     }));
 
     const extra = el('details');
@@ -315,8 +508,7 @@
     extraGrid.appendChild(field('qr_image_url', 'Link ảnh QR', d.qr_image_url, { disabled: locked, wide: true }));
     extra.appendChild(extraGrid);
     if (d.qr_image_url && /^https?:\/\//i.test(d.qr_image_url)) {
-      const img = el('img', { class: 'qr', alt: 'Mã QR', src: d.qr_image_url });
-      extra.appendChild(img);
+      extra.appendChild(el('img', { class: 'qr', alt: 'Mã QR', src: d.qr_image_url }));
     }
     form.appendChild(extra);
 
@@ -332,7 +524,7 @@
         actions.appendChild(actionButton('Từ chối', 'danger', () => reject()));
       }
       if (d.approval_status !== 'PENDING_REVIEW') {
-        actions.appendChild(actionButton('Đưa về chờ duyệt', 'ghost', () => reopen()));
+        actions.appendChild(actionButton('Đưa về chờ xử lý', 'ghost', () => reopen()));
       }
     }
     form.appendChild(actions);
@@ -350,6 +542,9 @@
     const data = readForm();
     return Object.assign({
       channel: data.channel,
+      sales_channel: data.sales_channel,
+      message_type: data.message_type,
+      template_name: data.template_name,
       customer_name: data.customer_name,
       customer_phone: data.customer_phone,
       customer_user_id: data.customer_user_id,
@@ -377,12 +572,16 @@
       dirty = false;
       const send = res.send;
       if (send && send.sent) toast('Đã gửi cho khách.');
+      else if (send && send.pendingAdapter) toast('Đã duyệt. Kênh chưa có đường gửi, tin nằm ở Chờ gửi.');
       else if (send && !send.sent) toast('Đã duyệt, chưa gửi được. Xem lý do phía trên.');
       else toast(okText);
-      const nextStatus = res.draft && res.draft.approval_status;
-      if (nextStatus && nextStatus !== status) {
-        status = nextStatus;
-        selectedId = res.draft.id;
+      const next = res.draft;
+      if (next) {
+        if (next.sales_channel && next.sales_channel !== salesChannel) salesChannel = next.sales_channel;
+        if (messageType && next.message_type !== messageType) messageType = '';
+        if (next.ops_status && next.ops_status !== ops) ops = next.ops_status;
+        selectedId = next.id;
+        renderChannels();
         syncTabs();
       }
       detailStamp = '';
@@ -404,9 +603,13 @@
   }
   function send() {
     const data = readForm();
-    const msg = data.channel === 'messenger'
-      ? 'Gửi tin này cho khách trên Facebook Messenger?'
-      : 'Gửi tin này cho khách?';
+    let msg = 'Gửi tin này cho khách?';
+    if (data.sales_channel && data.sales_channel !== 'farm') {
+      const ch = channels.find(c => c.id === data.sales_channel);
+      msg = 'Kênh ' + (ch ? ch.name : data.sales_channel) + ' chưa có đường gửi. Tin sẽ được duyệt và nằm ở Chờ gửi. Tiếp tục?';
+    } else if (data.channel === 'messenger') {
+      msg = 'Gửi tin này cho khách trên Facebook Messenger?';
+    }
     if (!confirm(msg)) return;
     return patch(payload({ approval_status: 'APPROVED', send: true }), 'Đã duyệt.');
   }
@@ -419,5 +622,10 @@
   }, 20000);
 
   syncTabs();
-  load();
+  loadChannels().then(load).catch(e => {
+    if (e.message !== 'unauthorized') {
+      listEl.textContent = '';
+      listEl.appendChild(el('p', { class: 'empty', text: e.message }));
+    }
+  });
 })();

@@ -21,6 +21,18 @@ const messenger = require('./messenger');
 const STATUSES = ['PENDING_REVIEW', 'APPROVED', 'REJECTED', 'SENT'];
 const STATUS_SET = new Set(STATUSES);
 
+// Display buckets for the ops console. approval_status in the database
+// stays on the four HITL values above.
+const OPS_STATUSES = ['success', 'failure', 'pending', 'sending', 'queued', 'rejected'];
+const OPS_SET = new Set(OPS_STATUSES);
+const MESSAGE_TYPES = ['follower', 'zns', 'broadcast'];
+const MESSAGE_TYPE_SET = new Set(MESSAGE_TYPES);
+const BUILTIN_CHANNELS = [
+  { id: 'farm', name: '@Farm', builtin: true },
+  { id: 'shopee', name: 'Shopee', builtin: true },
+  { id: 'fb', name: 'FB', builtin: true },
+];
+
 const LIMITS = {
   customer_name: 200,
   customer_phone: 40,
@@ -34,6 +46,7 @@ const LIMITS = {
   customer_code: 80,
   qr_image_url: 1000,
   pii_note: 300,
+  template_name: 120,
 };
 
 const EDITABLE = [
@@ -52,6 +65,7 @@ class DraftError extends Error {
 // In-memory fallback used only when DATABASE_URL is unset.
 // Railway restarts wipe this Map. See jsonFilePath() for the local file mirror.
 const memory = new Map();
+const customChannels = new Map();
 let ready = null;
 
 function storageMode() {
@@ -92,7 +106,37 @@ function blankDraft(fields) {
     send_error: null,
     send_via: null,
     send_hook: null,
+    message_type: fields.message_type,
+    template_name: fields.template_name,
+    sales_channel: fields.sales_channel || 'farm',
+    delivery_phase: null,
   };
+}
+
+function opsStatus(d) {
+  if (!d) return 'pending';
+  if (d.delivery_phase === 'sending') return 'sending';
+  if (d.approval_status === 'SENT') return 'success';
+  if (d.approval_status === 'REJECTED') return 'rejected';
+  if (d.send_error) return 'failure';
+  if (d.approval_status === 'APPROVED') return 'queued';
+  return 'pending';
+}
+
+function decorate(d) {
+  if (!d) return null;
+  return { ...d, ops_status: opsStatus(d) };
+}
+
+function vietnamDay(iso) {
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return null;
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(t);
 }
 
 function toIso(d) {
@@ -103,7 +147,7 @@ function toIso(d) {
 
 function fromRow(row) {
   if (!row) return null;
-  return {
+  return decorate({
     id: row.id,
     created_at: toIso(row.created_at),
     updated_at: toIso(row.updated_at),
@@ -126,7 +170,11 @@ function fromRow(row) {
     send_error: row.send_error || null,
     send_via: row.send_via || null,
     send_hook: row.send_hook || null,
-  };
+    message_type: row.message_type || null,
+    template_name: row.template_name || null,
+    sales_channel: row.sales_channel || 'farm',
+    delivery_phase: row.delivery_phase || null,
+  });
 }
 
 const SCHEMA_SQL = `
@@ -153,10 +201,23 @@ CREATE TABLE IF NOT EXISTS outbound_drafts (
     sent_at             TIMESTAMPTZ,
     send_error          TEXT,
     send_via            TEXT,
-    send_hook           TEXT
+    send_hook           TEXT,
+    message_type        TEXT,
+    template_name       TEXT,
+    sales_channel       TEXT,
+    delivery_phase      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_outbound_drafts_status_created
     ON outbound_drafts (approval_status, created_at DESC);
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS message_type TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS template_name TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS sales_channel TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS delivery_phase TEXT;
+CREATE TABLE IF NOT EXISTS sales_channels (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 `;
 
 async function ensureReady() {
@@ -173,6 +234,7 @@ async function ensureReady() {
       return;
     }
     await loadFile();
+    await loadChannels();
   })().catch((err) => {
     ready = null;
     throw err;
@@ -188,7 +250,10 @@ async function loadFile() {
     if (!Array.isArray(parsed)) return;
     memory.clear();
     for (const row of parsed) {
-      if (row && row.id) memory.set(row.id, row);
+      if (row && row.id) {
+        delete row.ops_status;
+        memory.set(row.id, row);
+      }
     }
   } catch (e) {
     console.warn('HITL draft file unreadable, starting empty:', e.message);
@@ -200,7 +265,42 @@ async function persistFile() {
   if (!file) return;
   await fs.promises.mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
-  await fs.promises.writeFile(tmp, JSON.stringify([...memory.values()]));
+  const rows = [...memory.values()].map(row => {
+    const copy = { ...row };
+    delete copy.ops_status;
+    return copy;
+  });
+  await fs.promises.writeFile(tmp, JSON.stringify(rows));
+  await fs.promises.rename(tmp, file);
+}
+
+function channelsFilePath() {
+  const draftFile = jsonFilePath();
+  if (!draftFile) return null;
+  return path.join(path.dirname(draftFile), 'sales_channels.json');
+}
+
+async function loadChannels() {
+  customChannels.clear();
+  const file = channelsFilePath();
+  if (!file || !fs.existsSync(file)) return;
+  try {
+    const parsed = JSON.parse(await fs.promises.readFile(file, 'utf8'));
+    if (!Array.isArray(parsed)) return;
+    for (const row of parsed) {
+      if (row && row.id && row.name) customChannels.set(row.id, row);
+    }
+  } catch (e) {
+    console.warn('Sales channel file unreadable, starting empty:', e.message);
+  }
+}
+
+async function persistChannels() {
+  const file = channelsFilePath();
+  if (!file) return;
+  await fs.promises.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  await fs.promises.writeFile(tmp, JSON.stringify([...customChannels.values()]));
   await fs.promises.rename(tmp, file);
 }
 
@@ -261,7 +361,16 @@ function fieldsFrom(body, { requireReply }) {
     customer_code: cleanText('customer_code', body.customer_code),
     qr_image_url: cleanUrl(body.qr_image_url),
     pii_note: cleanText('pii_note', body.pii_note),
+    message_type: cleanMessageType(body.message_type),
+    template_name: cleanText('template_name', body.template_name),
   };
+}
+
+function cleanMessageType(v) {
+  if (v == null || String(v).trim() === '') return null;
+  const t = String(v).trim().toLowerCase();
+  if (!MESSAGE_TYPE_SET.has(t)) throw new DraftError(400, 'Loại tin không hợp lệ');
+  return t;
 }
 
 function applyEdits(draft, body) {
@@ -274,6 +383,12 @@ function applyEdits(draft, body) {
     if (key === 'draft_reply') next.draft_reply = cleanReply(body.draft_reply);
     else if (key === 'qr_image_url') next.qr_image_url = cleanUrl(body.qr_image_url);
     else next[key] = cleanText(key, body[key]);
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'message_type')) {
+    next.message_type = cleanMessageType(body.message_type);
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'template_name')) {
+    next.template_name = cleanText('template_name', body.template_name);
   }
   next.updated_at = new Date().toISOString();
   return next;
@@ -290,9 +405,10 @@ async function insertDraft(draft) {
        id, created_at, updated_at, channel, customer_name, customer_phone,
        customer_user_id, customer_intent, assigned_department, ticket_status,
        draft_reply, approval_status, kiot_summary, invoice_code, customer_code,
-       qr_image_url, pii_note, reviewed_at, sent_at, send_error, send_via, send_hook
+       qr_image_url, pii_note, reviewed_at, sent_at, send_error, send_via, send_hook,
+       message_type, template_name, sales_channel, delivery_phase
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
      ) RETURNING *`,
     [
       draft.id, draft.created_at, draft.updated_at, draft.channel,
@@ -302,7 +418,8 @@ async function insertDraft(draft) {
       draft.invoice_code, draft.customer_code, draft.qr_image_url,
       draft.pii_note,
       draft.reviewed_at, draft.sent_at, draft.send_error, draft.send_via,
-      draft.send_hook,
+      draft.send_hook, draft.message_type, draft.template_name,
+      draft.sales_channel, draft.delivery_phase,
     ]
   );
   return fromRow(r.rows[0]);
@@ -321,7 +438,8 @@ async function saveDraft(draft) {
        customer_intent=$6, assigned_department=$7, ticket_status=$8,
        draft_reply=$9, approval_status=$10, kiot_summary=$11, invoice_code=$12,
        customer_code=$13, qr_image_url=$14, pii_note=$15, reviewed_at=$16, sent_at=$17,
-       send_error=$18, send_via=$19, send_hook=$20, updated_at=$21
+       send_error=$18, send_via=$19, send_hook=$20, updated_at=$21,
+       message_type=$22, template_name=$23, sales_channel=$24, delivery_phase=$25
      WHERE id=$1
      RETURNING *`,
     [
@@ -331,6 +449,7 @@ async function saveDraft(draft) {
       draft.kiot_summary, draft.invoice_code, draft.customer_code,
       draft.qr_image_url, draft.pii_note, draft.reviewed_at, draft.sent_at, draft.send_error,
       draft.send_via, draft.send_hook, draft.updated_at,
+      draft.message_type, draft.template_name, draft.sales_channel, draft.delivery_phase,
     ]
   );
   return fromRow(r.rows[0]);
@@ -339,7 +458,10 @@ async function saveDraft(draft) {
 async function createDraft(body, ctx = {}) {
   await ensureReady();
   const fields = fieldsFrom(body, { requireReply: true });
-  const draft = await insertDraft(blankDraft(fields));
+  fields.sales_channel = await assertSalesChannel(
+    body && body.sales_channel ? body.sales_channel : 'farm'
+  );
+  const draft = decorate(await insertDraft(blankDraft(fields)));
   await audit.record({
     actor: ctx.actor || 'ai',
     action: 'draft.created',
@@ -355,46 +477,146 @@ async function createDraft(body, ctx = {}) {
 async function getDraft(id) {
   await ensureReady();
   if (!isUuid(id)) return null;
-  if (!db.DB_ENABLED) return memory.get(id) || null;
+  if (!db.DB_ENABLED) return decorate(memory.get(id) || null);
   const r = await db.pool.query('SELECT * FROM outbound_drafts WHERE id=$1', [id]);
   return fromRow(r.rows[0]);
 }
 
-async function listDrafts(status) {
-  await ensureReady();
-  if (status && !STATUS_SET.has(status)) {
-    throw new DraftError(400, 'status không hợp lệ');
-  }
-  if (!db.DB_ENABLED) {
-    const all = [...memory.values()];
-    const counts = emptyCounts();
-    for (const d of all) counts[d.approval_status] = (counts[d.approval_status] || 0) + 1;
-    const drafts = (status ? all.filter(d => d.approval_status === status) : all)
-      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
-      .slice(0, 200)
-      .map(d => ({ ...d }));
-    return { drafts, counts, storage: 'memory' };
-  }
-  const params = [];
-  let where = '';
-  if (status) {
-    params.push(status);
-    where = 'WHERE approval_status = $1';
-  }
-  const [rows, countRows] = await Promise.all([
-    db.pool.query(
-      `SELECT * FROM outbound_drafts ${where} ORDER BY created_at DESC LIMIT 200`,
-      params
-    ),
-    db.pool.query('SELECT approval_status, COUNT(*)::int AS n FROM outbound_drafts GROUP BY 1'),
-  ]);
-  const counts = emptyCounts();
-  for (const row of countRows.rows) counts[row.approval_status] = row.n;
-  return { drafts: rows.rows.map(fromRow), counts, storage: 'postgres' };
+function normalizeListQuery(query) {
+  if (typeof query === 'string' || query == null) return { status: query || null };
+  return {
+    status: query.status || null,
+    ops: query.ops || null,
+    type: query.type || null,
+    salesChannel: query.salesChannel || null,
+  };
 }
 
-function emptyCounts() {
-  return { PENDING_REVIEW: 0, APPROVED: 0, REJECTED: 0, SENT: 0 };
+function matchesScope(d, q) {
+  const sales = d.sales_channel || 'farm';
+  if (q.salesChannel && sales !== q.salesChannel) return false;
+  if (q.type && d.message_type !== q.type) return false;
+  return true;
+}
+
+function emptyOpsCounts() {
+  return { success: 0, failure: 0, pending: 0, sending: 0, queued: 0, rejected: 0 };
+}
+
+async function listDrafts(query) {
+  await ensureReady();
+  const q = normalizeListQuery(query);
+  if (q.status && !STATUS_SET.has(q.status)) throw new DraftError(400, 'status không hợp lệ');
+  if (q.ops && !OPS_SET.has(q.ops)) throw new DraftError(400, 'ops không hợp lệ');
+  if (q.type && !MESSAGE_TYPE_SET.has(q.type)) throw new DraftError(400, 'Loại tin không hợp lệ');
+  if (q.salesChannel) await assertSalesChannel(q.salesChannel);
+
+  const all = db.DB_ENABLED
+    ? (await db.pool.query('SELECT * FROM outbound_drafts ORDER BY created_at DESC LIMIT 500')).rows.map(fromRow)
+    : [...memory.values()].map(d => decorate(d));
+  const scoped = all.filter(d => matchesScope(d, q));
+  const counts = emptyOpsCounts();
+  for (const d of scoped) counts[opsStatus(d)] = (counts[opsStatus(d)] || 0) + 1;
+  const drafts = scoped
+    .filter(d => {
+      if (q.status && d.approval_status !== q.status) return false;
+      if (q.ops && opsStatus(d) !== q.ops) return false;
+      return true;
+    })
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+    .slice(0, 200);
+  return { drafts, counts, storage: db.DB_ENABLED ? 'postgres' : 'memory' };
+}
+
+async function messageStats(salesChannel) {
+  await ensureReady();
+  if (salesChannel) await assertSalesChannel(salesChannel);
+  const all = db.DB_ENABLED
+    ? (await db.pool.query(
+      `SELECT sent_at, template_name, sales_channel, approval_status
+         FROM outbound_drafts
+        WHERE approval_status = 'SENT'`
+    )).rows.map(row => ({
+      sent_at: toIso(row.sent_at),
+      template_name: row.template_name || null,
+      sales_channel: row.sales_channel || 'farm',
+      approval_status: row.approval_status,
+    }))
+    : [...memory.values()].filter(d => d.approval_status === 'SENT');
+  const sent = all.filter(d => !salesChannel || (d.sales_channel || 'farm') === salesChannel);
+  const byDay = new Map();
+  const byTemplate = new Map();
+  const today = vietnamDay(new Date().toISOString());
+  for (const d of sent) {
+    const day = vietnamDay(d.sent_at);
+    if (!day || !today) continue;
+    const age = (Date.parse(today) - Date.parse(day)) / 86400000;
+    if (age < 0 || age > 13) continue;
+    byDay.set(day, (byDay.get(day) || 0) + 1);
+    const key = (d.template_name || '').trim();
+    byTemplate.set(key, (byTemplate.get(key) || 0) + 1);
+  }
+  return {
+    byDay: [...byDay.entries()]
+      .map(([date, count]) => ({ date, count }))
+      .sort((a, b) => (a.date < b.date ? 1 : -1)),
+    byTemplate: [...byTemplate.entries()]
+      .map(([template_name, count]) => ({ template_name: template_name || null, count }))
+      .sort((a, b) => b.count - a.count || String(a.template_name || '').localeCompare(String(b.template_name || ''), 'vi')),
+  };
+}
+
+async function listChannels() {
+  await ensureReady();
+  if (db.DB_ENABLED) {
+    const r = await db.pool.query('SELECT id, name, created_at FROM sales_channels ORDER BY name');
+    const custom = r.rows.map(row => ({
+      id: row.id,
+      name: row.name,
+      builtin: false,
+      created_at: toIso(row.created_at),
+    }));
+    return BUILTIN_CHANNELS.concat(custom);
+  }
+  const custom = [...customChannels.values()]
+    .sort((a, b) => String(a.name).localeCompare(String(b.name), 'vi'));
+  return BUILTIN_CHANNELS.concat(custom);
+}
+
+async function assertSalesChannel(id) {
+  const clean = String(id || '').trim();
+  if (!clean) throw new DraftError(400, 'Thiếu kênh bán');
+  const channels = await listChannels();
+  if (!channels.some(c => c.id === clean)) throw new DraftError(400, 'Kênh bán không có');
+  return clean;
+}
+
+async function addChannel(name) {
+  await ensureReady();
+  const clean = String(name || '').replace(/\s+/g, ' ').trim();
+  if (clean.length < 1 || clean.length > 40) {
+    throw new DraftError(400, 'Tên kênh cần từ 1 đến 40 ký tự');
+  }
+  const channels = await listChannels();
+  if (channels.some(c => c.name.toLowerCase() === clean.toLowerCase())) {
+    throw new DraftError(400, 'Kênh này đã có');
+  }
+  const row = {
+    id: 'c' + crypto.randomBytes(4).toString('hex'),
+    name: clean,
+    builtin: false,
+    created_at: new Date().toISOString(),
+  };
+  if (!db.DB_ENABLED) {
+    customChannels.set(row.id, row);
+    await persistChannels();
+    return row;
+  }
+  await db.pool.query(
+    'INSERT INTO sales_channels (id, name, created_at) VALUES ($1,$2,$3)',
+    [row.id, row.name, row.created_at]
+  );
+  return row;
 }
 
 function isUuid(id) {
@@ -423,6 +645,17 @@ async function deliver(draft) {
       via: null,
       hook: 'services/drafts.js deliver()',
       error: 'Bản nháp đang trống, chưa gửi.',
+    };
+  }
+
+  if ((draft.sales_channel || 'farm') !== 'farm') {
+    return {
+      ok: false,
+      sent: false,
+      via: null,
+      hook: 'sales_channel:' + draft.sales_channel,
+      error: null,
+      pendingAdapter: true,
     };
   }
 
@@ -658,6 +891,9 @@ async function updateDraft(id, body, ctx = {}) {
     const existing = await getDraft(id);
     if (!existing) return null;
     let next = applyEdits(existing, input);
+    if (Object.prototype.hasOwnProperty.call(input, 'sales_channel')) {
+      next.sales_channel = await assertSalesChannel(input.sales_channel);
+    }
     const wantSend = input.send === true;
     let send = null;
 
@@ -674,8 +910,17 @@ async function updateDraft(id, body, ctx = {}) {
       next.approval_status = 'APPROVED';
       next.reviewed_at = new Date().toISOString();
       next.sent_at = null;
+      next.delivery_phase = 'sending';
+      next.send_error = null;
+      await saveDraft(next);
       send = await deliver(next);
-      if (send.sent) {
+      next.delivery_phase = null;
+      if (send.pendingAdapter) {
+        next.approval_status = 'APPROVED';
+        next.send_via = null;
+        next.sent_at = null;
+        next.send_error = null;
+      } else if (send.sent) {
         next.approval_status = 'SENT';
         next.sent_at = new Date().toISOString();
         next.send_via = send.via;
@@ -685,9 +930,10 @@ async function updateDraft(id, body, ctx = {}) {
         next.sent_at = null;
       }
       next.send_hook = send.hook || null;
-      next.send_error = send.error || null;
+      if (!send.pendingAdapter) next.send_error = send.error || null;
     } else if (Object.prototype.hasOwnProperty.call(input, 'approval_status')) {
       next.approval_status = input.approval_status;
+      next.delivery_phase = null;
       if (input.approval_status === 'PENDING_REVIEW') {
         next.reviewed_at = null;
         next.sent_at = null;
@@ -703,7 +949,7 @@ async function updateDraft(id, body, ctx = {}) {
     if (!saved) return { draft: null, send };
     await writeDraftAudit(existing, saved, { actor, wantSend, send });
     await maybeClaimHandover(existing, saved, body);
-    return { draft: saved, send };
+    return { draft: decorate(saved), send };
   });
 }
 
@@ -745,10 +991,17 @@ async function maybeClaimHandover(existing, saved, body) {
 
 module.exports = {
   STATUSES,
+  OPS_STATUSES,
+  MESSAGE_TYPES,
+  BUILTIN_CHANNELS,
   DraftError,
   storageMode,
+  opsStatus,
   createDraft,
   listDrafts,
   getDraft,
   updateDraft,
+  listChannels,
+  addChannel,
+  messageStats,
 };
