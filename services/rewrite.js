@@ -12,6 +12,7 @@
  * farm to read and approve.
  */
 const Anthropic = require('@anthropic-ai/sdk');
+const llm = require('./llm');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -61,7 +62,7 @@ async function toThuVoice(text, question = '') {
   if (!process.env.ANTHROPIC_API_KEY) return { ok: false, error: 'Thiếu ANTHROPIC_API_KEY' };
 
   try {
-    const res = await claude.messages.create({
+    const { response: res } = await llm.anthropicCreate(claude, {
       model: 'claude-sonnet-4-6',
       max_tokens: 1200,
       system: VOICE,

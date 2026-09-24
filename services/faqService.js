@@ -1,6 +1,7 @@
 require('dotenv').config();
 const Anthropic = require('@anthropic-ai/sdk');
 const db = require('./database');
+const llm = require('./llm');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -54,7 +55,7 @@ async function generateFaqFromHistory({ days = 30, minMessages = 20, autoPublish
     .join('\n');
 
   // Ask Claude to extract FAQ pairs
-  const aiResponse = await claude.messages.create({
+  const { response: aiResponse } = await llm.anthropicCreate(claude, {
     model: 'claude-sonnet-4-6',
     max_tokens: 4000,
     system: `Bạn là chuyên gia phân tích dữ liệu khách hàng của Doc Mo Farm.

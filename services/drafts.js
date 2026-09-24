@@ -32,6 +32,7 @@ const LIMITS = {
   invoice_code: 80,
   customer_code: 80,
   qr_image_url: 1000,
+  pii_note: 300,
 };
 
 const EDITABLE = [
@@ -84,6 +85,7 @@ function blankDraft(fields) {
     invoice_code: fields.invoice_code,
     customer_code: fields.customer_code,
     qr_image_url: fields.qr_image_url,
+    pii_note: fields.pii_note || null,
     reviewed_at: null,
     sent_at: null,
     send_error: null,
@@ -117,6 +119,7 @@ function fromRow(row) {
     invoice_code: row.invoice_code || null,
     customer_code: row.customer_code || null,
     qr_image_url: row.qr_image_url || null,
+    pii_note: row.pii_note || null,
     reviewed_at: toIso(row.reviewed_at),
     sent_at: toIso(row.sent_at),
     send_error: row.send_error || null,
@@ -144,6 +147,7 @@ CREATE TABLE IF NOT EXISTS outbound_drafts (
     invoice_code        TEXT,
     customer_code       TEXT,
     qr_image_url        TEXT,
+    pii_note            TEXT,
     reviewed_at         TIMESTAMPTZ,
     sent_at             TIMESTAMPTZ,
     send_error          TEXT,
@@ -162,6 +166,9 @@ async function ensureReady() {
       for (const sql of SCHEMA_SQL.split(';').map(s => s.trim()).filter(Boolean)) {
         await db.pool.query(sql);
       }
+      await db.pool.query(
+        'ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS pii_note TEXT'
+      );
       return;
     }
     await loadFile();
@@ -252,6 +259,7 @@ function fieldsFrom(body, { requireReply }) {
     invoice_code: cleanText('invoice_code', body.invoice_code),
     customer_code: cleanText('customer_code', body.customer_code),
     qr_image_url: cleanUrl(body.qr_image_url),
+    pii_note: cleanText('pii_note', body.pii_note),
   };
 }
 
@@ -281,9 +289,9 @@ async function insertDraft(draft) {
        id, created_at, updated_at, channel, customer_name, customer_phone,
        customer_user_id, customer_intent, assigned_department, ticket_status,
        draft_reply, approval_status, kiot_summary, invoice_code, customer_code,
-       qr_image_url, reviewed_at, sent_at, send_error, send_via, send_hook
+       qr_image_url, pii_note, reviewed_at, sent_at, send_error, send_via, send_hook
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
      ) RETURNING *`,
     [
       draft.id, draft.created_at, draft.updated_at, draft.channel,
@@ -291,6 +299,7 @@ async function insertDraft(draft) {
       draft.customer_intent, draft.assigned_department, draft.ticket_status,
       draft.draft_reply, draft.approval_status, draft.kiot_summary,
       draft.invoice_code, draft.customer_code, draft.qr_image_url,
+      draft.pii_note,
       draft.reviewed_at, draft.sent_at, draft.send_error, draft.send_via,
       draft.send_hook,
     ]
@@ -310,8 +319,8 @@ async function saveDraft(draft) {
        channel=$2, customer_name=$3, customer_phone=$4, customer_user_id=$5,
        customer_intent=$6, assigned_department=$7, ticket_status=$8,
        draft_reply=$9, approval_status=$10, kiot_summary=$11, invoice_code=$12,
-       customer_code=$13, qr_image_url=$14, reviewed_at=$15, sent_at=$16,
-       send_error=$17, send_via=$18, send_hook=$19, updated_at=$20
+       customer_code=$13, qr_image_url=$14, pii_note=$15, reviewed_at=$16, sent_at=$17,
+       send_error=$18, send_via=$19, send_hook=$20, updated_at=$21
      WHERE id=$1
      RETURNING *`,
     [
@@ -319,7 +328,7 @@ async function saveDraft(draft) {
       draft.customer_user_id, draft.customer_intent, draft.assigned_department,
       draft.ticket_status, draft.draft_reply, draft.approval_status,
       draft.kiot_summary, draft.invoice_code, draft.customer_code,
-      draft.qr_image_url, draft.reviewed_at, draft.sent_at, draft.send_error,
+      draft.qr_image_url, draft.pii_note, draft.reviewed_at, draft.sent_at, draft.send_error,
       draft.send_via, draft.send_hook, draft.updated_at,
     ]
   );

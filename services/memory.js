@@ -9,6 +9,7 @@
  */
 const Anthropic = require('@anthropic-ai/sdk');
 const db = require('./database');
+const llm = require('./llm');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -59,7 +60,7 @@ async function refresh(customer, externalKey) {
       .map(m => `${m.role === 'user' ? 'Khách' : 'Trợ lý'}: ${String(m.content).slice(0, 400)}`)
       .join('\n');
 
-    const res = await claude.messages.create({
+    const { response: res } = await llm.anthropicCreate(claude, {
       model: SUMMARY_MODEL,
       max_tokens: 500,
       system: SYSTEM,

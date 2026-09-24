@@ -13,6 +13,8 @@ const priceMemo = require('./priceMemo');
 const stockGate = require('./stockGate');
 const confidenceGate = require('./confidenceGate');
 const audit = require('./audit');
+const llm = require('./llm');
+const pii = require('./pii');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -79,6 +81,10 @@ QUY TẮC SẮT VỀ ĐƠN HÀNG — sai là mất tiền của khách và của
 - Trước khi gọi create_order, nhẩm lại: tổng tiền = đơn giá × số lượng. Nói đúng con số đó cho khách.
 - create_order tự kiểm tồn kho thật trên KiotViet. Nếu tool trả về CHƯA TẠO ĐƠN, nói đúng cảnh báo đó:
   không nói đã chốt, không hứa còn hàng, không bịa số tồn. Nhân viên farm sẽ đối soát.
+
+DỮ LIỆU ĐÃ CHE: tin khách có thể chứa [PHONE], [EMAIL], [CCCD], [CMND], [BANK], [VIETQR], [ADDRESS], [ID].
+Đó là thông tin hệ thống đã giấu trước khi gửi cho bạn. Không đoán, không bịa, không đọc lại các số đó.
+Vẫn tư vấn sản phẩm, số lượng và mã đơn bình thường.
 
 KHI KHÁCH HỎI SẢN PHẨM: Gọi tool search_products để tìm.
 KHI KHÁCH HỎI CHI TIẾT (thành phần, cách dùng, bảo quản, ai dùng được, vì sao có cặn...): Gọi tool search_knowledge.
@@ -778,13 +784,16 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
     { type: 'text', text: buildStaticPrompt(), cache_control: { type: 'ephemeral' } },
     { type: 'text', text: buildCustomerPrompt(customer, memories, recentOrders, preferences) },
   ];
-  let response = await claude.messages.create({
+  const piiReports = [];
+  let created = await llm.anthropicCreate(claude, {
     model: 'claude-sonnet-4-6',
     max_tokens: 1500,
     system: systemPrompt,
     tools,
     messages
   });
+  let response = created.response;
+  piiReports.push(created.piiReport);
 
   // 4. Handle tool use loop — capped, so a confused model can't spin forever
   //    (each turn costs an API call, and a runaway loop would hang the reply).
@@ -807,7 +816,7 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
     }
 
     // Continue conversation with tool results
-    response = await claude.messages.create({
+    created = await llm.anthropicCreate(claude, {
       model: 'claude-sonnet-4-6',
       max_tokens: 1500,
       system: systemPrompt,
@@ -818,6 +827,8 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
         { role: 'user', content: toolResults }
       ]
     });
+    response = created.response;
+    piiReports.push(created.piiReport);
   }
 
   if (turns >= MAX_TOOL_TURNS && response.stop_reason === 'tool_use') {
@@ -865,6 +876,7 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
     stockHold: flags.stockHold,
     confidence: flags.confidence,
     customer,
+    piiNote: pii.describe(pii.mergeReports(piiReports)),
   };
 }
 

@@ -1111,4 +1111,6 @@ app.listen(PORT, () => {
   console.log(`   Drafts:  GET  /admin`);
   console.log(`   HITL:    ${hitl.hitlRequired() ? 'ON — replies wait as PENDING_REVIEW' : 'OFF — auto-send (HITL_REQUIRE_APPROVAL=false)'}`);
   console.log(`   Confidence: below ${confidenceGate.minConfidence()} → ${confidenceGate.TICKET_STATUS} (AI_CONFIDENCE_MIN)`);
+  const piiOn = require('./services/pii').maskingEnabled();
+  console.log(`   PII:     ${piiOn ? 'ON — prompts masked before the model' : 'OFF — PII_MASKING_ENABLED is false'}`);
 });

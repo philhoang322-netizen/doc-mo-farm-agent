@@ -23,6 +23,8 @@ const botService = require('./zaloBotService');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const hitl = require('./hitlGate');
+const llm = require('./llm');
+const pii = require('./pii');
 
 const MODEL = process.env.FOLLOWUP_MODEL || 'claude-haiku-4-5-20251001';
 const STAGE_HOURS = [
@@ -102,8 +104,12 @@ async function compose(c) {
     ? 'Đây là lần nhắc đầu tiên, vài giờ sau khi khách im lặng. Nhẹ nhàng hỏi xem khách còn thắc mắc gì không.'
     : 'Đây là lần nhắc CUỐI CÙNG, hai ngày sau. Nói rõ là farm sẽ không làm phiền thêm, và cửa vẫn mở nếu khách cần.';
 
+  const fallback = stage === 0
+    ? 'Dạ farm ghé hỏi thăm chút, mình còn thắc mắc gì về sản phẩm không ạ? Farm sẵn sàng tư vấn thêm nhen 🌿'
+    : 'Dạ farm không làm phiền mình thêm nữa. Khi nào cần, mình cứ nhắn, farm luôn ở đây ạ 🌿';
+
   try {
-    const res = await claude.messages.create({
+    const { response: res, piiReport } = await llm.anthropicCreate(claude, {
       model: MODEL,
       max_tokens: 300,
       system: SYSTEM,
@@ -113,14 +119,12 @@ async function compose(c) {
       }],
     });
     const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('').trim();
-    if (text) return text;
+    if (text) return { text, piiNote: pii.describe(piiReport) };
   } catch (e) {
     console.warn('Follow-up compose failed:', e.message);
   }
 
-  return stage === 0
-    ? 'Dạ farm ghé hỏi thăm chút, mình còn thắc mắc gì về sản phẩm không ạ? Farm sẵn sàng tư vấn thêm nhen 🌿'
-    : 'Dạ farm không làm phiền mình thêm nữa. Khi nào cần, mình cứ nhắn, farm luôn ở đây ạ 🌿';
+  return { text: fallback, piiNote: null };
 }
 
 /** One pass. Safe to call often; it only acts on who is actually due. */
@@ -135,7 +139,8 @@ async function run(reason = 'scheduled') {
     const due = await findStalled();
     for (const c of due) {
       if (!c.ext) continue;
-      const text = await compose(c);
+      const composed = await compose(c);
+      const text = composed.text;
 
       // Same gate as inbound replies: a nudge is AI sales copy.
       if (hitl.hitlRequired()) {
@@ -143,6 +148,7 @@ async function run(reason = 'scheduled') {
           ack: false,
           intent: c.convo_summary || 'Khách im lặng sau khi hỏi sản phẩm',
           customer_name: c.display_name || c.full_name || null,
+          pii_note: composed.piiNote,
         });
         if (!release.held) continue;
         await db.saveMessage(c.ext, 'assistant', text);
