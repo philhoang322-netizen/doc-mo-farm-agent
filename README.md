@@ -93,7 +93,7 @@ A low or zero result is flagged for Sales (`PENDING_REVIEW`, ticket “Cần đ�
 
 ## Low confidence and non-text
 
-Stickers, unclear photos, empty messages, jokes, and any turn whose intent confidence is below `AI_CONFIDENCE_MIN` do not become a normal sales draft. The pipeline pauses the bot, notifies the farm on the existing handoff card, and holds one short waiting line for staff.
+Stickers, unclear photos, empty messages, jokes, and any turn whose intent confidence is below `AI_CONFIDENCE_MIN` do not become a normal sales draft. The pipeline notifies the farm on the existing handoff card and holds one short waiting line for staff. It does not set `bot_paused`. Only an explicit “gặp người thật” / stop phrase (`ops.wantsHuman`), or the owner `/dung` command, pauses the bot. While paused, later messages still become `PENDING_REVIEW` cards and are not auto-sent. `POST /admin/api/customers/resume` with `{ "external_key": "fb_…" }` is the `/mo` equivalent.
 
 That draft stays `PENDING_REVIEW`. It is not sent to Zalo, including when `HITL_REQUIRE_APPROVAL` is off. `HITL_ACK_MESSAGE` is not sent on these turns either. Ticket status is `NEEDS_HUMAN` (“Cần human hỗ trợ khẩn cấp”). A stock warning still wins when the model was actually trying to place an order and KiotViet came back low or short.
 

@@ -364,8 +364,9 @@ async function learnHonorific(customer, p) {
 
 /**
  * Low confidence, empty intent, or a non-text message.
- * Reuses stepAside (pause, opt out of nudges, owner handoff card) and holds
- * only the short waiting line. The model sales text is not drafted and not sent.
+ * Holds the short waiting line as PENDING_REVIEW and notifies whoever is on
+ * shift. Does not set bot_paused — only an explicit wantsHuman phrase does.
+ * The model sales text is not drafted and not sent.
  */
 function urgentHuman(p, customer, info, log) {
   return stepAside(p, customer, {
@@ -409,8 +410,8 @@ async function stepAside(p, customer, verdict, log, options = {}) {
     });
     await db.saveMessage(p.externalKey, 'assistant', text);
     if (customer) {
-      await db.pauseBot(customer.id, verdict.reason);
-      // Someone waiting on a person must never also get a sales nudge.
+      // Do not pause. bot_paused is only for ops.wantsHuman (and /dung).
+      // A low-confidence or needs-human card must not silence the next message.
       await followup.optOut(customer.id);
     }
     drift.markHandedOff(p.externalKey);
@@ -442,8 +443,9 @@ async function stepAside(p, customer, verdict, log, options = {}) {
 
 /**
  * Urgent after-sales and complaints skip the model. The reply is the
- * shared canned text from services/triage.js. stepAside pauses the bot
- * and releaseToCustomer assigns whoever is on shift.
+ * shared canned text from services/triage.js. The draft stays
+ * PENDING_REVIEW and releaseToCustomer assigns whoever is on shift.
+ * The bot is not paused.
  */
 function holdUrgent(p, customer, triaged, log) {
   return stepAside(p, customer, {

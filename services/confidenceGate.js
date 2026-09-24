@@ -5,6 +5,7 @@
  * the farm understood. Below AI_CONFIDENCE_MIN (default 0.6) the pipeline
  * must not keep that draft. It holds a short waiting line for staff
  * (PENDING_REVIEW, never auto-sent) and reuses the human handoff path.
+ * It does not set bot_paused. Only an explicit ops.wantsHuman phrase does.
  *
  * AI_CONFIDENCE_MIN
  *   Unset → 0.6.

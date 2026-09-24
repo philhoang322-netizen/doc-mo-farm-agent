@@ -36,6 +36,7 @@ const originalRespond = aiAgent.respond;
 const originalGetCustomer = db.getOrCreateCustomer;
 const originalByKey = db.getCustomerByExternalId;
 const originalResume = db.resumeBot;
+const originalPause = db.pauseBot;
 const originalNotify = notify.send;
 
 function restore() {
@@ -43,10 +44,12 @@ function restore() {
   db.getOrCreateCustomer = originalGetCustomer;
   db.getCustomerByExternalId = originalByKey;
   db.resumeBot = originalResume;
+  db.pauseBot = originalPause;
   notify.send = originalNotify;
   delete process.env.HITL_REQUIRE_APPROVAL;
   delete process.env.HITL_ACK_MESSAGE;
   delete process.env.ADMIN_PASSWORD;
+  delete process.env.AI_CONFIDENCE_MIN;
 }
 
 function pausedCustomer(over = {}) {
@@ -196,6 +199,137 @@ describe('paused customer inbox', { concurrency: 1 }, () => {
     const draft = await draftFor(uid);
     assert.equal(draft.draft_reply, AI);
     assert.notEqual(draft.ticket_status, pipeline.PAUSED_REASON);
+  });
+
+  test('low confidence drafts NEEDS_HUMAN and does not re-pause, so the next probe still drafts', async () => {
+    process.env.HITL_REQUIRE_APPROVAL = 'false';
+    delete process.env.HITL_ACK_MESSAGE;
+    delete process.env.AI_CONFIDENCE_MIN;
+    const customer = {
+      id: '11111111-1111-4111-8111-111111111111',
+      display_name: 'Phil',
+      bot_paused: false,
+    };
+    const pauses = [];
+    db.getOrCreateCustomer = async () => customer;
+    db.pauseBot = async (id, reason) => {
+      pauses.push({ id, reason });
+      customer.bot_paused = true;
+      customer.paused_reason = reason;
+      return true;
+    };
+    aiAgent.respond = async () => ({
+      text: 'Dạ em chốt đơn giúp mình nha',
+      tokensUsed: 2,
+      handoff: null,
+      newOrder: null,
+      stockHold: null,
+      confidence: 0.05,
+    });
+    const sends = [];
+    const key = `fb_lowconf_${Date.now()}`;
+
+    async function probe(n) {
+      return pipeline.handleMessage({
+        channel: 'messenger',
+        externalKey: key,
+        replyTo: '2624167471043867',
+        text: `probe ${n} gia bao nhieu`,
+        msgId: `probe-${n}-${Date.now()}-${n}`,
+        senderName: 'Phil',
+        send: async (_to, body) => {
+          sends.push(body);
+          return true;
+        },
+        log() {},
+      });
+    }
+
+    const first = await probe(1);
+    const second = await probe(2);
+
+    assert.equal(first.held, true);
+    assert.equal(first.needsHuman, true);
+    assert.notEqual(first.skipped, 'paused');
+    assert.equal(second.held, true);
+    assert.notEqual(second.skipped, 'paused');
+    assert.equal(customer.bot_paused, false);
+    assert.equal(pauses.length, 0);
+    assert.equal(sends.length, 0);
+
+    const { drafts: rows } = await drafts.listDrafts('PENDING_REVIEW');
+    const mine = rows.filter((d) => d.customer_user_id === key);
+    assert.equal(mine.length, 2);
+    for (const draft of mine) {
+      assert.equal(draft.approval_status, 'PENDING_REVIEW');
+      assert.equal(draft.channel, 'messenger');
+      assert.equal(draft.ticket_status, 'NEEDS_HUMAN');
+      assert.equal(draft.draft_reply.includes('chốt đơn'), false);
+    }
+  });
+
+  test('an explicit gặp người thật phrase still pauses and does not send', async () => {
+    const customer = {
+      id: '11111111-1111-4111-8111-111111111111',
+      display_name: 'Phil',
+      bot_paused: false,
+    };
+    const pauses = [];
+    db.getOrCreateCustomer = async () => customer;
+    db.pauseBot = async (id, reason) => {
+      pauses.push({ id, reason });
+      customer.bot_paused = true;
+      return true;
+    };
+    const sends = [];
+    const result = await pipeline.handleMessage({
+      channel: 'messenger',
+      externalKey: 'fb_explicit_stop',
+      replyTo: 'explicit_stop',
+      text: 'cho gặp người thật',
+      msgId: `stop-${Date.now()}`,
+      senderName: 'Phil',
+      send: async () => {
+        sends.push(1);
+        return true;
+      },
+      log() {},
+    });
+    assert.equal(result.stopped, true);
+    assert.equal(result.held, true);
+    assert.equal(sends.length, 0);
+    assert.equal(customer.bot_paused, true);
+    assert.ok(pauses.some((p) => /ngưng bot/.test(p.reason)));
+    const draft = await draftFor('fb_explicit_stop');
+    assert.ok(draft);
+    assert.equal(draft.approval_status, 'PENDING_REVIEW');
+  });
+
+  test('needs-human handover does not pause; wantsHuman handover does', async () => {
+    const pauses = [];
+    db.pauseBot = async (id, reason) => {
+      pauses.push({ id, reason });
+      return true;
+    };
+    const id = '11111111-1111-4111-8111-111111111111';
+    await handover.escalate({
+      needsHuman: true,
+      reason: 'Độ tin AI 5% dưới ngưỡng 60% — Cần human hỗ trợ khẩn cấp',
+      externalId: `fb_low_${Date.now()}`,
+      customer: { id, display_name: 'Phil' },
+      lastMessage: 'probe',
+    });
+    assert.equal(pauses.length, 0);
+
+    await handover.escalate({
+      wantsHuman: true,
+      reason: 'Khách chủ động yêu cầu ngưng bot',
+      externalId: `fb_stop_${Date.now()}`,
+      customer: { id, display_name: 'Phil' },
+      lastMessage: 'gặp người thật',
+    });
+    assert.equal(pauses.length, 1);
+    assert.match(pauses[0].reason, /ngưng bot/);
   });
 });
 
