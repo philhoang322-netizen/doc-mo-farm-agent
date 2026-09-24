@@ -42,3 +42,20 @@ The model reports confidence with the `report_intent_confidence` tool (0–1, or
 | Variable | Default | Meaning |
 |---|---|---|
 | `AI_CONFIDENCE_MIN` | `0.6` when unset | Minimum intent confidence. `0.6`, `60`, and `60%` are the same threshold. A score below it follows the human fallback above. `0` turns the gate off. An unreadable value uses `0.6`. |
+
+## Staff roster and handover
+
+Hard claims and “I want a real person” are assigned to someone on shift, not left on the owner chat alone. Shifts are edited under Omni Sale DMF at `/admin/roster` (same `ADMIN_PASSWORD` as draft review). Each shift has a name, an optional Zalo Bot chat id, and a window in **Asia/Ho_Chi_Minh**.
+
+Window examples: `1-5 08:00-17:00`, `mon-fri 8-17`, `* 09:00-21:00`, overnight `6 22:00-06:00`. End time is exclusive. `online` is the presence flag on that row (there is no separate presence feed). Selection prefers an on-shift person who is online; otherwise anyone on shift; otherwise the next shift; if the roster is empty, the owner (`OWNER_DISPLAY_NAME`, default “Chủ farm”).
+
+The internal card still goes out through `services/notify.js` → `zaloBotService.sendMessage`. That is the only alert channel in this repo (no Telegram). The assignee’s chat id receives it when set, and `ALERT_BOT_CHAT_ID` still receives a copy when it is different. Blank or `owner` uses only the owner chat.
+
+Assignment runs when:
+
+- the customer asks for a human (`ops.wantsHuman`, before the model)
+- the model calls `request_human`, or drift steps aside (existing `notify.handoff`)
+- a draft is created or updated with ticket status containing `NEEDS_HUMAN`, `needsHuman: true`, or `claim: true` on the approve API
+- a low-confidence or non-text turn is held as `NEEDS_HUMAN`
+
+`services/handover.js` → `escalate()` / `classifyHumanNeed()` assigns those human turns. A normal sales draft is not assigned. HITL is unchanged: AI sales text stays `PENDING_REVIEW` and is not sent until someone approves it.

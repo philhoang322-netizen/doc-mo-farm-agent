@@ -77,12 +77,13 @@ async function releaseToCustomer(p, text, extra = {}) {
   const forceHold = extra.forceHold === true;
 
   if (!hitlRequired() && !forceHold) {
-    if (!body) return { held: false, sent: false, draft: null, acked: false };
+    if (!body) return { held: false, sent: false, draft: null, acked: false, assignment: null };
     const sent = !!(await p.send(p.replyTo, body));
-    return { held: false, sent, draft: null, acked: false };
+    const assignment = await maybeHandover(p, null, extra);
+    return { held: false, sent, draft: null, acked: false, assignment };
   }
 
-  if (!body) return { held: false, sent: false, draft: null, acked: false };
+  if (!body) return { held: false, sent: false, draft: null, acked: false, assignment: null };
 
   const draft = await drafts.createDraft({
     channel: 'zalo',
@@ -120,7 +121,47 @@ async function releaseToCustomer(p, text, extra = {}) {
     `📝 HITL ${draft.approval_status} ${draft.id} (${p.channel} ${draft.customer_user_id || '?'}) — not sent`
   );
 
-  return { held: true, sent: false, draft, acked };
+  const assignment = await maybeHandover(p, draft, extra);
+  return { held: true, sent: false, draft, acked, assignment };
+}
+
+/**
+ * Ordinary sales drafts return null and are not reassigned.
+ * NEEDS_HUMAN, claim, and an explicit human request assign someone on shift.
+ * extra.handover === false skips this (tests, or a caller that escalates itself).
+ */
+async function maybeHandover(p, draft, extra) {
+  if (extra.handover === false) return null;
+  try {
+    const handover = require('./handover');
+    const kind = handover.classifyHumanNeed({
+      ticketStatus: extra.ticket_status || extra.ticketStatus || draft?.ticket_status,
+      needsHuman: extra.needsHuman,
+      needs_human: extra.needs_human,
+      claim: extra.claim,
+      wantsHuman: extra.wantsHuman,
+      source: extra.source,
+      urgency: extra.urgency,
+      reason: extra.reason,
+    });
+    if (!kind) return null;
+    return handover.escalate({
+      ...kind,
+      reason: extra.reason || kind.reason,
+      urgency: extra.urgency || kind.urgency,
+      externalId: p.externalKey || draft?.customer_user_id || null,
+      customer: extra.customer || {
+        display_name: draft?.customer_name || p.senderName || null,
+        phone: draft?.customer_phone || null,
+      },
+      lastMessage: p.text,
+      draftId: draft?.id || null,
+      ticketStatus: draft?.ticket_status || extra.ticket_status || kind.label,
+    });
+  } catch (e) {
+    console.error('Handover from HITL release failed:', e.message);
+    return null;
+  }
 }
 
 module.exports = { hitlRequired, ackMessage, releaseToCustomer };
