@@ -75,7 +75,7 @@ test('unset HITL_REQUIRE_APPROVAL holds the AI reply and does not send it', asyn
   assert.equal(draft.approval_status, 'PENDING_REVIEW');
   assert.equal(draft.channel, 'zalo');
   assert.equal(draft.draft_reply, AI);
-  assert.equal(draft.customer_intent, 'Dau goi gia bao nhieu?');
+  assert.match(draft.customer_intent, /^\[sales\] Hỏi giá — Dau goi gia bao nhieu\?$/);
   assert.equal(draft.customer_name, 'Khach A');
   assert.equal(draft.customer_user_id, uid);
   assert.equal(draft.assigned_department, 'Sales');

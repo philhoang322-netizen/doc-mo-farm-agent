@@ -25,6 +25,7 @@ const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const hitl = require('./hitlGate');
 const llm = require('./llm');
 const pii = require('./pii');
+const piiHook = require('./piiHook');
 
 const MODEL = process.env.FOLLOWUP_MODEL || 'claude-haiku-4-5-20251001';
 const STAGE_HOURS = [
@@ -115,7 +116,7 @@ async function compose(c) {
       system: SYSTEM,
       messages: [{
         role: 'user',
-        content: `${brief}\n\nNhững gì đã trao đổi với khách này:\n${context}`,
+        content: piiHook.maskForLlm(`${brief}\n\nNhững gì đã trao đổi với khách này:\n${context}`),
       }],
     });
     const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('').trim();
@@ -143,7 +144,8 @@ async function run(reason = 'scheduled') {
       const text = composed.text;
 
       // Same gate as inbound replies: a nudge is AI sales copy.
-      if (hitl.hitlRequired()) {
+      // Messenger nudges are held even when the Zalo emergency switch is off.
+      if (hitl.hitlRequired() || c.channel === 'messenger') {
         const release = await hitl.releaseToCustomer(followupTarget(c), text, {
           ack: false,
           intent: c.convo_summary || 'Khách im lặng sau khi hỏi sản phẩm',
@@ -207,6 +209,18 @@ function followupTarget(c) {
       channel: 'bot',
       externalKey: `bot_${chatId}`,
       replyTo: chatId,
+      senderName: name,
+      text: intent,
+      send: refuseSend,
+    };
+  }
+  if (c.channel === 'messenger') {
+    const ext = String(c.ext);
+    const psid = ext.replace(/^fb_/, '');
+    return {
+      channel: 'messenger',
+      externalKey: ext.startsWith('fb_') ? ext : `fb_${psid}`,
+      replyTo: psid,
       senderName: name,
       text: intent,
       send: refuseSend,

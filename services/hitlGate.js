@@ -11,12 +11,15 @@
  *   Optional. Only if this is a non-empty string, that exact text is sent
  *   while the draft waits. Unset or blank sends nothing. No default ack.
  *
- * drafts.js only accepts channel "zalo" or "messenger". Both OA and Bot
- * use "zalo". Bot threads set customer_user_id to "bot_<chatId>" so
- * drafts.deliver() still routes to zaloBotService; OA uses the Zalo user id
- * and still routes to zaloService.sendTextMessage. deliver() is unchanged.
+ * drafts.js only accepts channel "zalo" or "messenger". OA and Bot use
+ * "zalo". Bot threads set customer_user_id to "bot_<chatId>" so
+ * drafts.deliver() routes to zaloBotService; OA uses the Zalo user id and
+ * routes to zaloService.sendTextMessage. Messenger sets channel "messenger"
+ * and customer_user_id "fb_<psid>". Messenger replies are always held, even
+ * when HITL_REQUIRE_APPROVAL is off, and no ack is sent on that channel.
  */
 const drafts = require('./drafts');
+const stations = require('./stations');
 
 const FALSEY = /^(0|false|no|off)$/i;
 
@@ -39,12 +42,26 @@ function clip(value, max) {
   return s.length > max ? s.slice(0, max) : s;
 }
 
+function isMessenger(p) {
+  return p && p.channel === 'messenger';
+}
+
+function draftChannel(p) {
+  return isMessenger(p) ? 'messenger' : 'zalo';
+}
+
 function customerUserId(p) {
   if (p.channel === 'bot') {
     const key = String(p.externalKey || '');
     if (key.startsWith('bot_')) return clip(key, 120);
     const chatId = String(p.replyTo || key).replace(/^bot_/, '');
     return clip(`bot_${chatId}`, 120);
+  }
+  if (isMessenger(p)) {
+    const key = String(p.externalKey || '');
+    if (key.startsWith('fb_')) return clip(key, 120);
+    const psid = String(p.replyTo || key).replace(/^fb_/, '');
+    return clip(`fb_${psid}`, 120);
   }
   return clip(p.replyTo || p.externalKey, 120);
 }
@@ -73,8 +90,10 @@ function httpUrl(value) {
 async function releaseToCustomer(p, text, extra = {}) {
   const body = String(text ?? '').replace(/\0/g, '').trim();
   // Stock warnings must wait for a person even if the emergency auto-send
-  // switch is off. forceHold never calls p.send with the customer body.
-  const forceHold = extra.forceHold === true;
+  // switch is off. Messenger never auto-sends. forceHold never calls p.send
+  // with the customer body.
+  const messengerHold = isMessenger(p);
+  const forceHold = extra.forceHold === true || messengerHold;
 
   if (!hitlRequired() && !forceHold) {
     if (!body) return { held: false, sent: false, draft: null, acked: false, assignment: null };
@@ -85,21 +104,27 @@ async function releaseToCustomer(p, text, extra = {}) {
 
   if (!body) return { held: false, sent: false, draft: null, acked: false, assignment: null };
 
+  // Filter station. Runs for Zalo and Messenger. Does not send.
+  const source = extra.intent != null ? extra.intent : p.text;
+  const routed = stations.filterAndRoute(source, extra.route);
+  const ticketDefault = routed.route === 'needs-human' ? 'Cần người thật' : 'Mới tiếp nhận';
+
   const draft = await drafts.createDraft({
-    channel: 'zalo',
+    channel: draftChannel(p),
     customer_user_id: customerUserId(p),
     customer_name: clip(extra.customer_name || p.senderName, 200),
-    customer_intent: clip(extra.intent != null ? extra.intent : p.text, 1000),
+    customer_intent: clip(routed.storedIntent, 1000),
     draft_reply: clip(body, 8000),
-    assigned_department: clip(extra.assigned_department || 'Sales', 120),
-    ticket_status: clip(extra.ticket_status || 'Mới tiếp nhận', 120),
+    assigned_department: clip(extra.assigned_department || routed.department, 120),
+    ticket_status: clip(extra.ticket_status || ticketDefault, 120),
     qr_image_url: httpUrl(extra.qr_image_url),
     kiot_summary: clip(extra.kiot_summary, 4000),
     pii_note: clip(extra.pii_note, 300),
   });
 
   let acked = false;
-  const ack = extra.ack === false ? '' : ackMessage();
+  // Messenger stays silent until Approve & Send. Do not push HITL_ACK_MESSAGE.
+  const ack = messengerHold || extra.ack === false ? '' : ackMessage();
   if (ack) {
     try {
       acked = !!(await p.send(p.replyTo, ack));
@@ -115,15 +140,16 @@ async function releaseToCustomer(p, text, extra = {}) {
       to: p.replyTo,
       draft_id: draft.id,
       approval_status: draft.approval_status,
+      route: routed.route,
       ack: acked,
     });
   }
   console.log(
-    `📝 HITL ${draft.approval_status} ${draft.id} (${p.channel} ${draft.customer_user_id || '?'}) — not sent`
+    `📝 HITL ${draft.approval_status} ${draft.id} route=${routed.route} (${p.channel} ${draft.customer_user_id || '?'}) — not sent`
   );
 
-  const assignment = await maybeHandover(p, draft, extra);
-  return { held: true, sent: false, draft, acked, assignment };
+  const assignment = await maybeHandover(p, draft, { ...extra, route: routed.route });
+  return { held: true, sent: false, draft, acked, assignment, route: routed.route };
 }
 
 /**
@@ -144,6 +170,7 @@ async function maybeHandover(p, draft, extra) {
       source: extra.source,
       urgency: extra.urgency,
       reason: extra.reason,
+      route: extra.route,
     });
     if (!kind) return null;
     return handover.escalate({

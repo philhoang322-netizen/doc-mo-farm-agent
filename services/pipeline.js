@@ -32,7 +32,7 @@ const FALLBACK_REPLY =
 
 /**
  * @param {object} p
- * @param {'oa'|'bot'} p.channel
+ * @param {'oa'|'bot'|'messenger'} p.channel
  * @param {string} p.externalKey  channel-scoped customer key (already prefixed for bot)
  * @param {string} p.replyTo      id to send the answer to
  * @param {string} p.text         the customer's message
@@ -83,6 +83,7 @@ async function handleMessage(p) {
           urgency: 'high',
           reason: 'Khách chủ động yêu cầu ngưng bot',
           ticket_status: 'NEEDS_HUMAN',
+          route: 'needs-human',
         });
         await db.saveMessage(p.externalKey, 'assistant', reply);
         if (!release.held) log({ type: 'stop_bot', channel: p.channel, to: p.replyTo });
@@ -359,6 +360,7 @@ async function stepAside(p, customer, verdict, log, options = {}) {
       reason: verdict.reason,
       needsHuman: options.needsHuman === true || String(ticketStatus).includes('NEEDS_HUMAN'),
       pii_note: options.pii_note || undefined,
+      route: 'needs-human',
     });
     await db.saveMessage(p.externalKey, 'assistant', text);
     if (customer) {
@@ -539,7 +541,7 @@ async function handleNonText(p) {
     if (p.kind === 'image') {
       await notify.send(
         `📸 Khách vừa gửi ảnh (có thể là chuyển khoản).\n` +
-        `Xem tại Zalo. Khách: ${p.senderName || p.externalKey}`
+        `Xem tại ${p.channel === 'messenger' ? 'Facebook Messenger' : 'Zalo'}. Khách: ${p.senderName || p.externalKey}`
       );
     }
 

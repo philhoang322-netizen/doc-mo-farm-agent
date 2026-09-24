@@ -206,7 +206,7 @@
       const meta = el('div', { class: 'meta' });
       meta.appendChild(el('span', {
         class: 'tag' + (d.channel === 'messenger' ? ' messenger' : ''),
-        text: d.channel === 'messenger' ? 'Messenger' : 'Zalo',
+        text: d.channel === 'messenger' ? 'FB / Messenger' : 'Zalo',
       }));
       if (d.assigned_department) meta.appendChild(el('span', { class: 'tag muted', text: d.assigned_department }));
       if (needsHumanTicket(d)) {
@@ -282,14 +282,14 @@
       disabled: locked,
       options: [
         { value: 'zalo', label: 'Zalo' },
-        { value: 'messenger', label: 'Messenger' },
+        { value: 'messenger', label: 'FB / Messenger' },
       ],
     }));
     grid.appendChild(field('customer_intent', 'Khách đang muốn', d.customer_intent, { disabled: locked }));
     form.appendChild(grid);
     form.appendChild(el('p', {
       class: 'hint',
-      text: 'Zalo OA: dán user id. Zalo Bot: bot_ rồi tới chat id. Messenger chưa có đường gửi — duyệt sẽ giữ trạng thái Đã duyệt.',
+      text: 'Zalo OA: dán user id. Zalo Bot: bot_ rồi tới chat id. Messenger: fb_ rồi tới PSID. Bộ phận là tuyến lọc (Sales, FAQ, Người thật, Khác). Duyệt và gửi mới đẩy tin đi.',
     }));
 
     const extra = el('details');
@@ -396,7 +396,7 @@
   function send() {
     const data = readForm();
     const msg = data.channel === 'messenger'
-      ? 'Messenger chưa có đường gửi. Tin sẽ được đánh dấu Đã duyệt, chưa gửi đi. Tiếp tục?'
+      ? 'Gửi tin này cho khách trên Facebook Messenger?'
       : 'Gửi tin này cho khách?';
     if (!confirm(msg)) return;
     return patch(payload({ approval_status: 'APPROVED', send: true }), 'Đã duyệt.');

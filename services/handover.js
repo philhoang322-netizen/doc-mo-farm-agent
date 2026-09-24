@@ -77,6 +77,14 @@ function classifyHumanNeed(input = {}) {
       reason: input.reason || 'Cần human hỗ trợ khẩn cấp',
     };
   }
+  if (input.route === 'needs-human') {
+    return {
+      source: 'needs_human',
+      urgency: 'high',
+      label: NEEDS_HUMAN,
+      reason: input.reason || 'Cần người thật',
+    };
+  }
   if (input.handoff && typeof input.handoff === 'object') {
     const u = input.handoff.urgency === 'high' ? 'high' : 'normal';
     return {

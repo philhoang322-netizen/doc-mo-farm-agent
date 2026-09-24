@@ -1,0 +1,321 @@
+/**
+ * Facebook Messenger channel for Omni Sale DMF.
+ *
+ * Inbound:  GET+POST /messenger/webhook
+ * Outbound: Graph Send API POST /me/messages (only from drafts.deliver
+ *           after a person approves). Customer text is never auto-sent.
+ *
+ * MESSENGER_ENABLED defaults to off. Until it is true, POST is acknowledged
+ * and ignored so a public Railway URL does not draft or reply.
+ */
+const crypto = require('crypto');
+const axios = require('axios');
+
+const GRAPH_VERSION = 'v21.0';
+const MAX_TEXT = 2000;
+const TRUTHY = /^(1|true|yes|on)$/i;
+
+/** Injectable HTTP client so tests can mock Graph without Meta credentials. */
+const graphHttp = {
+  post(url, data, config) {
+    return axios.post(url, data, config);
+  },
+};
+
+let lastError = null;
+
+function enabled() {
+  return TRUTHY.test(String(process.env.MESSENGER_ENABLED || '').trim());
+}
+
+function pageToken() {
+  return String(process.env.FB_PAGE_ACCESS_TOKEN || '').trim();
+}
+
+function appSecret() {
+  return String(process.env.FB_APP_SECRET || '').trim();
+}
+
+function verifyToken() {
+  return String(process.env.FB_VERIFY_TOKEN || '').trim();
+}
+
+function pageId() {
+  return String(process.env.FB_PAGE_ID || '').trim();
+}
+
+function messagesUrl() {
+  return `https://graph.facebook.com/${GRAPH_VERSION}/me/messages`;
+}
+
+function customerKey(psid) {
+  const id = String(psid || '').trim().replace(/^fb_/, '');
+  return id ? `fb_${id}` : '';
+}
+
+function psidFromUserId(userId) {
+  const s = String(userId || '').trim();
+  if (!s) return '';
+  return s.startsWith('fb_') ? s.slice(3) : s;
+}
+
+function safeEqual(a, b) {
+  const left = Buffer.from(String(a));
+  const right = Buffer.from(String(b));
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+/**
+ * Meta signs the raw request bytes: `sha256=` + hex HMAC-SHA256(FB_APP_SECRET).
+ * @returns {{ok:boolean, reason?:string}}
+ */
+function verifySignature(rawBody, signatureHeader) {
+  const secret = appSecret();
+  if (!secret) return { ok: false, reason: 'missing_secret' };
+  const header = String(signatureHeader || '');
+  if (!header.startsWith('sha256=')) return { ok: false, reason: 'bad_signature' };
+  const raw = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8');
+  const expected = crypto.createHmac('sha256', secret).update(raw).digest('hex');
+  const got = header.slice('sha256='.length);
+  if (!safeEqual(got, expected)) return { ok: false, reason: 'bad_signature' };
+  return { ok: true };
+}
+
+function signBody(rawBody, secret = appSecret()) {
+  const raw = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8');
+  return 'sha256=' + crypto.createHmac('sha256', secret).update(raw).digest('hex');
+}
+
+function getLastError() {
+  return lastError;
+}
+
+async function postMessage(payload) {
+  const token = pageToken();
+  if (!enabled()) {
+    lastError = 'MESSENGER_ENABLED đang tắt';
+    return { ok: false, error: lastError };
+  }
+  if (!token) {
+    lastError = 'Thiếu FB_PAGE_ACCESS_TOKEN';
+    return { ok: false, error: lastError };
+  }
+  try {
+    const res = await graphHttp.post(messagesUrl(), payload, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 15000,
+      validateStatus: () => true,
+    });
+    const data = res && res.data ? res.data : {};
+    if (res && res.status >= 200 && res.status < 300 && (data.message_id || data.recipient_id)) {
+      lastError = null;
+      return { ok: true, message_id: data.message_id || null };
+    }
+    const detail = (data.error && (data.error.message || data.error.error_user_msg))
+      || (res ? `HTTP ${res.status}` : 'Graph không trả lời');
+    lastError = String(detail).slice(0, 500);
+    return { ok: false, error: lastError };
+  } catch (e) {
+    lastError = String(e.message || e).slice(0, 500);
+    return { ok: false, error: lastError };
+  }
+}
+
+async function sendText(psid, text) {
+  const id = psidFromUserId(psid);
+  const body = String(text || '').trim();
+  if (!id) return { ok: false, error: 'Thiếu PSID' };
+  if (!body) return { ok: false, error: 'Tin nhắn trống' };
+
+  const chunks = [];
+  for (let i = 0; i < body.length; i += MAX_TEXT) chunks.push(body.slice(i, i + MAX_TEXT));
+  let last = null;
+  for (const chunk of chunks) {
+    last = await postMessage({
+      recipient: { id },
+      messaging_type: 'RESPONSE',
+      message: { text: chunk },
+    });
+    if (!last.ok) return last;
+  }
+  return last || { ok: false, error: 'Tin nhắn trống' };
+}
+
+async function sendImage(psid, imageUrl) {
+  const id = psidFromUserId(psid);
+  const url = String(imageUrl || '').trim();
+  if (!id || !url) return { ok: false, error: 'Thiếu ảnh QR hoặc PSID' };
+  return postMessage({
+    recipient: { id },
+    messaging_type: 'RESPONSE',
+    message: {
+      attachment: {
+        type: 'image',
+        payload: { url, is_reusable: true },
+      },
+    },
+  });
+}
+
+function attachmentKind(attachments) {
+  const type = String((attachments && attachments[0] && attachments[0].type) || '').toLowerCase();
+  if (type === 'image') return 'image';
+  if (type === 'audio') return 'audio';
+  if (type === 'video') return 'video';
+  if (type === 'file') return 'file';
+  return 'file';
+}
+
+function messagingEvents(body) {
+  if (!body || body.object !== 'page' || !Array.isArray(body.entry)) return [];
+  const out = [];
+  for (const entry of body.entry) {
+    const batch = Array.isArray(entry && entry.messaging) ? entry.messaging : [];
+    for (const ev of batch) out.push(ev);
+  }
+  return out;
+}
+
+function skipReason(ev) {
+  if (!ev || typeof ev !== 'object') return 'empty';
+  if (ev.delivery) return 'delivery';
+  if (ev.read) return 'read';
+  if (ev.message && ev.message.is_echo) return 'echo';
+  const psid = ev.sender && ev.sender.id;
+  if (!psid) return 'no_sender';
+  const page = pageId();
+  if (page && String(psid) === page) return 'page_sender';
+  return null;
+}
+
+/**
+ * Turn one signed Page webhook body into pipeline calls.
+ * Echoes, delivery, and read receipts are ignored.
+ */
+async function processBody(body, deps) {
+  const pipeline = deps && deps.pipeline;
+  const log = (deps && deps.log) || (() => {});
+  if (!pipeline) return [];
+  const results = [];
+
+  for (const ev of messagingEvents(body)) {
+    const skip = skipReason(ev);
+    if (skip) {
+      log({ type: 'messenger_skipped', reason: skip });
+      continue;
+    }
+    const psid = String(ev.sender.id);
+    const externalKey = customerKey(psid);
+    const send = async (to, text) => {
+      const sent = await sendText(to, text);
+      return sent && sent.ok ? sent : null;
+    };
+    const base = {
+      channel: 'messenger',
+      externalKey,
+      replyTo: psid,
+      senderName: null,
+      send,
+      log,
+    };
+
+    if (ev.message && typeof ev.message.text === 'string' && ev.message.text.trim()) {
+      log({ type: 'messenger_incoming', psid, mid: ev.message.mid || null });
+      results.push(await pipeline.handleMessage({
+        ...base,
+        text: ev.message.text,
+        msgId: ev.message.mid || `fb_${psid}_${ev.timestamp || Date.now()}`,
+      }));
+      continue;
+    }
+
+    if (ev.postback) {
+      const text = String(ev.postback.title || ev.postback.payload || '').trim();
+      if (!text) {
+        log({ type: 'messenger_skipped', reason: 'empty_postback' });
+        continue;
+      }
+      log({ type: 'messenger_postback', psid });
+      results.push(await pipeline.handleMessage({
+        ...base,
+        text,
+        msgId: ev.postback.mid || `pb_${psid}_${ev.timestamp || Date.now()}`,
+      }));
+      continue;
+    }
+
+    if (ev.message && Array.isArray(ev.message.attachments) && ev.message.attachments.length) {
+      const kind = attachmentKind(ev.message.attachments);
+      log({ type: 'messenger_attachment', psid, kind });
+      results.push(await pipeline.handleNonText({
+        ...base,
+        kind,
+        msgId: ev.message.mid || `att_${psid}_${ev.timestamp || Date.now()}`,
+      }));
+      continue;
+    }
+
+    log({ type: 'messenger_skipped', reason: 'unhandled' });
+  }
+  return results;
+}
+
+function mount(app, deps) {
+  const log = (deps && deps.log) || (() => {});
+
+  app.get('/messenger/webhook', (req, res) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+    const expected = verifyToken();
+    if (mode === 'subscribe' && expected && token && safeEqual(token, expected)) {
+      console.log('✓ Messenger webhook verified');
+      return res.status(200).type('text/plain').send(String(challenge ?? ''));
+    }
+    return res.sendStatus(403);
+  });
+
+  app.post('/messenger/webhook', async (req, res) => {
+    if (!enabled()) {
+      log({ type: 'messenger_ignored', reason: 'disabled' });
+      return res.status(200).json({ ok: true, ignored: 'disabled' });
+    }
+    const sig = verifySignature(req.rawBody, req.get('x-hub-signature-256'));
+    if (!sig.ok) {
+      log({ type: 'messenger_bad_signature', reason: sig.reason });
+      return res.sendStatus(403);
+    }
+
+    const run = () => processBody(req.body, deps).catch((err) => {
+      console.error('Messenger webhook error:', err);
+      log({ type: 'messenger_error', error: err.message });
+    });
+
+    // Tests await the draft. Production answers first; Meta retries are deduped.
+    if (process.env.NODE_ENV === 'test') {
+      await run();
+      return res.status(200).json({ ok: true });
+    }
+    res.status(200).json({ ok: true });
+    await run();
+  });
+}
+
+module.exports = {
+  enabled,
+  verifySignature,
+  signBody,
+  mount,
+  processBody,
+  sendText,
+  sendImage,
+  customerKey,
+  psidFromUserId,
+  messagesUrl,
+  graphHttp,
+  getLastError,
+};

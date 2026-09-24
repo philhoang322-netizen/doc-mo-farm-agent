@@ -52,12 +52,20 @@ async function getCustomer(zaloUserId) {
 // they are the same person.
 // ============================================================
 
-/** "bot_123" → {channel:'bot', id:'123'};  "98765" → {channel:'oa', id:'98765'} */
+/** "bot_123" → bot; "fb_123" → messenger; "98765" → oa. The stored id keeps the prefix. */
 function parseKey(externalKey) {
   const s = String(externalKey || '');
   if (s.startsWith('bot_')) return { channel: 'bot', id: s };
+  if (s.startsWith('fb_')) return { channel: 'messenger', id: s };
   if (s.startsWith('test_') || s === 'debug_user') return { channel: 'test', id: s };
   return { channel: 'oa', id: s };
+}
+
+function acquisitionChannel(channel) {
+  if (channel === 'bot') return 'zalo_bot';
+  if (channel === 'messenger') return 'messenger';
+  if (channel === 'test') return 'test';
+  return 'zalo_oa';
 }
 
 /** Resolve a channel-scoped key to its customer, following merges. */
@@ -259,7 +267,7 @@ async function getOrCreateCustomer(zaloUserId, name = null) {
   const result = await pool.query(
     `INSERT INTO customers (zalo_user_id, display_name, full_name, acquisition_channel, last_seen_at)
      VALUES ($1, $2, $2, $3, NOW()) RETURNING *`,
-    [zaloUserId, name, channel === 'bot' ? 'zalo_bot' : 'zalo_oa']
+    [zaloUserId, name, acquisitionChannel(channel)]
   );
   await linkIdentity(result.rows[0].id, zaloUserId);
   await pool.query(
@@ -595,6 +603,7 @@ async function healIdentities(client) {
       SELECT c.id,
              CASE
                WHEN c.zalo_user_id LIKE 'bot\\_%'  THEN 'bot'
+               WHEN c.zalo_user_id LIKE 'fb\\_%'   THEN 'messenger'
                WHEN c.zalo_user_id LIKE 'test\\_%' THEN 'test'
                WHEN c.zalo_user_id = 'debug_user'  THEN 'test'
                ELSE 'oa'
