@@ -19,6 +19,7 @@
   };
   const TYPE_LABEL = { follower: 'Follower', zns: 'ZNS', broadcast: 'Broadcast' };
   const TRIAGE_LABEL = { hot: 'Nóng', urgent: 'Khẩn', normal: 'Thường' };
+  const PLATFORM_LABEL = { zalo: 'Zalo OA', messenger: 'Messenger' };
   const TRIAGE_CLASS = { hot: 'tag-nong', urgent: 'tag-khan', normal: 'tag-thuong' };
   const SLOTS = [
     { value: 'all', label: 'Cả ngày' },
@@ -58,6 +59,7 @@
   const tabs = [...document.querySelectorAll('[data-ops]')];
   const typeTabs = [...document.querySelectorAll('[data-type]')];
   const triageTabs = [...document.querySelectorAll('[data-triage]')];
+  const platformTabs = [...document.querySelectorAll('[data-platform]')];
 
   if (actorInput) {
     actorInput.value = localStorage.getItem(ACTOR_KEY) || '';
@@ -74,11 +76,13 @@
   let ops = OPS.includes(params.get('ops')) ? params.get('ops') : 'pending';
   let messageType = Object.prototype.hasOwnProperty.call(TYPE_LABEL, params.get('type')) ? params.get('type') : '';
   let triage = Object.prototype.hasOwnProperty.call(TRIAGE_LABEL, params.get('triage')) ? params.get('triage') : '';
+  let platform = Object.prototype.hasOwnProperty.call(PLATFORM_LABEL, params.get('platform')) ? params.get('platform') : '';
   let salesChannel = params.get('kenh') || 'farm';
   let channels = [];
   let drafts = [];
   let counts = {};
   let triageCounts = { hot: 0, urgent: 0, normal: 0 };
+  let platformCounts = { zalo: 0, messenger: 0 };
   let selectedId = location.hash ? location.hash.slice(1) : null;
   let dirty = false;
   let busy = false;
@@ -137,6 +141,7 @@
     q.set('kenh', salesChannel);
     if (messageType) q.set('type', messageType);
     if (triage) q.set('triage', triage);
+    if (platform) q.set('platform', platform);
     const hash = selectedId ? '#' + selectedId : '';
     history.replaceState(null, '', location.pathname + '?' + q.toString() + hash);
   }
@@ -174,6 +179,14 @@
       const next = btn.dataset.triage || '';
       if (next === triage) return;
       guardSwitch(() => { triage = next; });
+    });
+  });
+
+  platformTabs.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const next = btn.dataset.platform || '';
+      if (next === platform) return;
+      guardSwitch(() => { platform = next; });
     });
   });
 
@@ -230,6 +243,7 @@
       ops = 'pending';
       messageType = '';
       triage = '';
+      platform = '';
       selectedId = res.draft.id;
       dirty = false;
       toast('Đã đưa vào chờ xử lý.');
@@ -265,6 +279,17 @@
       const b = btn.querySelector('.count');
       if (b) {
         const n = level ? triageCounts[level] : 0;
+        b.textContent = n ? String(n) : '';
+      }
+    });
+    platformTabs.forEach(btn => {
+      const on = (btn.dataset.platform || '') === platform;
+      btn.setAttribute('aria-selected', on ? 'true' : 'false');
+      btn.classList.toggle('active', on);
+      const key = btn.dataset.platform;
+      const b = btn.querySelector('.count');
+      if (b) {
+        const n = key ? platformCounts[key] : 0;
         b.textContent = n ? String(n) : '';
       }
     });
@@ -421,6 +446,7 @@
     q.set('kenh', salesChannel);
     if (messageType) q.set('type', messageType);
     if (triage) q.set('triage', triage);
+    if (platform) q.set('platform', platform);
     try {
       const [data, stats] = await Promise.all([
         api('/admin/api/drafts?' + q.toString()),
@@ -429,6 +455,7 @@
       drafts = data.drafts || [];
       counts = data.counts || {};
       triageCounts = data.triageCounts || triageCounts;
+      platformCounts = data.platformCounts || platformCounts;
       loadedOnce = true;
       syncTabs();
       renderStats(stats);
@@ -473,6 +500,13 @@
   }
 
   function emptyCopy() {
+    if (platform) {
+      const name = PLATFORM_LABEL[platform];
+      return {
+        title: 'Không có tin ' + name + '.',
+        body: 'Không có tin ' + name + ' khớp bộ lọc. Chọn Tất cả để xem cả Zalo OA và Messenger.',
+      };
+    }
     if (ops !== 'pending' || triage) {
       return {
         title: 'Không có tin khớp bộ lọc.',

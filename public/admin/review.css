@@ -444,6 +444,7 @@ body.hitl .btn-primary.refund-mode {
 }
 body.hitl .btn-danger { background: #fff; color: var(--red); border-color: #d09088; }
 body.hitl .channel-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+body.hitl .channel-group { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 body.hitl .pills { display: inline-flex; flex-wrap: wrap; gap: 2px; background: rgba(255,255,255,0.55); border-radius: 999px; padding: 4px; border: 2px solid var(--line); }
 body.hitl .pill { border: none; background: transparent; box-shadow: none; border-radius: 999px; color: var(--muted); }
 body.hitl .pill.active { background: #fff; color: var(--green-deep); font-weight: 650; }

@@ -29,6 +29,8 @@ const OPS_STATUSES = ['success', 'failure', 'pending', 'sending', 'queued', 'rej
 const OPS_SET = new Set(OPS_STATUSES);
 const MESSAGE_TYPES = ['follower', 'zns', 'broadcast'];
 const MESSAGE_TYPE_SET = new Set(MESSAGE_TYPES);
+const PLATFORMS = ['zalo', 'messenger'];
+const PLATFORM_SET = new Set(PLATFORMS);
 const BUILTIN_CHANNELS = [
   { id: 'farm', name: '@Farm', builtin: true },
   { id: 'shopee', name: 'Shopee', builtin: true },
@@ -623,6 +625,7 @@ function normalizeListQuery(query) {
     type: query.type || null,
     salesChannel: query.salesChannel || null,
     triage: query.triage || null,
+    platform: query.platform || null,
   };
 }
 
@@ -631,6 +634,7 @@ function matchesScope(d, q) {
   if (q.salesChannel && sales !== q.salesChannel) return false;
   if (q.type && d.message_type !== q.type) return false;
   if (q.triage && d.triage_level !== q.triage) return false;
+  if (q.platform && d.channel !== q.platform) return false;
   return true;
 }
 
@@ -646,22 +650,34 @@ async function listDrafts(query) {
   if (q.type && !MESSAGE_TYPE_SET.has(q.type)) throw new DraftError(400, 'Loại tin không hợp lệ');
   if (q.salesChannel) await assertSalesChannel(q.salesChannel);
   if (q.triage && !triage.LABEL[q.triage]) throw new DraftError(400, 'triage không hợp lệ');
+  if (q.platform && !PLATFORM_SET.has(q.platform)) throw new DraftError(400, 'Nền tảng không hợp lệ');
 
   const all = db.DB_ENABLED
     ? (await db.pool.query('SELECT * FROM outbound_drafts ORDER BY created_at DESC LIMIT 500')).rows.map(fromRow)
     : [...memory.values()].map(d => decorate(d));
-  const channelScoped = all.filter(d => matchesScope(d, { ...q, triage: null }));
+  const salesScoped = all.filter(d => matchesScope(d, { ...q, triage: null, platform: null }));
   const counts = emptyOpsCounts();
-  for (const d of channelScoped) counts[opsStatus(d)] = (counts[opsStatus(d)] || 0) + 1;
+  for (const d of salesScoped) counts[opsStatus(d)] = (counts[opsStatus(d)] || 0) + 1;
+  const inOps = (d) => {
+    if (q.ops && opsStatus(d) !== q.ops) return false;
+    if (q.status && d.approval_status !== q.status) return false;
+    return true;
+  };
   const triageCounts = { hot: 0, urgent: 0, normal: 0 };
-  for (const d of channelScoped) {
-    if (q.ops && opsStatus(d) !== q.ops) continue;
-    if (q.status && d.approval_status !== q.status) continue;
+  for (const d of salesScoped) {
+    if (!inOps(d)) continue;
+    if (q.platform && d.channel !== q.platform) continue;
     if (Object.prototype.hasOwnProperty.call(triageCounts, d.triage_level)) {
       triageCounts[d.triage_level] += 1;
     }
   }
-  const scoped = channelScoped.filter(d => matchesScope(d, q));
+  const platformCounts = { zalo: 0, messenger: 0 };
+  for (const d of salesScoped) {
+    if (!inOps(d)) continue;
+    if (q.triage && d.triage_level !== q.triage) continue;
+    if (d.channel === 'zalo' || d.channel === 'messenger') platformCounts[d.channel] += 1;
+  }
+  const scoped = all.filter(d => matchesScope(d, q));
   const drafts = scoped
     .filter(d => {
       if (q.status && d.approval_status !== q.status) return false;
@@ -670,7 +686,7 @@ async function listDrafts(query) {
     })
     .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
     .slice(0, 200);
-  return { drafts, counts, triageCounts, storage: db.DB_ENABLED ? 'postgres' : 'memory' };
+  return { drafts, counts, triageCounts, platformCounts, storage: db.DB_ENABLED ? 'postgres' : 'memory' };
 }
 
 async function messageStats(salesChannel) {
