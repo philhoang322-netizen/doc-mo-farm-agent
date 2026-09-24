@@ -1,0 +1,258 @@
+/**
+ * Password-gated draft review mounted on this same Express app.
+ * GET /admin without ?key= serves the page. The farm dashboard stays at
+ * GET /admin?key=<ZALO_WEBHOOK_TOKEN> and is wired in server.js.
+ */
+const fs = require('fs');
+const path = require('path');
+const auth = require('./adminAuth');
+const drafts = require('./drafts');
+
+const PUBLIC = path.join(__dirname, '..', 'public', 'admin');
+
+const fails = new Map();
+
+function clientIp(req) {
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
+function lockedOut(ip) {
+  const row = fails.get(ip);
+  if (!row) return false;
+  if (row.lockUntil && row.lockUntil > Date.now()) return true;
+  if (row.lockUntil && row.lockUntil <= Date.now()) fails.delete(ip);
+  return false;
+}
+
+function noteFail(ip) {
+  const row = fails.get(ip) || { n: 0, lockUntil: 0 };
+  row.n += 1;
+  if (row.n >= 8) {
+    row.lockUntil = Date.now() + 60 * 1000;
+    row.n = 0;
+  }
+  fails.set(ip, row);
+}
+
+function noteOk(ip) {
+  fails.delete(ip);
+}
+
+function guard(res) {
+  res.set('X-Robots-Tag', 'noindex, nofollow');
+  res.set('Cache-Control', 'no-store');
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('Referrer-Policy', 'no-referrer');
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+function badOrigin(req) {
+  // SameSite=Lax already keeps the session cookie off cross-site POSTs.
+  // This only stops a foreign page from submitting the password form.
+  // Some embedded browsers send Origin: null for a first-party form; that
+  // is not a foreign site, so it must still be allowed.
+  const site = String(req.headers['sec-fetch-site'] || '');
+  if (!site || site === 'same-origin' || site === 'same-site' || site === 'none') return false;
+  const origin = req.headers.origin;
+  if (!origin || origin === 'null') return false;
+  let originHost;
+  try {
+    originHost = new URL(origin).host;
+  } catch {
+    return false;
+  }
+  const hosts = [];
+  for (const raw of [req.headers.host, req.headers['x-forwarded-host']]) {
+    if (!raw) continue;
+    for (const part of String(raw).split(',')) {
+      const h = part.trim();
+      if (h) hosts.push(h);
+    }
+  }
+  if (!hosts.length) return false;
+  return !hosts.includes(originHost);
+}
+
+const GATE_CSS = `
+  body { margin:0; min-height:100vh; display:grid; place-items:center; padding:24px 16px;
+         background:#f6f3ee; color:#1c1712;
+         font:17px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  .login { width:min(100%,420px); background:#fff; border:1px solid #e4ddd3; border-radius:20px;
+           padding:28px 22px 22px; box-shadow:0 10px 30px rgba(40,30,15,.06); }
+  .brand { margin:0; font-size:13px; letter-spacing:.08em; text-transform:uppercase;
+           color:#2f6b45; font-weight:700; }
+  h1 { margin:6px 0 0; font-size:26px; letter-spacing:-.02em; }
+  .sub { color:#5c564e; font-size:15px; }
+  label { display:block; margin-top:16px; font-size:13px; font-weight:700; color:#5c564e; }
+  input { width:100%; margin-top:4px; font:inherit; font-size:17px; color:#1c1712;
+          border:1px solid #e4ddd3; border-radius:12px; padding:12px; min-height:48px; }
+  button { width:100%; margin-top:16px; font:inherit; font-size:17px; font-weight:700;
+           min-height:48px; border:0; border-radius:12px; background:#2f6b45; color:#fff; cursor:pointer; }
+  .err { color:#8d2f2f; font-weight:700; }
+  input:focus-visible, button:focus-visible { outline:2px solid #2f6b45; outline-offset:2px; }
+`;
+
+function loginHtml(error) {
+  return `<!doctype html>
+<html lang="vi"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#3f6b4c">
+<title>Đăng nhập — Dốc Mơ Farm</title>
+<style>${GATE_CSS}</style>
+</head>
+<body>
+  <form class="login" method="post" action="/admin/login">
+    <p class="brand">Dốc Mơ Farm</p>
+    <h1>Duyệt tin nội bộ</h1>
+    <p class="sub">Nhập mật khẩu quản trị để xem bản nháp trước khi gửi.</p>
+    ${error ? `<p class="err">${esc(error)}</p>` : ''}
+    <label>Mật khẩu
+      <input type="password" name="password" autocomplete="current-password" autofocus required maxlength="200">
+    </label>
+    <button type="submit">Vào trang duyệt</button>
+  </form>
+</body></html>`;
+}
+
+function unconfiguredHtml() {
+  return `<!doctype html>
+<html lang="vi"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Chưa cấu hình — Dốc Mơ Farm</title>
+<style>${GATE_CSS}</style>
+</head>
+<body>
+  <div class="login">
+    <p class="brand">Dốc Mơ Farm</p>
+    <h1>Chưa mở trang duyệt</h1>
+    <p class="sub">Đặt biến ADMIN_PASSWORD trên Railway rồi khởi động lại service. Trang này không công khai khi thiếu mật khẩu.</p>
+  </div>
+</body></html>`;
+}
+
+function requireApi(req, res, next) {
+  guard(res);
+  if (badOrigin(req)) return res.status(403).json({ error: 'Yêu cầu khác trang bị chặn' });
+  if (!auth.passwordConfigured()) {
+    return res.status(503).json({ error: 'Chưa cấu hình ADMIN_PASSWORD' });
+  }
+  if (!auth.isAuthed(req)) {
+    res.set('WWW-Authenticate', 'Basic realm="Doc Mo Farm Admin", charset="UTF-8"');
+    return res.status(401).json({ error: 'Chưa đăng nhập' });
+  }
+  next();
+}
+
+function requirePageAsset(req, res, next) {
+  guard(res);
+  if (!auth.passwordConfigured()) return res.status(503).type('text/plain').send('ADMIN_PASSWORD is not configured');
+  if (!auth.passwordAuthed(req)) return res.status(401).type('text/plain').send('Unauthorized');
+  next();
+}
+
+async function page(req, res) {
+  guard(res);
+  if (!auth.passwordConfigured()) {
+    return res.status(503).type('html').send(unconfiguredHtml());
+  }
+  if (!auth.passwordAuthed(req)) {
+    return res.status(200).type('html').send(loginHtml(null));
+  }
+  const html = await fs.promises.readFile(path.join(PUBLIC, 'review.html'), 'utf8');
+  res.type('html').send(html);
+}
+
+function login(req, res) {
+  guard(res);
+  if (badOrigin(req)) return res.status(403).type('html').send(loginHtml('Không gửi được từ trang khác.'));
+  if (!auth.passwordConfigured()) {
+    return res.status(503).type('html').send(unconfiguredHtml());
+  }
+  const ip = clientIp(req);
+  if (lockedOut(ip)) {
+    return res.status(429).type('html').send(loginHtml('Thử lại sau một phút.'));
+  }
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  if (!password || password.length > 500 || !auth.safeEqual(password, process.env.ADMIN_PASSWORD)) {
+    noteFail(ip);
+    return res.status(401).type('html').send(loginHtml('Mật khẩu chưa đúng.'));
+  }
+  noteOk(ip);
+  auth.setSessionCookie(req, res);
+  res.redirect(303, '/admin');
+}
+
+function logout(req, res) {
+  guard(res);
+  auth.clearSessionCookie(res);
+  res.redirect(303, '/admin');
+}
+
+function sendAsset(name, type) {
+  return (req, res) => {
+    res.type(type);
+    res.sendFile(path.join(PUBLIC, name));
+  };
+}
+
+async function list(req, res) {
+  try {
+    const status = typeof req.query.status === 'string' && req.query.status ? req.query.status : null;
+    res.json(await drafts.listDrafts(status));
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'Không tải được danh sách' });
+  }
+}
+
+async function create(req, res) {
+  try {
+    const draft = await drafts.createDraft(req.body);
+    res.status(201).json({ draft });
+  } catch (e) {
+    const status = e.status || 500;
+    res.status(status).json({ error: e.status ? e.message : 'Không tạo được bản nháp' });
+    if (!e.status) console.error('HITL create failed:', e.message);
+  }
+}
+
+async function patch(req, res) {
+  try {
+    const result = await drafts.updateDraft(req.params.id, req.body);
+    if (!result) return res.status(404).json({ error: 'Không thấy bản nháp' });
+    res.json(result);
+  } catch (e) {
+    const status = e.status || 500;
+    res.status(status).json({ error: e.status ? e.message : 'Không cập nhật được bản nháp' });
+    if (!e.status) console.error('HITL update failed:', e.message);
+  }
+}
+
+function mount(app) {
+  app.post('/admin/login', login);
+  app.post('/admin/logout', logout);
+  app.get('/admin/review.css', requirePageAsset, sendAsset('review.css', 'text/css; charset=utf-8'));
+  app.get('/admin/review.js', requirePageAsset, sendAsset('review.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/api/drafts', requireApi, list);
+  app.post('/admin/api/drafts', requireApi, create);
+  app.patch('/admin/api/drafts/:id', requireApi, patch);
+}
+
+function fallback(req, res) {
+  guard(res);
+  if (!auth.passwordConfigured()) {
+    return res.status(503).type('text/plain').send('ADMIN_PASSWORD is not configured');
+  }
+  if (!auth.isAuthed(req)) return res.status(401).type('text/plain').send('Unauthorized');
+  return res.status(404).type('text/plain').send('Not found');
+}
+
+module.exports = { mount, page, fallback };

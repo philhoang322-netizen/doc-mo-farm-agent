@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#3f6b4c">
+<title>Duyệt tin nhắn — Dốc Mơ Farm</title>
+<link rel="stylesheet" href="/admin/review.css">
+</head>
+<body>
+<header class="top">
+  <div>
+    <p class="brand">Dốc Mơ Farm</p>
+    <h1>Duyệt tin trước khi gửi</h1>
+    <p class="sub">Sửa bản nháp, rồi mới gửi cho khách.</p>
+  </div>
+  <form method="post" action="/admin/logout">
+    <button class="ghost" type="submit">Đăng xuất</button>
+  </form>
+</header>
+<p id="storage" class="note warn" hidden></p>
+<div class="tabs" role="tablist" aria-label="Trạng thái bản nháp">
+  <button type="button" role="tab" data-status="PENDING_REVIEW" aria-selected="true">Chờ duyệt <b class="count"></b></button>
+  <button type="button" role="tab" data-status="APPROVED" aria-selected="false">Đã duyệt <b class="count"></b></button>
+  <button type="button" role="tab" data-status="REJECTED" aria-selected="false">Từ chối <b class="count"></b></button>
+  <button type="button" role="tab" data-status="SENT" aria-selected="false">Đã gửi <b class="count"></b></button>
+</div>
+<div class="layout">
+  <section id="list" aria-live="polite"></section>
+  <section id="detail"></section>
+</div>
+<p id="toast" class="toast" role="status" hidden></p>
+<noscript><p class="note warn">Trang này cần JavaScript để duyệt tin.</p></noscript>
+<script src="/admin/review.js"></script>
+</body>
+</html>

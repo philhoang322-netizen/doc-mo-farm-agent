@@ -342,7 +342,8 @@ async function render(key, flash = null) {
   <h1>🌿 Dốc Mơ Farm — Quản trị</h1>
   <div class="sub">Cập nhật ${new Date().toLocaleString('vi-VN')} ·
     <span id="auto">Tự làm mới mỗi 60 giây, dừng khi bạn đang nhập</span> ·
-    <a href="#" onclick="location.reload();return false">Làm mới ngay</a></div>
+    <a href="#" onclick="location.reload();return false">Làm mới ngay</a> ·
+    <a href="/admin">Duyệt tin nhắn</a></div>
 </header>
 <div class="wrap">
   ${flash ? `<div class="ok" id="flash">${esc(flash)}</div>` : ''}

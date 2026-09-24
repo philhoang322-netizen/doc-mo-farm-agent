@@ -19,13 +19,24 @@ const faqPage     = require('./services/faqPage');
 const rewrite     = require('./services/rewrite');
 const followup    = require('./services/followup');
 const shipping    = require('./services/shipping');
+const hitlAdmin   = require('./services/hitlAdmin');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: false })); // admin form posts
-app.use(express.static('public'));
+app.set('trust proxy', 1);
+
+// The Zalo verifier file stays public. Everything under /admin is gated
+// separately (draft review by ADMIN_PASSWORD, the older dashboard by ?key=).
+const publicStatic = express.static('public');
+app.use((req, res, next) => {
+  if (req.path === '/admin' || req.path.startsWith('/admin/')) return next();
+  return publicStatic(req, res, next);
+});
+
+hitlAdmin.mount(app);
 
 // Boot: migrate, then restore the Zalo tokens the previous run may have rotated.
 db.initDB()
@@ -171,17 +182,27 @@ app.get('/debug/test-send', async (req, res) => {
   }
 });
 
-// GET /admin?key=... — the farm's dashboard
+// GET /admin?key=<ZALO_WEBHOOK_TOKEN> — existing farm dashboard (giá, đơn, FAQ).
+// GET /admin — password-gated HITL draft review (ADMIN_PASSWORD). Never public.
 app.get('/admin', async (req, res) => {
-  if (req.query.key !== process.env.ZALO_WEBHOOK_TOKEN) {
-    return res.status(403).send('Forbidden');
+  if (Object.prototype.hasOwnProperty.call(req.query, 'key')) {
+    if (!process.env.ZALO_WEBHOOK_TOKEN || req.query.key !== process.env.ZALO_WEBHOOK_TOKEN) {
+      return res.status(403).send('Forbidden');
+    }
+    try {
+      res.set('Content-Type', 'text/html; charset=utf-8');
+      res.set('X-Robots-Tag', 'noindex, nofollow');
+      res.send(await adminPage.render(req.query.key, req.query.ok || null));
+    } catch (e) {
+      res.status(500).send(`<pre>${e.message}</pre>`);
+    }
+    return;
   }
   try {
-    res.set('Content-Type', 'text/html; charset=utf-8');
-    res.set('X-Robots-Tag', 'noindex, nofollow');
-    res.send(await adminPage.render(req.query.key, req.query.ok || null));
+    await hitlAdmin.page(req, res);
   } catch (e) {
-    res.status(500).send(`<pre>${e.message}</pre>`);
+    console.error('HITL page failed:', e.message);
+    res.status(500).type('text/plain').send('Không mở được trang duyệt');
   }
 });
 
@@ -1037,6 +1058,9 @@ app.post('/chat', async (req, res) => {
   }
 });
 
+// Unmatched /admin/* must not fall through to a public handler.
+app.use('/admin', hitlAdmin.fallback);
+
 selfCheck.start();
 followup.start();
 
@@ -1045,4 +1069,5 @@ app.listen(PORT, () => {
   console.log(`   Webhook: POST /webhook`);
   console.log(`   Test:    POST /chat`);
   console.log(`   FAQ:     GET  /api/faq | POST /api/faq/generate`);
+  console.log(`   Drafts:  GET  /admin`);
 });
