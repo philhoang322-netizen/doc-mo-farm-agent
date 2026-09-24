@@ -22,6 +22,7 @@ const zaloService = require('./zaloService');
 const botService = require('./zaloBotService');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const hitl = require('./hitlGate');
 
 const MODEL = process.env.FOLLOWUP_MODEL || 'claude-haiku-4-5-20251001';
 const STAGE_HOURS = [
@@ -129,11 +130,30 @@ async function run(reason = 'scheduled') {
   if (!withinSendingHours()) return { skipped: 'outside-hours' };
 
   let sent = 0;
+  let held = 0;
   try {
     const due = await findStalled();
     for (const c of due) {
       if (!c.ext) continue;
       const text = await compose(c);
+
+      // Same gate as inbound replies: a nudge is AI sales copy.
+      if (hitl.hitlRequired()) {
+        const release = await hitl.releaseToCustomer(followupTarget(c), text, {
+          ack: false,
+          intent: c.convo_summary || 'Khách im lặng sau khi hỏi sản phẩm',
+          customer_name: c.display_name || c.full_name || null,
+        });
+        if (!release.held) continue;
+        await db.saveMessage(c.ext, 'assistant', text);
+        await db.pool.query(
+          `UPDATE customers SET followup_stage = followup_stage + 1,
+                                followup_last_at = NOW()
+           WHERE id = $1`, [c.id]);
+        held++;
+        console.log(`📝 Nhắc khách ${c.display_name || c.ext} chờ duyệt (lần ${(c.followup_stage || 0) + 1})`);
+        continue;
+      }
 
       const ok = c.channel === 'bot'
         ? await botService.sendMessage(String(c.ext).replace(/^bot_/, ''), text)
@@ -158,11 +178,42 @@ async function run(reason = 'scheduled') {
     if (sent) {
       await notify.send(`📮 Đã nhắn hỏi thăm ${sent} khách im lặng (${reason}).`);
     }
-    return { ok: true, sent, considered: due.length };
+    if (held) {
+      await notify.send(`📝 ${held} tin nhắc khách đang chờ duyệt trên /admin (${reason}).`);
+    }
+    return { ok: true, sent, held, considered: due.length };
   } catch (e) {
     console.error('Follow-up run failed:', e.message);
     return { ok: false, error: e.message };
   }
+}
+
+/** Shape a stalled customer the same way the inbound pipeline does, so deliver() still works. */
+function followupTarget(c) {
+  const name = c.display_name || c.full_name || null;
+  const intent = c.convo_summary || 'Khách im lặng sau khi hỏi sản phẩm';
+  const refuseSend = async () => {
+    throw new Error('HITL follow-up must not call send');
+  };
+  if (c.channel === 'bot') {
+    const chatId = String(c.ext).replace(/^bot_/, '');
+    return {
+      channel: 'bot',
+      externalKey: `bot_${chatId}`,
+      replyTo: chatId,
+      senderName: name,
+      text: intent,
+      send: refuseSend,
+    };
+  }
+  return {
+    channel: 'oa',
+    externalKey: String(c.ext),
+    replyTo: String(c.ext),
+    senderName: name,
+    text: intent,
+    send: refuseSend,
+  };
 }
 
 /** A customer who replies, orders, or asks for a human is done being nudged. */
