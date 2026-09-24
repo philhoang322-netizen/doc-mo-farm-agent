@@ -76,16 +76,24 @@ async function handleMessage(p) {
           `Dạ vâng ạ, em dừng trả lời tự động tại đây. ${when} 🌿\n\n` +
           `Bạn cứ để lại nội dung cần hỗ trợ, farm đọc hết và trả lời sớm nhất có thể ạ.`;
 
-        const release = await hitl.releaseToCustomer(p, reply, { intent: p.text });
+        const release = await hitl.releaseToCustomer(p, reply, {
+          intent: p.text,
+          customer,
+          wantsHuman: true,
+          urgency: 'high',
+          reason: 'Khách chủ động yêu cầu ngưng bot',
+          ticket_status: 'NEEDS_HUMAN',
+        });
         await db.saveMessage(p.externalKey, 'assistant', reply);
         if (!release.held) log({ type: 'stop_bot', channel: p.channel, to: p.replyTo });
 
-        await notify.handoff(
-          { reason: 'Khách chủ động yêu cầu ngưng bot', urgency: 'high', externalId: p.externalKey },
-          customer,
-          p.text
-        );
-        return { ok: true, stopped: true, held: release.held, draftId: release.draft?.id || null };
+        return {
+          ok: true,
+          stopped: true,
+          held: release.held,
+          draftId: release.draft?.id || null,
+          assignee: release.assignment?.assignee_name || null,
+        };
       }
 
       // 3. A human took over this conversation — stay out of the way.
@@ -231,7 +239,13 @@ async function handleMessage(p) {
         } else if (askedTransfer && vietqr.configured()) {
           await sendAccountInfo(p, log);
         }
-        if (handoff) await notify.handoff(handoff, customer, p.text);
+        if (handoff) {
+          await notify.handoff(
+            { ...handoff, source: handoff.source || 'ai_handoff' },
+            customer,
+            p.text
+          );
+        }
       } catch (postErr) {
         console.error(`Pipeline follow-up error (${p.channel}):`, postErr);
         log({ type: 'error', channel: p.channel, error: postErr.message });
@@ -329,11 +343,18 @@ function urgentHuman(p, customer, info, log) {
 async function stepAside(p, customer, verdict, log, options = {}) {
   const text = options.reply || drift.message(verdict.signal);
   try {
+    const ticketStatus = options.ticket_status
+      || ((verdict.urgency || 'high') === 'high' ? 'NEEDS_HUMAN' : 'HANDOFF');
     const release = await hitl.releaseToCustomer(p, text, {
       intent: p.text,
       forceHold: options.forceHold === true,
       ack: options.ack,
-      ticket_status: options.ticket_status,
+      ticket_status: ticketStatus,
+      customer,
+      source: 'step_aside',
+      urgency: verdict.urgency || 'high',
+      reason: verdict.reason,
+      needsHuman: options.needsHuman === true || String(ticketStatus).includes('NEEDS_HUMAN'),
     });
     await db.saveMessage(p.externalKey, 'assistant', text);
     if (customer) {
@@ -349,20 +370,17 @@ async function stepAside(p, customer, verdict, log, options = {}) {
       signal: verdict.signal,
       to: p.replyTo,
       held: release.held,
-      needs_human: options.needsHuman === true,
+      needs_human: options.needsHuman === true || String(ticketStatus).includes('NEEDS_HUMAN'),
+      assignee: release.assignment?.assignee_name || null,
     });
-    await notify.handoff(
-      { reason: verdict.reason, urgency: verdict.urgency || 'high', externalId: p.externalKey },
-      customer,
-      p.text
-    );
     return {
       ok: true,
       steppedAside: verdict.signal,
       held: release.held,
       draftId: release.draft?.id || null,
-      needsHuman: options.needsHuman === true,
+      needsHuman: options.needsHuman === true || String(ticketStatus).includes('NEEDS_HUMAN'),
       confidence: options.confidence ?? null,
+      assignee: release.assignment?.assignee_name || null,
     };
   } catch (e) {
     console.error('stepAside failed:', e.message);

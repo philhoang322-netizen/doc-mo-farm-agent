@@ -650,8 +650,45 @@ async function updateDraft(id, body, ctx = {}) {
     const saved = await saveDraft(next);
     if (!saved) return { draft: null, send };
     await writeDraftAudit(existing, saved, { actor, wantSend, send });
+    await maybeClaimHandover(existing, saved, body);
     return { draft: saved, send };
   });
+}
+
+/**
+ * Approve-flow hook. Setting ticket_status to NEEDS_HUMAN, or sending
+ * claim:true, assigns the thread. Approving or sending a normal sales
+ * draft does not. A failure here must not undo the saved draft.
+ */
+async function maybeClaimHandover(existing, saved, body) {
+  try {
+    const handover = require('./handover');
+    const claim = body.claim === true || body.claimed === true;
+    const was = handover.classifyHumanNeed({ ticketStatus: existing.ticket_status });
+    const now = handover.classifyHumanNeed({
+      ticketStatus: saved.ticket_status,
+      claim,
+    });
+    if (!claim && !(now && !was)) return;
+    await handover.escalate({
+      reason: claim
+        ? 'Nhân viên đánh dấu claim — cần người trực'
+        : 'Bản nháp được đánh dấu NEEDS_HUMAN',
+      urgency: 'high',
+      externalId: saved.customer_user_id,
+      customer: {
+        display_name: saved.customer_name,
+        phone: saved.customer_phone,
+      },
+      lastMessage: saved.customer_intent,
+      draftId: saved.id,
+      ticketStatus: saved.ticket_status,
+      claim,
+      needsHuman: !claim && String(saved.ticket_status || '').includes('NEEDS_HUMAN'),
+    });
+  } catch (e) {
+    console.error('Handover from draft update failed:', e.message);
+  }
 }
 
 module.exports = {

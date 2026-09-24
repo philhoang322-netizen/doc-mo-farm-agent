@@ -8,6 +8,9 @@ const path = require('path');
 const auth = require('./adminAuth');
 const drafts = require('./drafts');
 const audit = require('./audit');
+const roster = require('./roster');
+const handover = require('./handover');
+const rosterPage = require('./rosterPage');
 
 const PUBLIC = path.join(__dirname, '..', 'public', 'admin');
 
@@ -277,9 +280,66 @@ async function auditPage(req, res) {
   res.type('html').send(html);
 }
 
+async function rosterView(req, res) {
+  guard(res);
+  if (!auth.passwordConfigured()) {
+    return res.status(503).type('html').send(unconfiguredHtml());
+  }
+  if (!auth.passwordAuthed(req)) return res.redirect(303, '/admin');
+  try {
+    const html = rosterPage.render({
+      shifts: await roster.list(),
+      handoffs: await handover.recent(20),
+      flash: typeof req.query.ok === 'string' ? req.query.ok : null,
+      error: typeof req.query.err === 'string' ? req.query.err : null,
+    });
+    res.type('html').send(html);
+  } catch (e) {
+    console.error('Roster page failed:', e.message);
+    res.status(500).type('text/plain').send('Không mở được ca trực');
+  }
+}
+
+async function rosterSave(req, res) {
+  guard(res);
+  if (badOrigin(req)) return res.status(403).type('text/plain').send('Forbidden');
+  if (!auth.passwordConfigured()) return res.status(503).type('text/plain').send('ADMIN_PASSWORD is not configured');
+  if (!auth.passwordAuthed(req)) return res.status(401).type('text/plain').send('Unauthorized');
+  const back = (params) => res.redirect(303, `/admin/roster?${params}`);
+  try {
+    const action = String(req.body?.action || 'save');
+    if (action === 'delete') {
+      await roster.remove(req.body?.id);
+      return back(`ok=${encodeURIComponent('Đã xoá ca')}`);
+    }
+    if (action === 'online') {
+      await roster.setOnline(req.body?.id, req.body?.online);
+      return back(`ok=${encodeURIComponent('Đã cập nhật online')}`);
+    }
+    await roster.upsert({
+      id: req.body?.id,
+      name: req.body?.name,
+      notify_target: req.body?.notify_target,
+      weekdays: req.body?.weekdays,
+      start: req.body?.start,
+      end: req.body?.end,
+      // Absent checkbox means off. Programmatic roster.upsert() still
+      // defaults these to online false / active true when the key is omitted.
+      online: req.body?.online === '1' || req.body?.online === 'on',
+      active: req.body?.active === '1' || req.body?.active === 'on',
+      timezone: 'Asia/Ho_Chi_Minh',
+    });
+    return back(`ok=${encodeURIComponent('Đã lưu ca trực')}`);
+  } catch (e) {
+    return back(`err=${encodeURIComponent(e.message || 'Không lưu được ca')}`);
+  }
+}
+
 function mount(app) {
   app.post('/admin/login', login);
   app.post('/admin/logout', logout);
+  app.get('/admin/roster', rosterView);
+  app.post('/admin/roster', rosterSave);
   app.get('/admin/review.css', requirePageAsset, sendAsset('review.css', 'text/css; charset=utf-8'));
   app.get('/admin/review.js', requirePageAsset, sendAsset('review.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/audit.js', requirePageAsset, sendAsset('audit.js', 'text/javascript; charset=utf-8'));

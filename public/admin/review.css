@@ -190,6 +190,15 @@ textarea:focus-visible, select:focus-visible {
 .tag.messenger { background: #e7f0fb; color: #1d4f91; }
 .tag.muted { background: #f3efe8; color: var(--soft); font-weight: 600; }
 .tag.warn { background: var(--warn-bg); color: var(--warn); }
+.top-actions form { margin: 0; }
+.stack { display: grid; gap: 12px; }
+.section { margin: 22px 0 10px; font-size: 15px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--soft); }
+.hours { display: flex; gap: 8px; }
+.hours input { flex: 1; }
+.row-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.chk { display: flex; gap: 8px; align-items: center; font-size: 15px; font-weight: 650; color: var(--ink); }
+.chk input { width: auto; min-height: auto; margin: 0; }
+.note code { font-size: 13px; }
 .when { color: var(--soft); font-size: 13px; font-weight: 500; }
 .empty { color: var(--soft); padding: 18px 8px; }
 .draft h2 { margin: 0 0 4px; font-size: 22px; }
