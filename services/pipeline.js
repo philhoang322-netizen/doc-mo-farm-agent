@@ -3,7 +3,7 @@
  *
  * Both channels used to duplicate this logic, which is how the OA side ended
  * up without de-duplication. Everything now goes through handleMessage():
- * dedup → per-customer lock → paused check → AI → HITL draft or reply → owner alerts.
+ * dedup → per-customer lock → paused inbox card (no model) → AI → HITL draft or reply → owner alerts.
  * Customer-facing text goes through services/hitlGate.js (HITL_REQUIRE_APPROVAL,
  * default on) so it is not sent until /admin approves it.
  */
@@ -30,6 +30,13 @@ const triage = require('./triage');
 const FALLBACK_REPLY =
   'Dạ farm đang bận xử lý một chút, bạn nhắn lại giúp mình sau ít phút nha 🌿 ' +
   'Hoặc gọi trực tiếp nếu gấp ạ.';
+
+/** Shown on the HITL ticket when a paused customer messages again. */
+const PAUSED_REASON = 'Bot đang tạm dừng — khách vừa nhắn';
+
+/** Staff edit this before Duyệt và gửi. It is never auto-sent. */
+const PAUSED_INBOX_REPLY =
+  'Dạ farm đã nhận tin. Bot đang tạm dừng, nhân viên sẽ trả lời mình sớm ạ.';
 
 /**
  * @param {object} p
@@ -100,15 +107,40 @@ async function handleMessage(p) {
         };
       }
 
-      // 3. A human took over this conversation — stay out of the way.
+      // 3. A human already took this thread. Do not call the model and do
+      //    not send. The new words still become a PENDING_REVIEW card so
+      //    /admin does not drop Messenger or Zalo while bot_paused is set.
+      //    Triage and urgency stay clear — this is not a new escalation.
       if (customer && customer.bot_paused) {
         await db.saveMessage(p.externalKey, 'user', p.text);
-        log({ type: 'paused_skipped', channel: p.channel, to: p.replyTo });
+        const release = await hitl.releaseToCustomer(p, PAUSED_INBOX_REPLY, {
+          intent: p.text,
+          customer,
+          customer_name: customer.display_name || p.senderName,
+          forceHold: true,
+          ack: false,
+          handover: false,
+          ticket_status: PAUSED_REASON,
+          reason: PAUSED_REASON,
+          clearTriage: true,
+        });
+        log({
+          type: 'paused_skipped',
+          channel: p.channel,
+          to: p.replyTo,
+          held: release.held,
+          draft_id: release.draft?.id || null,
+        });
         await notify.send(
           `💬 Khách đang chờ người thật vừa nhắn:\n"${String(p.text).slice(0, 200)}"\n\n` +
           `Mở lại bot: /mo ${p.externalKey}`
         );
-        return { skipped: 'paused' };
+        return {
+          ok: true,
+          skipped: 'paused',
+          held: !!release.held,
+          draftId: release.draft?.id || null,
+        };
       }
 
       await db.saveMessage(p.externalKey, 'user', p.text);
@@ -652,4 +684,11 @@ async function noteOrderPush(order, p, action, kiot) {
   });
 }
 
-module.exports = { handleMessage, handleNonText, handleFollow, FALLBACK_REPLY };
+module.exports = {
+  handleMessage,
+  handleNonText,
+  handleFollow,
+  FALLBACK_REPLY,
+  PAUSED_REASON,
+  PAUSED_INBOX_REPLY,
+};
