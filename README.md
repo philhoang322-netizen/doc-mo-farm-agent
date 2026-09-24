@@ -17,6 +17,50 @@ Set both on Railway. Open `/admin` (password `ADMIN_PASSWORD`) to approve and se
 
 `/admin/audit` lists the chain for a conversation or order: customer message summary, the AI draft, manager edits (before/after), approve/send, and the KiotViet push or a staff status change on the farm dashboard. Rows go to Postgres table `audit_logs` when `DATABASE_URL` is set (migration `014_audit_logs.sql`). The table is append-only. Token, password, and secret fields are redacted before insert. `GET /admin/api/audit` accepts `conversation`, `order`, `from`, `to`, `action`, `entity_type`, and `entity_id`.
 
+## Facebook Messenger
+
+Page messages use the same draft queue as Zalo. A customer text becomes `approval_status` `PENDING_REVIEW` with `channel` `messenger`. Nothing is sent on Facebook until a manager uses **Duyệt và gửi** on `/admin`. That includes the case where `HITL_REQUIRE_APPROVAL` is off: Messenger still waits. There is no ack on this channel.
+
+Webhook URL (Meta App → Messenger → Webhooks):
+
+`https://<host>/messenger/webhook`
+
+Production host today: `https://doc-mo-farm-agent-production.up.railway.app/messenger/webhook`
+
+Subscribe the Page to **`messages`** and **`messaging_postbacks`**. Echoes, delivery receipts, and read receipts are ignored.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MESSENGER_ENABLED` | off | `true`, `1`, `yes`, or `on` accepts inbound events and allows Graph send. Anything else (including unset) answers POST with `200` and does not draft or send. |
+| `FB_VERIFY_TOKEN` | required to verify | Shared secret you invent. Meta sends it as `hub.verify_token` on GET. Same value in the Meta webhook form and on Railway. |
+| `FB_APP_SECRET` | required when enabled | App secret (App settings → Basic). POST must carry a valid `X-Hub-Signature-256`. Missing or wrong signature is `403`. |
+| `FB_PAGE_ACCESS_TOKEN` | required to send | Page token with `pages_messaging`. Approve & Send calls `POST https://graph.facebook.com/v21.0/me/messages`. |
+| `FB_PAGE_ID` | optional | Numeric Page id. Events whose sender is this id are ignored. |
+
+`customer_user_id` on a Messenger draft is `fb_<PSID>`. Do not commit tokens. Copy the names into Railway → Variables. See `.env.example`.
+
+Meta setup:
+
+1. Create a Business app at developers.facebook.com and add the Messenger product.
+2. Connect the farm Facebook Page. In development mode only app roles can message the Page; switch the app to Live when the Page is ready for customers.
+3. Create a Page access token (`pages_messaging`, and `pages_manage_metadata` so the webhook can be subscribed). Put it in `FB_PAGE_ACCESS_TOKEN`. Put the Page id in `FB_PAGE_ID`.
+4. Choose a long random `FB_VERIFY_TOKEN`. Set the callback URL above, paste that token, and verify. Meta calls `GET /messenger/webhook`.
+5. Copy the App Secret into `FB_APP_SECRET`.
+6. Subscribe the Page webhook fields `messages` and `messaging_postbacks`.
+7. Set `MESSENGER_ENABLED=true` and redeploy. Send a Page message, open `/admin`, confirm the row says **FB / Messenger** and is **Chờ duyệt**, edit if needed, then **Duyệt và gửi**.
+
+Graph standard messaging works for about 24 hours after the customer's last message. If Approve & Send is later than that, Facebook rejects the call and the draft stays `APPROVED` with `send_error` so it can be retried or handled by hand.
+
+PII: `services/piiHook.js` masks the model copy when `services/pii.js` is on the tree (Module 3). That file is not on `main` yet. Until it lands, the hook is a no-op and stored messages are unchanged. Land Module 3 first for masking; this channel does not need it to hold drafts.
+
+## Three stations
+
+These run inside the agent. They do not call Make.com, and they do not send the model text to the customer.
+
+1. **Filter and routing** (`services/stations.js` → `filterAndRoute`). On every inbound Zalo or Messenger text, before the draft is saved, the step reads the question and picks `sales`, `faq`, `needs-human`, or `other`. The draft stores that as `assigned_department` (Sales, FAQ, Người thật, Khác) and as `customer_intent` (`[sales] Hỏi giá — …`). A request for a person, or a step-aside, is forced to `needs-human`. This step does not call a model and does not send.
+2. **Prompt station.** The suggested reply still comes from the existing farm agent (sales rules, prices, KiotViet stock, taught lessons). The system prompt starts with: "Bạn là bộ lọc thông minh. Hãy đọc câu hỏi của khách, trích xuất nhu cầu chính và viết câu trả lời ngắn gọn, lịch sự bằng tiếng Việt." The current turn also carries the route and the main need. The reply is saved as `PENDING_REVIEW`. Messenger stays in that state even if `HITL_REQUIRE_APPROVAL` is off.
+3. **Response station** (`services/drafts.js` → `deliver()`). Only **Duyệt và gửi** on `/admin` sends the approved text. Messenger calls Graph `me/messages` with the PSID in `fb_<PSID>`. Zalo OA and Zalo Bot keep their existing send paths and user ids.
+
 ## Stock check before chốt đơn
 
 `create_order` reads live KiotViet stock before it inserts an order or pushes one. Sellable qty is `onHand` minus `reserved` at `KIOTVIET_BRANCH_ID` (or the first branch). The call is `GET /products/code/{sku}` and, if that payload has no inventories, `GET /products/{id}` then `GET /productOnHands`. The product-list cache is not the number we sell against.

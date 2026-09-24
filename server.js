@@ -23,11 +23,14 @@ const hitlAdmin   = require('./services/hitlAdmin');
 const hitl        = require('./services/hitlGate');
 const confidenceGate = require('./services/confidenceGate');
 const audit       = require('./services/audit');
+const messenger   = require('./services/messenger');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
+app.use(express.json({
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+}));
 app.use(express.urlencoded({ extended: false })); // admin form posts
 app.set('trust proxy', 1);
 
@@ -64,6 +67,8 @@ app.get('/', (req, res) => {
       oa_webhook: '/webhook',
       bot_webhook: '/bot/webhook',
       bot_enabled: !!process.env.ZALO_BOT_TOKEN,
+      messenger_webhook: '/messenger/webhook',
+      messenger_enabled: messenger.enabled(),
     },
   });
 });
@@ -705,6 +710,15 @@ app.post('/bot/webhook', async (req, res) => {
 });
 
 // ============================================================
+// FACEBOOK MESSENGER
+// GET  /messenger/webhook — Meta hub.challenge (FB_VERIFY_TOKEN)
+// POST /messenger/webhook — inbound Page events → same HITL pipeline
+// Approve & Send delivers with Graph POST /me/messages.
+// MESSENGER_ENABLED defaults off; POST is ignored until it is true.
+// ============================================================
+messenger.mount(app, { pipeline, log: logEvent });
+
+// ============================================================
 // OWNER COMMANDS (sent from the farm's own Zalo to the bot)
 //   /mo <id>     resume the AI for that customer
 //   /dung <id>   pause the AI (a person will answer)
@@ -1106,6 +1120,7 @@ followup.start();
 app.listen(PORT, () => {
   console.log(`🚀 Doc Mo Farm AI Agent running on port ${PORT}`);
   console.log(`   Webhook: POST /webhook`);
+  console.log(`   Messenger: POST /messenger/webhook (${messenger.enabled() ? 'on' : 'off'})`);
   console.log(`   Test:    POST /chat`);
   console.log(`   FAQ:     GET  /api/faq | POST /api/faq/generate`);
   console.log(`   Drafts:  GET  /admin`);

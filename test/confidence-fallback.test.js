@@ -170,7 +170,8 @@ describe('confidence fallback', { concurrency: 1 }, () => {
     assert.equal(draft.draft_reply.includes('chốt'), false);
     assert.notEqual(draft.draft_reply, WRONG);
     assert.equal(draft.ticket_status, 'NEEDS_HUMAN');
-    assert.equal(draft.customer_intent, 'Dau goi gia bao nhieu?');
+    assert.match(draft.customer_intent, /\[needs-human\]/);
+    assert.match(draft.customer_intent, /Dau goi gia bao nhieu\?/);
 
     assert.equal(handoffs.length, 1);
     assert.equal(handoffs[0].info.urgency, 'high');
@@ -291,7 +292,8 @@ describe('confidence fallback', { concurrency: 1 }, () => {
     assert.equal(stickerDraft.approval_status, 'PENDING_REVIEW');
     assert.equal(stickerDraft.ticket_status, 'NEEDS_HUMAN');
     assert.equal(stickerDraft.draft_reply, confidenceGate.WAITING_REPLY);
-    assert.equal(stickerDraft.customer_intent, '[sticker]');
+    assert.match(stickerDraft.customer_intent, /\[needs-human\]/);
+    assert.match(stickerDraft.customer_intent, /\[sticker\]/);
     assert.equal(/tư vấn gì/.test(stickerDraft.draft_reply), false);
 
     const image = `oa_img_${Date.now()}`;
@@ -310,7 +312,8 @@ describe('confidence fallback', { concurrency: 1 }, () => {
     assert.equal(imageDraft.ticket_status, 'NEEDS_HUMAN');
     assert.equal(imageDraft.draft_reply, confidenceGate.WAITING_REPLY);
     assert.equal(/ảnh sản phẩm/.test(imageDraft.draft_reply), false);
-    assert.equal(imageDraft.customer_intent, '[image]');
+    assert.match(imageDraft.customer_intent, /\[needs-human\]/);
+    assert.match(imageDraft.customer_intent, /\[image\]/);
 
     assert.equal(sent.length, 0, 'non-text fallback is not auto-sent');
     assert.ok(handoffs.some(h => String(h.lastMessage).includes('[sticker]')));

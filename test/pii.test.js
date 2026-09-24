@@ -199,7 +199,9 @@ describe('PII on the customer reply path', () => {
       const draft = await draftFor(uid);
       assert.ok(draft);
       assert.equal(draft.approval_status, 'PENDING_REVIEW');
-      assert.equal(draft.customer_intent, text);
+      assert.match(draft.customer_intent, /Lấy 2 chai dầu gội/);
+      assert.match(draft.customer_intent, new RegExp(PHONE));
+      assert.equal(draft.customer_intent.includes('[PHONE]'), false);
       assert.match(draft.pii_note, /PHONE/);
       assert.equal(draft.pii_note.includes(PHONE), false);
       assert.equal(lines.join('\n').includes(PHONE), false);
@@ -236,7 +238,8 @@ describe('PII on the customer reply path', () => {
     assert.match(JSON.stringify(captured), /\[PHONE\]/);
     const draft = await draftFor(uid);
     assert.equal(draft.approval_status, 'PENDING_REVIEW');
-    assert.equal(draft.customer_intent, text);
+    assert.match(draft.customer_intent, /0912345678/);
+    assert.equal(draft.customer_intent.includes('[PHONE]'), false);
     assert.equal(draft.channel, 'zalo');
   });
 

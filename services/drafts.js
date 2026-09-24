@@ -16,6 +16,7 @@ const db = require('./database');
 const audit = require('./audit');
 const zaloService = require('./zaloService');
 const botService = require('./zaloBotService');
+const messenger = require('./messenger');
 
 const STATUSES = ['PENDING_REVIEW', 'APPROVED', 'REJECTED', 'SENT'];
 const STATUS_SET = new Set(STATUSES);
@@ -401,12 +402,14 @@ function isUuid(id) {
 }
 
 /**
- * SEND HOOK — the only place an approved HITL draft is delivered.
- * Webhook handlers do not call this, and a failure here must not affect them.
+ * RESPONSE STATION — the only place an approved HITL draft is delivered.
+ * Webhook handlers do not call this. Filter and the model never call this.
+ * A person presses Duyệt và gửi; this sends the approved text on the channel
+ * stored on the draft (Facebook PSID or Zalo user id).
  *
  *   zalo + customer_user_id "bot_<chatId>" → zaloBotService.sendMessage
  *   zalo + any other user id                → zaloService.sendTextMessage (OA)
- *   messenger                               → not implemented
+ *   messenger + customer_user_id "fb_<psid>" → messenger.sendText (Graph Send API)
  *
  * When delivery cannot run, the caller keeps approval_status = APPROVED
  * and returns `hook` so a later change can plug the missing sender in here.
@@ -424,13 +427,53 @@ async function deliver(draft) {
   }
 
   if (draft.channel === 'messenger') {
-    return {
-      ok: false,
-      sent: false,
-      via: null,
-      hook: 'services/drafts.js deliver() messenger',
-      error: 'Repo chưa có hàm gửi Messenger. Bản nháp giữ ở APPROVED. Gắn gửi trong services/drafts.js → deliver().',
-    };
+    const hook = 'services/messenger.js sendText';
+    const psid = messenger.psidFromUserId(draft.customer_user_id);
+    if (!psid) {
+      return {
+        ok: false,
+        sent: false,
+        via: null,
+        hook,
+        error: 'Thiếu PSID khách (fb_<psid>). Bản nháp giữ ở APPROVED. Hook: services/messenger.js sendText(psid, text).',
+      };
+    }
+    if (!messenger.enabled() || !process.env.FB_PAGE_ACCESS_TOKEN) {
+      return {
+        ok: false,
+        sent: false,
+        via: null,
+        hook,
+        error: 'Chưa gửi được qua Messenger (bật MESSENGER_ENABLED và đặt FB_PAGE_ACCESS_TOKEN). Bản nháp giữ ở APPROVED. Hook: services/messenger.js sendText(psid, text).',
+      };
+    }
+    try {
+      const result = await messenger.sendText(psid, text);
+      if (!result || !result.ok) {
+        const detail = (result && result.error) || messenger.getLastError() || 'Facebook từ chối tin nhắn';
+        return {
+          ok: false,
+          sent: false,
+          via: null,
+          hook,
+          error: `Facebook chưa gửi được: ${detail}. Bản nháp giữ ở APPROVED. Hook: services/messenger.js sendText(psid, text).`,
+        };
+      }
+      let qrError = null;
+      if (draft.qr_image_url && !text.includes(draft.qr_image_url)) {
+        const qr = await messenger.sendImage(psid, draft.qr_image_url);
+        if (!qr || !qr.ok) qrError = 'Đã gửi nội dung, chưa gửi được ảnh QR.';
+      }
+      return { ok: true, sent: true, via: 'messenger', hook, error: qrError };
+    } catch (e) {
+      return {
+        ok: false,
+        sent: false,
+        via: null,
+        hook,
+        error: `${e.message}. Bản nháp giữ ở APPROVED. Hook: services/messenger.js sendText(psid, text).`,
+      };
+    }
   }
 
   const uid = String(draft.customer_user_id || '').trim();

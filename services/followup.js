@@ -143,7 +143,8 @@ async function run(reason = 'scheduled') {
       const text = composed.text;
 
       // Same gate as inbound replies: a nudge is AI sales copy.
-      if (hitl.hitlRequired()) {
+      // Messenger nudges are held even when the Zalo emergency switch is off.
+      if (hitl.hitlRequired() || c.channel === 'messenger') {
         const release = await hitl.releaseToCustomer(followupTarget(c), text, {
           ack: false,
           intent: c.convo_summary || 'Khách im lặng sau khi hỏi sản phẩm',
@@ -207,6 +208,18 @@ function followupTarget(c) {
       channel: 'bot',
       externalKey: `bot_${chatId}`,
       replyTo: chatId,
+      senderName: name,
+      text: intent,
+      send: refuseSend,
+    };
+  }
+  if (c.channel === 'messenger') {
+    const ext = String(c.ext);
+    const psid = ext.replace(/^fb_/, '');
+    return {
+      channel: 'messenger',
+      externalKey: ext.startsWith('fb_') ? ext : `fb_${psid}`,
+      replyTo: psid,
       senderName: name,
       text: intent,
       send: refuseSend,

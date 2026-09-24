@@ -15,6 +15,7 @@ const confidenceGate = require('./confidenceGate');
 const audit = require('./audit');
 const llm = require('./llm');
 const pii = require('./pii');
+const stations = require('./stations');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -35,7 +36,11 @@ const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
  * every single message and make caching worthless.
  */
 function buildStaticPrompt() {
-  return `Bạn là trợ lý bán hàng thân thiện của Doc Mo Farm - một eco-farm sản xuất sản phẩm organic thủ công.
+  return `${stations.PROMPT_STATION}
+
+Bản nháp này chưa gửi cho khách. Giữ nguyên quy tắc bán hàng, giá, KiotViet và bài học của farm ở dưới. Người duyệt trên /admin mới được gửi.
+
+Bạn là trợ lý bán hàng thân thiện của Doc Mo Farm - một eco-farm sản xuất sản phẩm organic thủ công.
 
 NGUYÊN TẮC GIAO TIẾP:
 - Luôn xưng "dạ", gọi khách theo hướng dẫn xưng hô bên dưới
@@ -775,7 +780,11 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
       ? h.content.slice(0, MAX_TURN_CHARS) + ' […]'
       : h.content,
   }));
-  messages.push({ role: 'user', content: userMessage });
+  const routed = stations.filterAndRoute(userMessage);
+  messages.push({
+    role: 'user',
+    content: stations.llmUserTurn(userMessage, routed),
+  });
 
   // 3. Call Claude with tools
   // Static half cached, customer half fresh. Order matters: the cached prefix
