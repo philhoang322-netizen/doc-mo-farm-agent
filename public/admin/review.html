@@ -4,87 +4,109 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
-<meta name="theme-color" content="#3f6b4c">
-<title>Tin nhắn — {{PRODUCT_NAME}}</title>
+<meta name="theme-color" content="#0f5a35">
+<title>Hàng chờ duyệt — {{PRODUCT_NAME}}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/admin/review.css">
 </head>
-<body>
+<body class="hitl">
+<div class="wrap">
 <header class="top">
-  <div>
+  <div class="brand">
     <h1><span id="product-name">{{PRODUCT_NAME}}</span> <span class="ver" id="app-version">{{VERSION_LABEL}}</span></h1>
-    <p class="sub">Duyệt trước khi gửi. Lọc Nóng, Khẩn, Thường. Tin chỉ đi khi bấm Duyệt và gửi.</p>
+    <p>Tin chỉ gửi khi bạn bấm Duyệt và gửi. Lọc nhanh Nóng / Khẩn / Thường.</p>
   </div>
   <div class="top-actions">
-    <label class="actor-field">Tên người duyệt
-      <input id="actor-name" maxlength="80" autocomplete="name" placeholder="Ví dụ: Lan">
-    </label>
-    <a class="ghost" href="/admin/audit">Nhật ký</a>
-    <a class="ghost" href="/admin/roster">Ca trực</a>
+    <div class="field actor-field">
+      <label for="actor-name">Tên người duyệt</label>
+      <input id="actor-name" maxlength="80" autocomplete="name" placeholder="Ví dụ: Phước">
+    </div>
+    <a class="btn btn-sm" href="/admin/audit">Nhật ký</a>
+    <a class="btn btn-sm" href="/admin/roster">Ca trực</a>
     <form method="post" action="/admin/logout">
-      <button class="ghost" type="submit">Đăng xuất</button>
+      <button class="btn btn-sm btn-ghost" type="submit">Đăng xuất</button>
     </form>
   </div>
 </header>
 <p id="storage" class="note warn" hidden></p>
-<div class="channels-bar">
-  <div id="channels" class="channels" role="tablist" aria-label="Kênh bán"></div>
+
+<div class="channel-row">
+  <div id="channels" class="pills" role="tablist" aria-label="Kênh bán"></div>
+  <button type="button" class="linkish" id="channel-settings-toggle">Cài đặt kênh</button>
+</div>
+<div id="channel-panel" class="channel-panel hidden">
   <form id="add-channel" class="add-channel">
     <input name="name" maxlength="40" placeholder="Tên kênh" aria-label="Tên kênh bán mới" required>
-    <button type="submit">Thêm kênh bán</button>
+    <button type="submit" class="btn btn-sm">Thêm kênh</button>
   </form>
 </div>
-<section class="stats" aria-label="Thống kê tin gửi">
-  <article>
-    <h2>Tin gửi theo ngày</h2>
-    <div id="stats-day"></div>
-  </article>
-  <article>
-    <h2>Tin gửi theo mẫu</h2>
-    <div id="stats-template"></div>
-  </article>
+
+<section class="queue-shell" aria-label="Hàng chờ duyệt">
+  <div class="queue-head">
+    <h2>Hàng chờ duyệt</h2>
+    <div class="filter-row" role="tablist" aria-label="Trạng thái">
+      <span class="filter-label">Trạng thái</span>
+      <button type="button" class="chip" role="tab" data-ops="pending" aria-selected="true">Chờ xử lý <span class="count"></span></button>
+      <button type="button" class="chip" role="tab" data-ops="success">Đã gửi <span class="count"></span></button>
+      <button type="button" class="chip" role="tab" data-ops="failure">Thất bại <span class="count"></span></button>
+      <button type="button" class="chip" role="tab" data-ops="rejected">Từ chối <span class="count"></span></button>
+    </div>
+    <div class="filter-row" id="triage-tabs" role="tablist" aria-label="Mức ưu tiên">
+      <span class="filter-label">Mức</span>
+      <button type="button" class="chip" role="tab" data-triage="" aria-selected="true">Tất cả</button>
+      <button type="button" class="chip chip-hot" role="tab" data-triage="hot">Nóng <span class="count"></span></button>
+      <button type="button" class="chip chip-urgent" role="tab" data-triage="urgent">Khẩn <span class="count"></span></button>
+      <button type="button" class="chip" role="tab" data-triage="normal">Thường <span class="count"></span></button>
+      <button type="button" class="linkish" id="more-filters">Thêm bộ lọc</button>
+    </div>
+    <div id="extra-filters" class="extra-filters hidden">
+      <div class="filter-row" id="types" role="tablist" aria-label="Loại tin">
+        <span class="filter-label">Loại tin</span>
+        <button type="button" class="chip" role="tab" data-type="" aria-selected="true">Tất cả</button>
+        <button type="button" class="chip" role="tab" data-type="follower">Follower</button>
+        <button type="button" class="chip" role="tab" data-type="zns">ZNS</button>
+        <button type="button" class="chip" role="tab" data-type="broadcast">Broadcast</button>
+        <button type="button" class="chip" role="tab" data-ops="sending">Đang gửi <span class="count"></span></button>
+        <button type="button" class="chip" role="tab" data-ops="queued">Chờ gửi <span class="count"></span></button>
+      </div>
+      <section class="stats" aria-label="Thống kê tin gửi">
+        <article>
+          <h2>Tin gửi theo ngày</h2>
+          <div id="stats-day"></div>
+        </article>
+        <article>
+          <h2>Tin gửi theo mẫu</h2>
+          <div id="stats-template"></div>
+        </article>
+      </section>
+      <details class="composer">
+        <summary>Tạo tin</summary>
+        <form id="create-form">
+          <label>Tên khách <input name="customer_name" maxlength="200"></label>
+          <label>Loại tin
+            <select name="message_type">
+              <option value="follower">Follower</option>
+              <option value="zns">ZNS</option>
+              <option value="broadcast">Broadcast</option>
+            </select>
+          </label>
+          <label>Mẫu <input name="template_name" maxlength="120" placeholder="Tên mẫu, nếu có"></label>
+          <label class="span-2">Câu khách hỏi <input name="customer_query" maxlength="1000" placeholder="Câu khách gửi, nếu có"></label>
+          <label class="span-2">Nội dung <textarea name="draft_reply" required rows="4" maxlength="8000"></textarea></label>
+          <button type="submit" class="btn btn-primary">Đưa vào chờ xử lý</button>
+        </form>
+      </details>
+    </div>
+  </div>
+  <div class="workspace">
+    <aside class="list" id="queue">
+      <div id="list" class="list-scroll" aria-live="polite"></div>
+    </aside>
+    <main id="detail" class="detail"></main>
+  </div>
 </section>
-<div class="types" id="types" role="tablist" aria-label="Loại tin">
-  <button type="button" role="tab" data-type="" aria-selected="true">Tất cả</button>
-  <button type="button" role="tab" data-type="follower">Follower</button>
-  <button type="button" role="tab" data-type="zns">ZNS</button>
-  <button type="button" role="tab" data-type="broadcast">Broadcast</button>
-</div>
-<div class="types triage-tabs" id="triage-tabs" role="tablist" aria-label="Mức hộp thư">
-  <button type="button" role="tab" data-triage="" aria-selected="true">Mọi mức</button>
-  <button type="button" role="tab" data-triage="hot">Nóng</button>
-  <button type="button" role="tab" data-triage="urgent">Khẩn</button>
-  <button type="button" role="tab" data-triage="normal">Thường</button>
-</div>
-<div class="tabs" role="tablist" aria-label="Trạng thái tin">
-  <button type="button" role="tab" data-ops="success">Thành công <b class="count"></b></button>
-  <button type="button" role="tab" data-ops="failure">Thất bại <b class="count"></b></button>
-  <button type="button" role="tab" data-ops="pending" aria-selected="true">Chờ xử lý <b class="count"></b></button>
-  <button type="button" role="tab" data-ops="sending">Đang gửi <b class="count"></b></button>
-  <button type="button" role="tab" data-ops="queued">Chờ gửi <b class="count"></b></button>
-  <button type="button" role="tab" data-ops="rejected" class="extra">Từ chối <b class="count"></b></button>
-</div>
-<div class="layout">
-  <section id="queue">
-    <details class="composer">
-      <summary>Tạo tin</summary>
-      <form id="create-form">
-        <label>Tên khách <input name="customer_name" maxlength="200"></label>
-        <label>Loại tin
-          <select name="message_type">
-            <option value="follower">Follower</option>
-            <option value="zns">ZNS</option>
-            <option value="broadcast">Broadcast</option>
-          </select>
-        </label>
-        <label>Mẫu <input name="template_name" maxlength="120" placeholder="Tên mẫu, nếu có"></label>
-        <label class="span-2">Câu khách hỏi <input name="customer_query" maxlength="1000" placeholder="Câu khách gửi, nếu có"></label>
-        <label class="span-2">Nội dung <textarea name="draft_reply" required rows="4" maxlength="8000"></textarea></label>
-        <button type="submit">Đưa vào chờ xử lý</button>
-      </form>
-    </details>
-    <div id="list" aria-live="polite"></div>
-  </section>
-  <section id="detail"></section>
 </div>
 <p id="toast" class="toast" role="status" hidden></p>
 <noscript><p class="note warn">Trang này cần JavaScript để duyệt tin.</p></noscript>
