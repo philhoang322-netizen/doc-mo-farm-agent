@@ -20,6 +20,7 @@ const rewrite     = require('./services/rewrite');
 const followup    = require('./services/followup');
 const shipping    = require('./services/shipping');
 const hitlAdmin   = require('./services/hitlAdmin');
+const hitl        = require('./services/hitlGate');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -1070,4 +1071,5 @@ app.listen(PORT, () => {
   console.log(`   Test:    POST /chat`);
   console.log(`   FAQ:     GET  /api/faq | POST /api/faq/generate`);
   console.log(`   Drafts:  GET  /admin`);
+  console.log(`   HITL:    ${hitl.hitlRequired() ? 'ON — replies wait as PENDING_REVIEW' : 'OFF — auto-send (HITL_REQUIRE_APPROVAL=false)'}`);
 });

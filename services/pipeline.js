@@ -3,7 +3,9 @@
  *
  * Both channels used to duplicate this logic, which is how the OA side ended
  * up without de-duplication. Everything now goes through handleMessage():
- * dedup → per-customer lock → paused check → AI → reply → owner alerts.
+ * dedup → per-customer lock → paused check → AI → HITL draft or reply → owner alerts.
+ * Customer-facing text goes through services/hitlGate.js (HITL_REQUIRE_APPROVAL,
+ * default on) so it is not sent until /admin approves it.
  */
 const db = require('./database');
 const ops = require('./ops');
@@ -19,6 +21,7 @@ const followup = require('./followup');
 const priceMemo = require('./priceMemo');
 const catalog = require('./catalog');
 const money = require('./money');
+const hitl = require('./hitlGate');
 
 const FALLBACK_REPLY =
   'Dạ farm đang bận xử lý một chút, bạn nhắn lại giúp mình sau ít phút nha 🌿 ' +
@@ -69,16 +72,16 @@ async function handleMessage(p) {
           `Dạ vâng ạ, em dừng trả lời tự động tại đây. ${when} 🌿\n\n` +
           `Bạn cứ để lại nội dung cần hỗ trợ, farm đọc hết và trả lời sớm nhất có thể ạ.`;
 
-        await p.send(p.replyTo, reply);
+        const release = await hitl.releaseToCustomer(p, reply, { intent: p.text });
         await db.saveMessage(p.externalKey, 'assistant', reply);
-        log({ type: 'stop_bot', channel: p.channel, to: p.replyTo });
+        if (!release.held) log({ type: 'stop_bot', channel: p.channel, to: p.replyTo });
 
         await notify.handoff(
           { reason: 'Khách chủ động yêu cầu ngưng bot', urgency: 'high', externalId: p.externalKey },
           customer,
           p.text
         );
-        return { ok: true, stopped: true };
+        return { ok: true, stopped: true, held: release.held, draftId: release.draft?.id || null };
       }
 
       // 3. A human took over this conversation — stay out of the way.
@@ -110,10 +113,10 @@ async function handleMessage(p) {
       // these locally saves a full prompt every time, and they are common.
       const quick = quickReply(p.text);
       if (quick) {
-        await p.send(p.replyTo, quick);
+        const release = await hitl.releaseToCustomer(p, quick, { intent: p.text });
         await db.saveMessage(p.externalKey, 'assistant', quick);
-        log({ type: 'quick_reply', channel: p.channel, to: p.replyTo });
-        return { ok: true, quick: true };
+        if (!release.held) log({ type: 'quick_reply', channel: p.channel, to: p.replyTo });
+        return { ok: true, quick: true, held: release.held, draftId: release.draft?.id || null };
       }
 
       // 2d. Other drift signals — a long thread, a question asked three times,
@@ -139,51 +142,74 @@ async function handleMessage(p) {
         tokensUsed,
       });
 
-      const sent = await p.send(p.replyTo, reply);
-      log({
-        type: 'replied',
-        channel: p.channel,
-        to: p.replyTo,
-        reply: reply.slice(0, 120),
+      // HITL_REQUIRE_APPROVAL (default on): hold this text as PENDING_REVIEW.
+      // Do not call p.send with the AI body. See services/hitlGate.js.
+      const release = await hitl.releaseToCustomer(p, reply, { intent: p.text });
+      if (!release.held) {
+        log({
+          type: 'replied',
+          channel: p.channel,
+          to: p.replyTo,
+          reply: reply.slice(0, 120),
+          tokensUsed,
+          send_ok: !!release.sent,
+        });
+      }
+
+      // Follow-through must not turn a held reply into a second customer send
+      // if a later step throws.
+      try {
+        // Món nào giá đã thật sự nói ra trong tin vừa gửi thì ghi lại, để lần
+        // sau câu kỹ thuật về món đó không lặp lại giá nữa. Ghi sau khi gửi, và
+        // chỉ ghi món có con số nằm trong tin — nếu ghi lúc tra cứu, gặp lúc bot
+        // bỏ mất giá thì khách sẽ không bao giờ được nghe giá món đó.
+        // A draft is not "đã gửi" — skip until a person actually sends it.
+        if (customer && !release.held) {
+          const skus = priceMemo.skusTrongTin(reply, catalog.rows(), money);
+          if (skus.length) priceMemo.ghiNhan(customer.id, skus).catch(() => {});
+        }
+
+        // Refresh the rolling summary in the background when it falls behind,
+        // so the next turns still know what this conversation is about.
+        if (customer && db.DB_ENABLED) {
+          db.pool.query('SELECT COUNT(*)::int AS n FROM messages WHERE customer_id=$1', [customer.id])
+            .then(r => memory.maybeRefresh(customer, p.externalKey, r.rows[0].n))
+            .catch(() => {});
+        }
+
+        // 4. Order follow-through: pay-by-QR for the customer, POS + alert for the farm.
+        //    Customers write "ck", "stk", "gởi qr" far more often than
+        //    "chuyển khoản", so trust the raw text, not only the model.
+        const askedTransfer = vietqr.wantsTransfer(p.text);
+
+        if (newOrder) {
+          await afterOrder(newOrder, p, log, askedTransfer);
+        } else if (askedTransfer && vietqr.configured()) {
+          await sendAccountInfo(p, log);
+        }
+        if (handoff) await notify.handoff(handoff, customer, p.text);
+      } catch (postErr) {
+        console.error(`Pipeline follow-up error (${p.channel}):`, postErr);
+        log({ type: 'error', channel: p.channel, error: postErr.message });
+        await notify.send(`⚠️ Bot lỗi sau khi soạn trả lời (${p.channel}): ${postErr.message}`);
+      }
+
+      return {
+        ok: true,
         tokensUsed,
-        send_ok: !!sent,
-      });
-
-      // Món nào giá đã thật sự nói ra trong tin vừa gửi thì ghi lại, để lần
-      // sau câu kỹ thuật về món đó không lặp lại giá nữa. Ghi sau khi gửi, và
-      // chỉ ghi món có con số nằm trong tin — nếu ghi lúc tra cứu, gặp lúc bot
-      // bỏ mất giá thì khách sẽ không bao giờ được nghe giá món đó.
-      if (customer) {
-        const skus = priceMemo.skusTrongTin(reply, catalog.rows(), money);
-        if (skus.length) priceMemo.ghiNhan(customer.id, skus).catch(() => {});
-      }
-
-      // Refresh the rolling summary in the background when it falls behind,
-      // so the next turns still know what this conversation is about.
-      if (customer && db.DB_ENABLED) {
-        db.pool.query('SELECT COUNT(*)::int AS n FROM messages WHERE customer_id=$1', [customer.id])
-          .then(r => memory.maybeRefresh(customer, p.externalKey, r.rows[0].n))
-          .catch(() => {});
-      }
-
-      // 4. Order follow-through: pay-by-QR for the customer, POS + alert for the farm.
-      //    Customers write "ck", "stk", "gởi qr" far more often than
-      //    "chuyển khoản", so trust the raw text, not only the model.
-      const askedTransfer = vietqr.wantsTransfer(p.text);
-
-      if (newOrder) {
-        await afterOrder(newOrder, p, log, askedTransfer);
-      } else if (askedTransfer && vietqr.configured()) {
-        await sendAccountInfo(p, log);
-      }
-      if (handoff) await notify.handoff(handoff, customer, p.text);
-
-      return { ok: true, tokensUsed, handoff: !!handoff, order: newOrder?.order_number || null };
+        handoff: !!handoff,
+        order: newOrder?.order_number || null,
+        held: release.held,
+        draftId: release.draft?.id || null,
+      };
     } catch (err) {
       console.error(`Pipeline error (${p.channel}):`, err);
       log({ type: 'error', channel: p.channel, error: err.message });
-      // Never leave the customer staring at silence.
-      try { await p.send(p.replyTo, FALLBACK_REPLY); } catch (_) {}
+      // Same gate as a normal reply: the apology is customer-facing content.
+      // With approval on, it becomes a draft. With approval off, it is sent.
+      try {
+        await hitl.releaseToCustomer(p, FALLBACK_REPLY, { intent: p.text });
+      } catch (_) {}
       await notify.send(`⚠️ Bot lỗi khi trả lời khách (${p.channel}): ${err.message}`);
       return { ok: false, error: err.message };
     }
@@ -237,7 +263,7 @@ async function learnHonorific(customer, p) {
 async function stepAside(p, customer, verdict, log) {
   const text = drift.message(verdict.signal);
   try {
-    await p.send(p.replyTo, text);
+    const release = await hitl.releaseToCustomer(p, text, { intent: p.text });
     await db.saveMessage(p.externalKey, 'assistant', text);
     if (customer) {
       await db.pauseBot(customer.id, verdict.reason);
@@ -246,13 +272,15 @@ async function stepAside(p, customer, verdict, log) {
     }
     drift.markHandedOff(p.externalKey);
 
-    log({ type: 'stepped_aside', channel: p.channel, signal: verdict.signal, to: p.replyTo });
+    if (!release.held) {
+      log({ type: 'stepped_aside', channel: p.channel, signal: verdict.signal, to: p.replyTo });
+    }
     await notify.handoff(
       { reason: verdict.reason, urgency: verdict.urgency || 'high', externalId: p.externalKey },
       customer,
       p.text
     );
-    return { ok: true, steppedAside: verdict.signal };
+    return { ok: true, steppedAside: verdict.signal, held: release.held, draftId: release.draft?.id || null };
   } catch (e) {
     console.error('stepAside failed:', e.message);
     return { ok: false, error: e.message };
@@ -297,9 +325,19 @@ async function sendAccountInfo(p, log) {
   try {
     const url = vietqr.imageUrl(0, '');
     const text = vietqr.accountInfoMessage();
-    if (p.sendPhoto && url) await p.sendPhoto(p.replyTo, url, text);
-    else await p.send(p.replyTo, `${text}\n\n${url || ''}`.trim());
-    log({ type: 'account_info_sent', channel: p.channel });
+    if (hitl.hitlRequired()) {
+      const body = (p.sendPhoto && url) ? text : `${text}\n\n${url || ''}`.trim();
+      await hitl.releaseToCustomer(p, body, {
+        ack: false,
+        intent: p.text,
+        qr_image_url: url || null,
+      });
+    } else if (p.sendPhoto && url) {
+      await p.sendPhoto(p.replyTo, url, text);
+    } else {
+      await p.send(p.replyTo, `${text}\n\n${url || ''}`.trim());
+    }
+    log({ type: 'account_info_sent', channel: p.channel, held: hitl.hitlRequired() });
   } catch (e) {
     console.error('Account info send failed:', e.message);
   }
@@ -313,9 +351,21 @@ async function afterOrder(order, p, log, askedTransfer = false) {
     const cod = String(order.payment || 'cod').toLowerCase() === 'cod' && !askedTransfer;
     const url = vietqr.imageUrl(order.total, order.order_number);
     if (!cod && url) {
-      if (p.sendPhoto) await p.sendPhoto(p.replyTo, url, vietqr.caption(order));
-      else await p.send(p.replyTo, `${vietqr.caption(order)}\n\n${url}`);
-      log({ type: 'qr_sent', order: order.order_number });
+      const caption = vietqr.caption(order);
+      if (hitl.hitlRequired()) {
+        const body = p.sendPhoto ? caption : `${caption}\n\n${url}`;
+        await hitl.releaseToCustomer(p, body, {
+          ack: false,
+          intent: p.text,
+          qr_image_url: p.sendPhoto ? url : null,
+          kiot_summary: order.order_number ? `Đơn ${order.order_number}` : null,
+        });
+      } else if (p.sendPhoto) {
+        await p.sendPhoto(p.replyTo, url, caption);
+      } else {
+        await p.send(p.replyTo, `${caption}\n\n${url}`);
+      }
+      log({ type: 'qr_sent', order: order.order_number, held: hitl.hitlRequired() });
     }
   } catch (e) {
     console.error('QR send failed:', e.message);
@@ -363,8 +413,8 @@ async function handleNonText(p) {
   try {
     await db.getOrCreateCustomer(p.externalKey, p.senderName);
     await db.saveMessage(p.externalKey, 'user', `[${p.kind}]`);
-    await p.send(p.replyTo, reply);
-    log({ type: 'non_text_replied', channel: p.channel, kind: p.kind });
+    const release = await hitl.releaseToCustomer(p, reply, { intent: `[${p.kind}]` });
+    if (!release.held) log({ type: 'non_text_replied', channel: p.channel, kind: p.kind });
 
     // An image is very often a bank transfer receipt — the farm should look.
     if (p.kind === 'image') {
@@ -373,7 +423,7 @@ async function handleNonText(p) {
         `Xem tại Zalo. Khách: ${p.senderName || p.externalKey}`
       );
     }
-    return { ok: true };
+    return { ok: true, held: release.held, draftId: release.draft?.id || null };
   } catch (e) {
     console.error('Non-text handling failed:', e.message);
     return { ok: false, error: e.message };
@@ -390,10 +440,10 @@ async function handleFollow(p) {
       'Farm mình làm thủ công các sản phẩm organic: nước nghệ / nước gừng lên men, ' +
       'xúc xích, chuối sấy, dầu gội, dầu tắm.\n\n' +
       'Bạn muốn tìm hiểu sản phẩm nào, nhắn em nha!';
-    await p.send(p.replyTo, text);
+    const release = await hitl.releaseToCustomer(p, text, { intent: 'Khách vừa quan tâm OA' });
     await db.saveMessage(p.externalKey, 'assistant', text);
-    log({ type: 'follow_welcomed', channel: p.channel });
-    return { ok: true };
+    if (!release.held) log({ type: 'follow_welcomed', channel: p.channel });
+    return { ok: true, held: release.held, draftId: release.draft?.id || null };
   } catch (e) {
     return { ok: false, error: e.message };
   }
