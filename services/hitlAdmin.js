@@ -11,6 +11,7 @@ const audit = require('./audit');
 const roster = require('./roster');
 const handover = require('./handover');
 const rosterPage = require('./rosterPage');
+const brand = require('./brand');
 
 const PUBLIC = path.join(__dirname, '..', 'public', 'admin');
 
@@ -88,9 +89,12 @@ const GATE_CSS = `
          font:17px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
   .login { width:min(100%,420px); background:#fff; border:1px solid #e4ddd3; border-radius:20px;
            padding:28px 22px 22px; box-shadow:0 10px 30px rgba(40,30,15,.06); }
-  .brand { margin:0; font-size:13px; letter-spacing:.08em; text-transform:uppercase;
-           color:#2f6b45; font-weight:700; }
-  h1 { margin:6px 0 0; font-size:26px; letter-spacing:-.02em; }
+  h1 { margin:0; font-size:26px; letter-spacing:-.02em; line-height:1.2; }
+  .ver { display:inline-block; margin-left:.35em; padding:.14em .5em .1em;
+         border-radius:999px; background:#efeae3; color:#5c564e;
+         font-size:.46em; font-weight:700; letter-spacing:.02em;
+         vertical-align:middle; line-height:1.2; white-space:nowrap; }
+  .farm { margin:8px 0 0; font-size:14px; font-weight:700; color:#2f6b45; }
   .sub { color:#5c564e; font-size:15px; }
   label { display:block; margin-top:16px; font-size:13px; font-weight:700; color:#5c564e; }
   input { width:100%; margin-top:4px; font:inherit; font-size:17px; color:#1c1712;
@@ -102,45 +106,47 @@ const GATE_CSS = `
 `;
 
 function loginHtml(error) {
-  return `<!doctype html>
+  return brand.applyTemplate(`<!doctype html>
 <html lang="vi"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#3f6b4c">
-<title>Đăng nhập — Dốc Mơ Farm</title>
+<title>Đăng nhập — {{PRODUCT_NAME}}</title>
 <style>${GATE_CSS}</style>
 </head>
 <body>
   <form class="login" method="post" action="/admin/login">
-    <p class="brand">Dốc Mơ Farm</p>
-    <h1>Duyệt tin nội bộ</h1>
-    <p class="sub">Nhập mật khẩu quản trị để xem bản nháp trước khi gửi.</p>
+    <h1><span id="product-name">{{PRODUCT_NAME}}</span> <span class="ver" id="app-version">{{VERSION_LABEL}}</span></h1>
+    <p class="farm">{{FARM_NAME}}</p>
+    <p class="sub">Duyệt tin nội bộ. Nhập mật khẩu quản trị để xem bản nháp trước khi gửi.</p>
     ${error ? `<p class="err">${esc(error)}</p>` : ''}
     <label>Mật khẩu
       <input type="password" name="password" autocomplete="current-password" autofocus required maxlength="200">
     </label>
     <button type="submit">Vào trang duyệt</button>
   </form>
-</body></html>`;
+  <script>window.OMNI_SALE={{BRAND_JSON}};</script>
+</body></html>`);
 }
 
 function unconfiguredHtml() {
-  return `<!doctype html>
+  return brand.applyTemplate(`<!doctype html>
 <html lang="vi"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>Chưa cấu hình — Dốc Mơ Farm</title>
+<title>Chưa cấu hình — {{PRODUCT_NAME}}</title>
 <style>${GATE_CSS}</style>
 </head>
 <body>
   <div class="login">
-    <p class="brand">Dốc Mơ Farm</p>
-    <h1>Chưa mở trang duyệt</h1>
-    <p class="sub">Đặt biến ADMIN_PASSWORD trên Railway rồi khởi động lại service. Trang này không công khai khi thiếu mật khẩu.</p>
+    <h1><span id="product-name">{{PRODUCT_NAME}}</span> <span class="ver" id="app-version">{{VERSION_LABEL}}</span></h1>
+    <p class="farm">{{FARM_NAME}}</p>
+    <p class="sub">Chưa mở trang duyệt. Đặt biến ADMIN_PASSWORD trên Railway rồi khởi động lại service. Trang này không công khai khi thiếu mật khẩu.</p>
   </div>
-</body></html>`;
+  <script>window.OMNI_SALE={{BRAND_JSON}};</script>
+</body></html>`);
 }
 
 function requireApi(req, res, next) {
@@ -150,7 +156,7 @@ function requireApi(req, res, next) {
     return res.status(503).json({ error: 'Chưa cấu hình ADMIN_PASSWORD' });
   }
   if (!auth.isAuthed(req)) {
-    res.set('WWW-Authenticate', 'Basic realm="Doc Mo Farm Admin", charset="UTF-8"');
+    res.set('WWW-Authenticate', `Basic realm="${brand.PRODUCT_NAME}", charset="UTF-8"`);
     return res.status(401).json({ error: 'Chưa đăng nhập' });
   }
   next();
@@ -172,7 +178,7 @@ async function page(req, res) {
     return res.status(200).type('html').send(loginHtml(null));
   }
   const html = await fs.promises.readFile(path.join(PUBLIC, 'review.html'), 'utf8');
-  res.type('html').send(html);
+  res.type('html').send(brand.applyTemplate(html));
 }
 
 function login(req, res) {

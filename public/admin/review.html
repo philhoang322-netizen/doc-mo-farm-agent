@@ -5,15 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#3f6b4c">
-<title>Duyệt tin nhắn — Dốc Mơ Farm</title>
+<title>Duyệt tin nhắn — {{PRODUCT_NAME}}</title>
 <link rel="stylesheet" href="/admin/review.css">
 </head>
 <body>
 <header class="top">
   <div>
-    <p class="brand">Omni Sale DMF</p>
-    <h1>Duyệt tin trước khi gửi</h1>
-    <p class="sub">Sửa bản nháp, rồi mới gửi cho khách.</p>
+    <h1><span id="product-name">{{PRODUCT_NAME}}</span> <span class="ver" id="app-version">{{VERSION_LABEL}}</span></h1>
+    <p class="farm">{{FARM_NAME}}</p>
+    <p class="sub">Duyệt tin trước khi gửi. Sửa bản nháp, rồi mới gửi cho khách.</p>
   </div>
   <div class="top-actions">
     <label class="actor-field">Tên người duyệt
@@ -39,6 +39,7 @@
 </div>
 <p id="toast" class="toast" role="status" hidden></p>
 <noscript><p class="note warn">Trang này cần JavaScript để duyệt tin.</p></noscript>
+<script>window.OMNI_SALE={{BRAND_JSON}};</script>
 <script src="/admin/review.js"></script>
 </body>
 </html>

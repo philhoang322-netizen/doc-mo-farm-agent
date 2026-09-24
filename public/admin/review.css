@@ -94,7 +94,27 @@ body {
   color: var(--green);
   font-weight: 700;
 }
-h1 { margin: 2px 0 0; font-size: 28px; letter-spacing: -0.02em; }
+h1 { margin: 0; font-size: 28px; letter-spacing: -0.02em; line-height: 1.2; }
+.ver {
+  display: inline-block;
+  margin-left: 0.35em;
+  padding: 0.14em 0.5em 0.1em;
+  border-radius: 999px;
+  background: #efeae3;
+  color: var(--soft);
+  font-size: 0.46em;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  vertical-align: middle;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.farm {
+  margin: 6px 0 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--green);
+}
 .sub { margin: 4px 0 0; color: var(--soft); font-size: 15px; }
 button, .ghost {
   font: inherit;

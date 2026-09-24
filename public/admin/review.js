@@ -1,4 +1,13 @@
 (function () {
+  const brand = window.OMNI_SALE;
+  if (brand && typeof brand === 'object') {
+    const nameEl = document.getElementById('product-name');
+    const verEl = document.getElementById('app-version');
+    if (nameEl && brand.product) nameEl.textContent = brand.product;
+    if (verEl && brand.label) verEl.textContent = brand.label;
+    if (brand.product) document.title = 'Duyệt tin nhắn — ' + brand.product;
+  }
+
   const STATUSES = ['PENDING_REVIEW', 'APPROVED', 'REJECTED', 'SENT'];
   const LABELS = {
     PENDING_REVIEW: 'Chờ duyệt',
