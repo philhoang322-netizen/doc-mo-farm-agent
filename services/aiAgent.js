@@ -10,6 +10,7 @@ const shipping = require('./shipping');
 const money = require('./money');
 const promo = require('./promo');
 const priceMemo = require('./priceMemo');
+const stockGate = require('./stockGate');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -74,6 +75,8 @@ QUY TẮC SẮT VỀ ĐƠN HÀNG — sai là mất tiền của khách và của
 - Nếu không chắc khách muốn thêm hay đặt đơn mới, HỎI LẠI trước, đừng tự đoán.
 - Đọc kỹ số lượng. "1 chai" là 1, không phải 2.
 - Trước khi gọi create_order, nhẩm lại: tổng tiền = đơn giá × số lượng. Nói đúng con số đó cho khách.
+- create_order tự kiểm tồn kho thật trên KiotViet. Nếu tool trả về CHƯA TẠO ĐƠN, nói đúng cảnh báo đó:
+  không nói đã chốt, không hứa còn hàng, không bịa số tồn. Nhân viên farm sẽ đối soát.
 
 KHI KHÁCH HỎI SẢN PHẨM: Gọi tool search_products để tìm.
 KHI KHÁCH HỎI CHI TIẾT (thành phần, cách dùng, bảo quản, ai dùng được, vì sao có cặn...): Gọi tool search_knowledge.
@@ -223,7 +226,9 @@ const tools = [
   },
   {
     name: 'create_order',
-    description: 'Tạo đơn hàng mới cho khách',
+    description:
+      'Tạo đơn hàng mới cho khách. Hệ thống tự kiểm tồn KiotViet trước khi tạo. ' +
+      'Nếu tool báo CHƯA TẠO ĐƠN vì hết hoặc sắp hết hàng, không được xác nhận đơn.',
     input_schema: {
       type: 'object',
       properties: {
@@ -343,6 +348,106 @@ const tools = [
 // caller can notify the farm and mute the bot for that customer.
 const pendingHandoff = new Map();
 const pendingOrder = new Map();
+const pendingStockHold = new Map();
+
+function attachSku(items) {
+  return (items || []).map(item => {
+    const named = String(item.product_name || '').toLowerCase();
+    const hit = catalog.rows().find(p => {
+      if (item.sku && p.sku && String(p.sku).toUpperCase() === String(item.sku).toUpperCase()) return true;
+      if (!named || !p.name_vi) return false;
+      const needle = named.slice(0, 12);
+      return p.name_vi.toLowerCase().includes(needle) || named.includes(p.name_vi.toLowerCase());
+    });
+    return { ...item, sku: item.sku || hit?.sku || null, product_name: item.product_name || hit?.name_vi || null };
+  });
+}
+
+/**
+ * Stock check, then create. Low or short stock does not insert an order and
+ * does not leave a "đã tạo đơn" tool result. The warning draft replaces the
+ * model reply in finalizeReply().
+ */
+async function attemptCreateOrder(customer, toolInput, zaloUserId) {
+  if (!customer) {
+    return { decision: 'error', toolResult: 'Chưa xác định được khách hàng.', draftReply: null, stockHold: null };
+  }
+  if (toolInput.customer_phone) {
+    await db.setPhoneAndMerge(customer.id, toolInput.customer_phone);
+  }
+
+  const items = attachSku(toolInput.items);
+  const stock = await stockGate.assessItems(items);
+  if (stock.decision === 'low' || stock.decision === 'blocked') {
+    const handoff = {
+      kind: 'stock',
+      reason: stock.summary,
+      urgency: 'high',
+      customerId: customer.id,
+      externalId: zaloUserId,
+    };
+    pendingHandoff.set(zaloUserId, handoff);
+    pendingStockHold.set(zaloUserId, stock);
+    pendingOrder.delete(zaloUserId);
+    if (customer.id) await db.pauseBot(customer.id, stock.summary).catch(() => {});
+    return {
+      decision: stock.decision,
+      toolResult:
+        `CHƯA TẠO ĐƠN (${stock.decision}). Không được nói đã chốt đơn hay còn đủ hàng.\n` +
+        `Trả lời khách đúng nội dung sau:\n${stock.draftReply}`,
+      draftReply: stock.draftReply,
+      stockHold: stock,
+    };
+  }
+
+  const order = await db.createOrderNew(
+    customer.id,
+    items,
+    toolInput.delivery_address,
+    toolInput.customer_note,
+    toolInput.payment_method || 'cod'
+  );
+  await db.pool.query(
+    `UPDATE customers SET lead_stage='ordered', lead_updated_at=NOW() WHERE id=$1`,
+    [customer.id]
+  ).catch(() => {});
+
+  const total = items.reduce((sum, item) => sum + Number(item.quantity) * Number(item.unit_price || 0), 0);
+  if (pendingHandoff.get(zaloUserId)?.kind === 'stock') pendingHandoff.delete(zaloUserId);
+  pendingStockHold.delete(zaloUserId);
+  pendingOrder.set(zaloUserId, {
+    order_number: order.order_number,
+    total,
+    items,
+    phone: toolInput.customer_phone || customer.phone || null,
+    address: toolInput.delivery_address || null,
+    note: toolInput.customer_note || null,
+    payment: toolInput.payment_method || 'cod',
+    customerName: customer.display_name || customer.full_name || 'Khách',
+  });
+  return {
+    decision: stock.decision,
+    toolResult: `Đã tạo đơn hàng ${order.order_number}. Tổng: ${total.toLocaleString('vi')}đ. Thanh toán: ${toolInput.payment_method || 'COD'}.`,
+    draftReply: null,
+    stockHold: null,
+    order,
+  };
+}
+
+/** Apply a stock hold over whatever the model wrote, then clear the turn flags. */
+function finalizeReply(zaloUserId, modelText) {
+  const handoff = pendingHandoff.get(zaloUserId) || null;
+  const newOrder = pendingOrder.get(zaloUserId) || null;
+  const stockHold = pendingStockHold.get(zaloUserId) || null;
+  pendingHandoff.delete(zaloUserId);
+  pendingOrder.delete(zaloUserId);
+  pendingStockHold.delete(zaloUserId);
+
+  let text = String(modelText || '').trim();
+  if (stockHold?.draftReply) text = stockHold.draftReply;
+  if (!text) text = 'Dạ mình chưa rõ ý bạn lắm ạ. Bạn nói rõ hơn giúp mình nha! 🌿';
+  return { text, handoff, newOrder, stockHold };
+}
 
 async function executeTool(toolName, toolInput, customer, zaloUserId, daBaoGia = null) {
   try {
@@ -419,41 +524,8 @@ async function executeTool(toolName, toolInput, customer, zaloUserId, daBaoGia =
     }
 
     if (toolName === 'create_order') {
-      if (!customer) return 'Chưa xác định được khách hàng.';
-      if (toolInput.customer_phone) {
-        await db.setPhoneAndMerge(customer.id, toolInput.customer_phone);
-      }
-      await db.pool.query(
-        `UPDATE customers SET lead_stage='ordered', lead_updated_at=NOW() WHERE id=$1`,
-        [customer.id]
-      ).catch(() => {});
-      const order = await db.createOrderNew(
-        customer.id,
-        toolInput.items,
-        toolInput.delivery_address,
-        toolInput.customer_note,
-        toolInput.payment_method || 'cod'
-      );
-      const total = toolInput.items.reduce((s, i) => s + i.quantity * i.unit_price, 0);
-      // Flag it so the farm gets a Zalo ping about the new order.
-      // Carry the SKU through so KiotViet can match the product by code.
-      const withSku = (toolInput.items || []).map(i => {
-        const hit = catalog.rows().find(p =>
-          p.name_vi && i.product_name &&
-          p.name_vi.toLowerCase().includes(String(i.product_name).toLowerCase().slice(0, 12)));
-        return { ...i, sku: i.sku || hit?.sku || null };
-      });
-      pendingOrder.set(zaloUserId, {
-        order_number: order.order_number,
-        total,
-        items: withSku,
-        phone: toolInput.customer_phone || customer.phone || null,
-        address: toolInput.delivery_address || null,
-        note: toolInput.customer_note || null,
-        payment: toolInput.payment_method || 'cod',
-        customerName: customer.display_name || customer.full_name || 'Khách',
-      });
-      return `Đã tạo đơn hàng ${order.order_number}. Tổng: ${total.toLocaleString('vi')}đ. Thanh toán: ${toolInput.payment_method || 'COD'}.`;
+      const created = await attemptCreateOrder(customer, toolInput, zaloUserId);
+      return created.toolResult;
     }
 
     if (toolName === 'save_memory') {
@@ -677,18 +749,17 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
     );
   }
 
-  // A silent bot looks broken to the customer — never return an empty reply.
-  if (!finalText.trim()) {
-    finalText = 'Dạ mình chưa rõ ý bạn lắm ạ. Bạn nói rõ hơn giúp mình nha! 🌿';
-  }
+  // Stock warning replaces a silent "đã chốt". Empty text still gets a fallback.
+  const flags = finalizeReply(zaloUserId, finalText);
 
-  // Hand these to the caller exactly once, then forget them.
-  const handoff = pendingHandoff.get(zaloUserId) || null;
-  const newOrder = pendingOrder.get(zaloUserId) || null;
-  pendingHandoff.delete(zaloUserId);
-  pendingOrder.delete(zaloUserId);
-
-  return { text: finalText, tokensUsed, handoff, newOrder, customer };
+  return {
+    text: flags.text,
+    tokensUsed,
+    handoff: flags.handoff,
+    newOrder: flags.newOrder,
+    stockHold: flags.stockHold,
+    customer,
+  };
 }
 
-module.exports = { respond };
+module.exports = { respond, attemptCreateOrder, finalizeReply };

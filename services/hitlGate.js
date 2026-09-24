@@ -72,8 +72,11 @@ function httpUrl(value) {
  */
 async function releaseToCustomer(p, text, extra = {}) {
   const body = String(text ?? '').replace(/\0/g, '').trim();
+  // Stock warnings must wait for a person even if the emergency auto-send
+  // switch is off. forceHold never calls p.send with the customer body.
+  const forceHold = extra.forceHold === true;
 
-  if (!hitlRequired()) {
+  if (!hitlRequired() && !forceHold) {
     if (!body) return { held: false, sent: false, draft: null, acked: false };
     const sent = !!(await p.send(p.replyTo, body));
     return { held: false, sent, draft: null, acked: false };

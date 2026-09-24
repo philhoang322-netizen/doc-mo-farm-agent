@@ -22,6 +22,7 @@ const priceMemo = require('./priceMemo');
 const catalog = require('./catalog');
 const money = require('./money');
 const hitl = require('./hitlGate');
+const stockGate = require('./stockGate');
 
 const FALLBACK_REPLY =
   'Dạ farm đang bận xử lý một chút, bạn nhắn lại giúp mình sau ít phút nha 🌿 ' +
@@ -133,7 +134,7 @@ async function handleMessage(p) {
         return stepAside(p, customer, verdict, log);
       }
 
-      const { text: reply, tokensUsed, handoff, newOrder } =
+      const { text: reply, tokensUsed, handoff, newOrder, stockHold } =
         await aiAgent.respond(p.externalKey, p.text);
       drift.noteAnswer(p.externalKey, reply);
 
@@ -142,9 +143,19 @@ async function handleMessage(p) {
         tokensUsed,
       });
 
+      // Low / zero stock: the reply is a warning, not a confirmation.
+      // Hold it for Sales even when HITL_REQUIRE_APPROVAL is off.
+      const stockHeld = stockHold && (stockHold.decision === 'low' || stockHold.decision === 'blocked');
+
       // HITL_REQUIRE_APPROVAL (default on): hold this text as PENDING_REVIEW.
       // Do not call p.send with the AI body. See services/hitlGate.js.
-      const release = await hitl.releaseToCustomer(p, reply, { intent: p.text });
+      const release = await hitl.releaseToCustomer(p, reply, {
+        intent: p.text,
+        forceHold: !!stockHeld,
+        ack: stockHeld ? false : undefined,
+        kiot_summary: stockHold?.summary || undefined,
+        ticket_status: stockHeld ? 'Cần đối soát kho' : undefined,
+      });
       if (!release.held) {
         log({
           type: 'replied',
@@ -182,8 +193,14 @@ async function handleMessage(p) {
         //    "chuyển khoản", so trust the raw text, not only the model.
         const askedTransfer = vietqr.wantsTransfer(p.text);
 
-        if (newOrder) {
+        if (newOrder && !stockHeld) {
           await afterOrder(newOrder, p, log, askedTransfer);
+        } else if (newOrder && stockHeld) {
+          log({
+            type: 'order_blocked_stock',
+            order: newOrder.order_number,
+            decision: stockHold.decision,
+          });
         } else if (askedTransfer && vietqr.configured()) {
           await sendAccountInfo(p, log);
         }
@@ -198,9 +215,10 @@ async function handleMessage(p) {
         ok: true,
         tokensUsed,
         handoff: !!handoff,
-        order: newOrder?.order_number || null,
+        order: stockHeld ? null : (newOrder?.order_number || null),
         held: release.held,
         draftId: release.draft?.id || null,
+        stock: stockHold?.decision || null,
       };
     } catch (err) {
       console.error(`Pipeline error (${p.channel}):`, err);
@@ -371,16 +389,35 @@ async function afterOrder(order, p, log, askedTransfer = false) {
     console.error('QR send failed:', e.message);
   }
 
-  // b) KiotViet
+  // b) KiotViet — live stock again, in case it moved after the draft was built.
+  //    Below STOCK_LOW_THRESHOLD, or short of the requested qty: do not push.
   let kiot = { ok: false, error: 'KiotViet tắt' };
   if (kiotviet.enabled()) {
-    kiot = await kiotviet.pushOrder(order);
-    log({ type: 'kiotviet_push', order: order.order_number, ok: kiot.ok, error: kiot.error || null });
-    if (kiot.ok && db.DB_ENABLED) {
-      await db.pool.query(
-        `UPDATE orders SET description = COALESCE(description,'') || $2 WHERE order_number = $1`,
-        [order.order_number, ` [KiotViet: ${kiot.kiotOrderCode || 'đã tạo'}]`]
-      ).catch(() => {});
+    const stock = await stockGate.assessItems(order.items || []);
+    if (stock.decision === 'low' || stock.decision === 'blocked') {
+      kiot = {
+        ok: false,
+        blocked: true,
+        stock,
+        error: stock.decision === 'low'
+          ? 'Sắp hết hàng — chưa đẩy KiotViet, chờ Sales đối soát'
+          : 'Không đủ tồn — chưa đẩy KiotViet',
+      };
+      log({
+        type: 'kiotviet_stock_blocked',
+        order: order.order_number,
+        decision: stock.decision,
+        summary: stock.summary,
+      });
+    } else {
+      kiot = await kiotviet.pushOrder(order);
+      log({ type: 'kiotviet_push', order: order.order_number, ok: kiot.ok, error: kiot.error || null });
+      if (kiot.ok && db.DB_ENABLED) {
+        await db.pool.query(
+          `UPDATE orders SET description = COALESCE(description,'') || $2 WHERE order_number = $1`,
+          [order.order_number, ` [KiotViet: ${kiot.kiotOrderCode || 'đã tạo'}]`]
+        ).catch(() => {});
+      }
     }
   }
 
