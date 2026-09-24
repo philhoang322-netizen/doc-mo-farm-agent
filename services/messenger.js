@@ -7,6 +7,11 @@
  *
  * MESSENGER_ENABLED defaults to off. Until it is true, POST is acknowledged
  * and ignored so a public Railway URL does not draft or reply.
+ *
+ * HMAC uses FB_APP_SECRET. FB_APP_SECRET_ALT and FB_CLIENT_TOKEN are optional
+ * diagnostics tried only after the primary secret fails. MESSENGER_SKIP_VERIFY
+ * (1 or true) is a temporary bypass for a short pipeline proof. None of these
+ * auto-send a customer reply.
  */
 const crypto = require('crypto');
 const express = require('express');
@@ -36,6 +41,33 @@ function pageToken() {
 function appSecret() {
   return String(process.env.FB_APP_SECRET || '').trim();
 }
+
+function optionalSecret(name) {
+  return String(process.env[name] || '').trim();
+}
+
+function candidateSecrets() {
+  return {
+    primary: appSecret(),
+    alt: optionalSecret('FB_APP_SECRET_ALT'),
+    clientToken: optionalSecret('FB_CLIENT_TOKEN'),
+  };
+}
+
+function attemptFlags(secrets) {
+  return {
+    triedPrimary: Boolean(secrets.primary),
+    triedAlt: Boolean(secrets.alt),
+    triedClientToken: Boolean(secrets.clientToken),
+  };
+}
+
+/** Emergency only: `1` or `true`. Accepts a POST that failed HMAC. Default off. */
+function skipVerifyEnabled() {
+  return /^(1|true)$/i.test(String(process.env.MESSENGER_SKIP_VERIFY || '').trim());
+}
+
+const SKIP_VERIFY_WARNING = 'TEMPORARY for Phil\'s 10-minute pipeline proof only. MESSENGER_SKIP_VERIFY accepted this POST without a matching HMAC. Unset it immediately. Customer replies stay PENDING_REVIEW and are not auto-sent.';
 
 function verifyToken() {
   return String(process.env.FB_VERIFY_TOKEN || '').trim();
@@ -71,7 +103,7 @@ const SIGNATURE_NOTE = {
   missing_secret: 'Thiếu FB_APP_SECRET',
   missing_header: 'Meta không gửi X-Hub-Signature-256',
   bad_prefix: 'Header không phải dạng sha256=. Xem scheme.',
-  mismatch: 'HMAC không khớp. So expectedPrefix với gotPrefix.',
+  mismatch: 'HMAC không khớp FB_APP_SECRET. Xem triedPrimary, triedAlt, triedClientToken.',
   raw_body: 'Không đọc được byte thô của POST',
 };
 
@@ -132,18 +164,42 @@ function digestPrefix(hex) {
  * rejects a valid Meta signature.
  * Hash the captured bytes, not JSON.stringify(req.body). Meta signs the
  * escaped-unicode payload (`ä` on the wire is `\u00e4`).
- * @returns {{ok:boolean, reason?:string, expectedPrefix?:string, gotPrefix?:string, bodySha256Prefix?:string, gotLen?:number, scheme?:string}}
+ * After FB_APP_SECRET misses, FB_APP_SECRET_ALT is tried, then FB_CLIENT_TOKEN.
+ * A match names which candidate worked (`primary`, `alt`, `client_token`).
+ * The client-token check is a hypothesis: Meta documents the App Secret.
+ * @returns {{ok:boolean, matched?:string, reason?:string, expectedPrefix?:string, gotPrefix?:string, bodySha256Prefix?:string, gotLen?:number, scheme?:string, triedPrimary?:boolean, triedAlt?:boolean, triedClientToken?:boolean}}
  */
 function verifySignature(rawBody, signatureHeader) {
-  const secret = appSecret();
-  if (!secret) return { ok: false, reason: 'missing_secret' };
+  const secrets = candidateSecrets();
+  const flags = attemptFlags(secrets);
+  if (!secrets.primary && !secrets.alt && !secrets.clientToken) {
+    return { ok: false, reason: 'missing_secret', ...flags };
+  }
 
   const tokens = headerTokens(signatureHeader);
-  if (tokens.length === 0) return { ok: false, reason: 'missing_header' };
+  if (tokens.length === 0) return { ok: false, reason: 'missing_header', ...flags };
 
   const raw = rawBuffer(rawBody);
-  const expected = crypto.createHmac('sha256', secret).update(raw).digest('hex');
   const bodySha256Prefix = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 8);
+  const keys = [];
+  if (secrets.primary) {
+    keys.push({
+      matched: 'primary',
+      hex: crypto.createHmac('sha256', secrets.primary).update(raw).digest('hex'),
+    });
+  }
+  if (secrets.alt) {
+    keys.push({
+      matched: 'alt',
+      hex: crypto.createHmac('sha256', secrets.alt).update(raw).digest('hex'),
+    });
+  }
+  if (secrets.clientToken) {
+    keys.push({
+      matched: 'client_token',
+      hex: crypto.createHmac('sha256', secrets.clientToken).update(raw).digest('hex'),
+    });
+  }
 
   let sawSha256 = false;
   let gotHex = '';
@@ -157,13 +213,18 @@ function verifySignature(rawBody, signatureHeader) {
     sawSha256 = true;
     const hex = parsed.value.trim().toLowerCase();
     if (!gotHex) gotHex = hex;
-    if (/^[0-9a-f]{64}$/.test(hex) && safeEqual(hex, expected)) return { ok: true };
+    if (!/^[0-9a-f]{64}$/.test(hex)) continue;
+    for (const key of keys) {
+      if (safeEqual(hex, key.hex)) return { ok: true, matched: key.matched, ...flags };
+    }
   }
 
+  const primaryKey = keys.find((key) => key.matched === 'primary');
   const diag = {
-    expectedPrefix: expected.slice(0, 8),
     bodySha256Prefix,
+    ...flags,
   };
+  if (primaryKey) diag.expectedPrefix = primaryKey.hex.slice(0, 8);
   if (scheme) diag.scheme = scheme;
 
   if (!sawSha256) {
@@ -251,7 +312,7 @@ function signatureDetail(req, result) {
   const contentType = safeContentType(req);
   if (contentType) detail.contentType = contentType;
   if (result && typeof result === 'object') {
-    for (const key of ['expectedPrefix', 'gotPrefix', 'bodySha256Prefix', 'gotLen', 'scheme']) {
+    for (const key of ['expectedPrefix', 'gotPrefix', 'bodySha256Prefix', 'gotLen', 'scheme', 'triedPrimary', 'triedAlt', 'triedClientToken']) {
       if (result[key] !== undefined && result[key] !== '') detail[key] = result[key];
     }
   }
@@ -461,13 +522,38 @@ function mount(app, deps) {
       return res.status(200).json({ ok: true, ignored: 'disabled' });
     }
     const sig = verifySignature(req.rawBody, req.get('x-hub-signature-256'));
+    if (sig.ok && sig.matched === 'alt') {
+      const detail = {
+        triedPrimary: Boolean(sig.triedPrimary),
+        triedAlt: true,
+        triedClientToken: Boolean(sig.triedClientToken),
+      };
+      console.error('messenger_sig_matched_alt', detail);
+      log({ type: 'messenger_sig_matched_alt', ...detail });
+    } else if (sig.ok && sig.matched === 'client_token') {
+      const detail = {
+        triedPrimary: Boolean(sig.triedPrimary),
+        triedAlt: Boolean(sig.triedAlt),
+        triedClientToken: true,
+      };
+      console.error('messenger_sig_matched_client_token', detail);
+      log({ type: 'messenger_sig_matched_client_token', ...detail });
+    }
     if (!sig.ok) {
       const detail = signatureDetail(req, sig);
       // stdout/stderr, not only the in-memory debug log. Never include the
-      // secret, the signature value, or the body.
-      console.error('messenger_bad_signature', detail);
-      log({ type: 'messenger_bad_signature', ...detail });
-      return res.status(403).json({ ok: false, error: 'bad_signature' });
+      // secret, the signature value, the full signature, or the body.
+      if (skipVerifyEnabled()) {
+        console.error('messenger_skip_verify_enabled', {
+          warning: SKIP_VERIFY_WARNING,
+          ...detail,
+        });
+        log({ type: 'messenger_skip_verify_enabled', ...detail });
+      } else {
+        console.error('messenger_bad_signature', detail);
+        log({ type: 'messenger_bad_signature', ...detail });
+        return res.status(403).json({ ok: false, error: 'bad_signature' });
+      }
     }
     if (req.messengerJsonError) {
       console.error('messenger_invalid_json', signatureDetail(req, 'invalid_json'));

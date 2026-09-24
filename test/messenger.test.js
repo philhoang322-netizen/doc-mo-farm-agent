@@ -17,6 +17,9 @@ process.env.FB_PAGE_ACCESS_TOKEN = 'page-token-test';
 process.env.FB_PAGE_ID = 'page-111';
 delete process.env.HITL_REQUIRE_APPROVAL;
 delete process.env.HITL_ACK_MESSAGE;
+delete process.env.FB_APP_SECRET_ALT;
+delete process.env.FB_CLIENT_TOKEN;
+delete process.env.MESSENGER_SKIP_VERIFY;
 
 const { describe, test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -89,6 +92,17 @@ function httpCall(method, urlPath, { raw, headers } = {}) {
   });
 }
 
+function clearSignatureDiagEnv() {
+  delete process.env.FB_APP_SECRET_ALT;
+  delete process.env.FB_CLIENT_TOKEN;
+  delete process.env.MESSENGER_SKIP_VERIFY;
+}
+
+function assertLogsOmit(errors, parts) {
+  const dumped = JSON.stringify(errors);
+  for (const part of parts) assert.equal(dumped.includes(part), false);
+}
+
 function postSigned(raw, signature) {
   const body = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
   return httpCall('POST', '/messenger/webhook', {
@@ -158,6 +172,9 @@ describe('Messenger channel', { concurrency: 1 }, () => {
       assert.equal(line[1].rawBodyLength, body.length);
       assert.equal(line[1].signatureHeaderPresent, true);
       assert.equal(line[1].contentType, 'application/json');
+      assert.equal(line[1].triedPrimary, true);
+      assert.equal(line[1].triedAlt, false);
+      assert.equal(line[1].triedClientToken, false);
       const dumped = JSON.stringify(errors);
       assert.equal(dumped.includes('app-secret-test'), false);
       assert.equal(dumped.includes('gia bao nhieu'), false);
@@ -221,8 +238,18 @@ describe('Messenger channel', { concurrency: 1 }, () => {
     assert.equal(JSON.stringify(short).includes('app-secret-test'), false);
 
     const wrongHex = '0123456789abcdef'.repeat(4);
+    const primary = messenger.verifySignature(raw, good);
+    assert.equal(primary.ok, true);
+    assert.equal(primary.matched, 'primary');
+    assert.equal(primary.triedPrimary, true);
+    assert.equal(primary.triedAlt, false);
+    assert.equal(primary.triedClientToken, false);
+
     const mismatch = messenger.verifySignature(raw, `sha256=${wrongHex}`);
     assert.equal(mismatch.reason, 'mismatch');
+    assert.equal(mismatch.triedPrimary, true);
+    assert.equal(mismatch.triedAlt, false);
+    assert.equal(mismatch.triedClientToken, false);
     assert.equal(mismatch.gotPrefix, '01234567');
     assert.equal(mismatch.expectedPrefix, hex.slice(0, 8));
     assert.notEqual(mismatch.gotPrefix, mismatch.expectedPrefix);
@@ -281,6 +308,263 @@ describe('Messenger channel', { concurrency: 1 }, () => {
       assert.equal(dumped.includes('gia bao nhieu'), false);
     } finally {
       console.error = original;
+    }
+  });
+
+  test('primary FB_APP_SECRET match drafts PENDING_REVIEW and does not send', async () => {
+    clearSignatureDiagEnv();
+    mockAi();
+    const calls = [];
+    const originalPost = messenger.graphHttp.post;
+    messenger.graphHttp.post = async () => {
+      calls.push(1);
+      return { status: 200, data: { message_id: 'should-not-send' } };
+    };
+    const errors = [];
+    const originalError = console.error;
+    console.error = (...args) => { errors.push(args); };
+    const psid = `pri_${Date.now()}`;
+    const text = 'Dau goi gia bao nhieu?';
+    const raw = JSON.stringify(pageEvent(psid, { mid: `m-${psid}`, text }));
+    try {
+      const res = await postSigned(raw);
+      assert.equal(res.status, 200);
+      assert.equal(calls.length, 0);
+      const draft = await draftFor(`fb_${psid}`);
+      assert.ok(draft);
+      assert.equal(draft.approval_status, 'PENDING_REVIEW');
+      assert.equal(draft.channel, 'messenger');
+      assert.equal(draft.draft_reply, AI);
+      const names = errors.map((args) => args[0]);
+      assert.equal(names.includes('messenger_sig_matched_alt'), false);
+      assert.equal(names.includes('messenger_sig_matched_client_token'), false);
+      assert.equal(names.includes('messenger_skip_verify_enabled'), false);
+      assert.equal(names.includes('messenger_bad_signature'), false);
+      assertLogsOmit(errors, ['app-secret-test', text, messenger.signBody(raw)]);
+    } finally {
+      console.error = originalError;
+      messenger.graphHttp.post = originalPost;
+      clearSignatureDiagEnv();
+    }
+  });
+
+  test('FB_APP_SECRET_ALT match is accepted when the primary secret is wrong', async () => {
+    clearSignatureDiagEnv();
+    process.env.FB_APP_SECRET_ALT = 'alt-secret-test';
+    mockAi();
+    const calls = [];
+    const originalPost = messenger.graphHttp.post;
+    messenger.graphHttp.post = async () => {
+      calls.push(1);
+      return { status: 200, data: { message_id: 'should-not-send' } };
+    };
+    const errors = [];
+    const originalError = console.error;
+    console.error = (...args) => { errors.push(args); };
+    const psid = `alt_${Date.now()}`;
+    const text = 'alt key pipeline text';
+    const raw = JSON.stringify(pageEvent(psid, { mid: `m-${psid}`, text }));
+    const signature = messenger.signBody(raw, 'alt-secret-test');
+    try {
+      const checked = messenger.verifySignature(raw, signature);
+      assert.equal(checked.ok, true);
+      assert.equal(checked.matched, 'alt');
+      assert.equal(messenger.verifySignature(raw, messenger.signBody(raw)).matched, 'primary');
+      const res = await postSigned(raw, signature);
+      assert.equal(res.status, 200);
+      assert.equal(calls.length, 0);
+      const draft = await draftFor(`fb_${psid}`);
+      assert.ok(draft, 'alt HMAC must still create a held draft');
+      assert.equal(draft.approval_status, 'PENDING_REVIEW');
+      assert.equal(draft.channel, 'messenger');
+      const line = errors.find((args) => args[0] === 'messenger_sig_matched_alt');
+      assert.ok(line, 'expected messenger_sig_matched_alt');
+      assert.deepEqual(line[1], {
+        triedPrimary: true,
+        triedAlt: true,
+        triedClientToken: false,
+      });
+      const names = errors.map((args) => args[0]);
+      assert.equal(names.includes('messenger_sig_matched_client_token'), false);
+      assert.equal(names.includes('messenger_skip_verify_enabled'), false);
+      assert.equal(names.includes('messenger_bad_signature'), false);
+      assertLogsOmit(errors, ['app-secret-test', 'alt-secret-test', text, signature, signature.slice(7)]);
+    } finally {
+      console.error = originalError;
+      messenger.graphHttp.post = originalPost;
+      clearSignatureDiagEnv();
+    }
+  });
+
+  test('FB_CLIENT_TOKEN match is accepted only after primary and alt both fail', async () => {
+    clearSignatureDiagEnv();
+    process.env.FB_APP_SECRET_ALT = 'alt-secret-wrong';
+    process.env.FB_CLIENT_TOKEN = 'client-token-test';
+    mockAi();
+    const calls = [];
+    const originalPost = messenger.graphHttp.post;
+    messenger.graphHttp.post = async () => {
+      calls.push(1);
+      return { status: 200, data: { message_id: 'should-not-send' } };
+    };
+    const errors = [];
+    const originalError = console.error;
+    console.error = (...args) => { errors.push(args); };
+    const psid = `cli_${Date.now()}`;
+    const text = 'client token pipeline text';
+    const raw = JSON.stringify(pageEvent(psid, { mid: `m-${psid}`, text }));
+    const signature = messenger.signBody(raw, 'client-token-test');
+    try {
+      const checked = messenger.verifySignature(raw, signature);
+      assert.equal(checked.ok, true);
+      assert.equal(checked.matched, 'client_token');
+      assert.equal(checked.triedPrimary, true);
+      assert.equal(checked.triedAlt, true);
+      assert.equal(checked.triedClientToken, true);
+      const res = await postSigned(raw, signature);
+      assert.equal(res.status, 200);
+      assert.equal(calls.length, 0);
+      const draft = await draftFor(`fb_${psid}`);
+      assert.ok(draft, 'client-token HMAC must still create a held draft');
+      assert.equal(draft.approval_status, 'PENDING_REVIEW');
+      assert.equal(draft.channel, 'messenger');
+      const line = errors.find((args) => args[0] === 'messenger_sig_matched_client_token');
+      assert.ok(line, 'expected messenger_sig_matched_client_token');
+      assert.deepEqual(line[1], {
+        triedPrimary: true,
+        triedAlt: true,
+        triedClientToken: true,
+      });
+      const names = errors.map((args) => args[0]);
+      assert.equal(names.includes('messenger_sig_matched_alt'), false);
+      assert.equal(names.includes('messenger_skip_verify_enabled'), false);
+      assertLogsOmit(errors, [
+        'app-secret-test',
+        'alt-secret-wrong',
+        'client-token-test',
+        text,
+        signature,
+        signature.slice(7),
+      ]);
+    } finally {
+      console.error = originalError;
+      messenger.graphHttp.post = originalPost;
+      clearSignatureDiagEnv();
+    }
+  });
+
+  test('MESSENGER_SKIP_VERIFY accepts a failed HMAC and still holds the draft', async () => {
+    clearSignatureDiagEnv();
+    process.env.FB_APP_SECRET_ALT = 'alt-secret-wrong';
+    process.env.FB_CLIENT_TOKEN = 'client-token-test';
+    process.env.MESSENGER_SKIP_VERIFY = '1';
+    mockAi();
+    const calls = [];
+    const originalPost = messenger.graphHttp.post;
+    messenger.graphHttp.post = async () => {
+      calls.push(1);
+      return { status: 200, data: { message_id: 'should-not-send' } };
+    };
+    const errors = [];
+    const originalError = console.error;
+    console.error = (...args) => { errors.push(args); };
+    const psid = `skip_${Date.now()}`;
+    const text = 'skip verify pipeline text';
+    const raw = JSON.stringify(pageEvent(psid, { mid: `m-${psid}`, text }));
+    const signature = `sha256=${'abcdef0123456789'.repeat(4)}`;
+    try {
+      const res = await postSigned(raw, signature);
+      assert.equal(res.status, 200);
+      assert.equal(calls.length, 0);
+      const draft = await draftFor(`fb_${psid}`);
+      assert.ok(draft, 'skip-verify must create a held draft');
+      assert.equal(draft.approval_status, 'PENDING_REVIEW');
+      assert.equal(draft.channel, 'messenger');
+      assert.equal(draft.draft_reply, AI);
+      const line = errors.find((args) => args[0] === 'messenger_skip_verify_enabled');
+      assert.ok(line, 'expected messenger_skip_verify_enabled');
+      assert.match(line[1].warning, /TEMPORARY/);
+      assert.match(line[1].warning, /10-minute/);
+      assert.equal(line[1].reason, 'mismatch');
+      assert.equal(line[1].scheme, 'sha256');
+      assert.equal(line[1].gotLen, 64);
+      assert.equal(line[1].triedPrimary, true);
+      assert.equal(line[1].triedAlt, true);
+      assert.equal(line[1].triedClientToken, true);
+      assert.equal(line[1].gotPrefix, 'abcdef01');
+      assert.equal(typeof line[1].expectedPrefix, 'string');
+      assert.equal(line[1].expectedPrefix.length, 8);
+      const names = errors.map((args) => args[0]);
+      assert.equal(names.includes('messenger_bad_signature'), false);
+      assertLogsOmit(errors, [
+        'app-secret-test',
+        'alt-secret-wrong',
+        'client-token-test',
+        text,
+        signature,
+        signature.slice(7),
+      ]);
+
+      process.env.MESSENGER_SKIP_VERIFY = 'true';
+      const psidTrue = `skiptrue_${Date.now()}`;
+      const rawTrue = JSON.stringify(pageEvent(psidTrue, { mid: `m-${psidTrue}`, text: 'skip true text' }));
+      const resTrue = await postSigned(rawTrue, signature);
+      assert.equal(resTrue.status, 200);
+      assert.equal(calls.length, 0);
+      const draftTrue = await draftFor(`fb_${psidTrue}`);
+      assert.ok(draftTrue);
+      assert.equal(draftTrue.approval_status, 'PENDING_REVIEW');
+    } finally {
+      console.error = originalError;
+      messenger.graphHttp.post = originalPost;
+      clearSignatureDiagEnv();
+    }
+  });
+
+  test('a mismatch is still rejected when every candidate fails and skip is off', async () => {
+    clearSignatureDiagEnv();
+    process.env.FB_APP_SECRET_ALT = 'alt-secret-wrong';
+    process.env.FB_CLIENT_TOKEN = 'client-token-test';
+    process.env.MESSENGER_SKIP_VERIFY = '0';
+    const psid = `none_${Date.now()}`;
+    const text = 'rejected pipeline text';
+    const raw = JSON.stringify(pageEvent(psid, { mid: `m-${psid}`, text }));
+    const signature = `sha256=${'fedcba9876543210'.repeat(4)}`;
+    const errors = [];
+    const originalError = console.error;
+    console.error = (...args) => { errors.push(args); };
+    try {
+      const res = await postSigned(raw, signature);
+      assert.equal(res.status, 403);
+      assert.deepEqual(JSON.parse(res.body), { ok: false, error: 'bad_signature' });
+      assert.equal(await draftFor(`fb_${psid}`), null);
+      const line = errors.find((args) => args[0] === 'messenger_bad_signature');
+      assert.ok(line, 'expected messenger_bad_signature');
+      assert.equal(line[1].reason, 'mismatch');
+      assert.equal(line[1].scheme, 'sha256');
+      assert.equal(line[1].gotLen, 64);
+      assert.equal(line[1].gotPrefix, 'fedcba98');
+      assert.equal(line[1].triedPrimary, true);
+      assert.equal(line[1].triedAlt, true);
+      assert.equal(line[1].triedClientToken, true);
+      assert.equal(line[1].expectedPrefix.length, 8);
+      assert.equal(line[1].bodySha256Prefix.length, 8);
+      assert.notEqual(line[1].gotPrefix, line[1].expectedPrefix);
+      const names = errors.map((args) => args[0]);
+      assert.equal(names.includes('messenger_skip_verify_enabled'), false);
+      assert.equal(names.includes('messenger_sig_matched_alt'), false);
+      assert.equal(names.includes('messenger_sig_matched_client_token'), false);
+      assertLogsOmit(errors, [
+        'app-secret-test',
+        'alt-secret-wrong',
+        'client-token-test',
+        text,
+        signature,
+        signature.slice(7),
+      ]);
+    } finally {
+      console.error = originalError;
+      clearSignatureDiagEnv();
     }
   });
 
