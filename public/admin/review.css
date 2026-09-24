@@ -250,6 +250,12 @@ textarea:focus-visible, select:focus-visible {
 .tag.success { background: var(--green-ink); color: var(--green); }
 .tag.failure { background: #fdecec; color: var(--danger); }
 .tag.pending, .tag.warn { background: var(--warn-bg); color: var(--warn); }
+.tag.triage.hot { background: #fde8d8; color: #9a3412; }
+.tag.triage.urgent { background: #fdecec; color: var(--danger); }
+.tag.triage.normal { background: #e7f0fb; color: #1d4f91; }
+.tag.triage.off { opacity: 0.4; }
+.triage-pills { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.banner.normal { background: #e7f0fb; color: #1d4f91; }
 .top-actions form { margin: 0; }
 .stack { display: grid; gap: 12px; }
 .section { margin: 22px 0 10px; font-size: 15px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--soft); }
@@ -352,6 +358,7 @@ summary { cursor: pointer; font-weight: 700; color: var(--ink); min-height: 44px
   body.show-detail #queue,
   body.show-detail .tabs,
   body.show-detail .types,
+  body.show-detail .triage-tabs,
   body.show-detail .stats,
   body.show-detail .channels-bar,
   body.show-detail #storage { display: none; }

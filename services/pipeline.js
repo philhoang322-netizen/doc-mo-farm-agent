@@ -25,6 +25,7 @@ const hitl = require('./hitlGate');
 const stockGate = require('./stockGate');
 const confidenceGate = require('./confidenceGate');
 const audit = require('./audit');
+const triage = require('./triage');
 
 const FALLBACK_REPLY =
   'Dạ farm đang bận xử lý một chút, bạn nhắn lại giúp mình sau ít phút nha 🌿 ' +
@@ -60,6 +61,7 @@ async function handleMessage(p) {
 
       let customer = await db.getOrCreateCustomer(p.externalKey, p.senderName);
       customer = await learnHonorific(customer, p);
+      const triaged = triage.classify(p.text);
 
       // 2b. "ngưng bot" / "gặp người thật" — honoured before anything else.
       //     Deliberately decided from the raw text, not by the model: if a
@@ -84,6 +86,7 @@ async function handleMessage(p) {
           reason: 'Khách chủ động yêu cầu ngưng bot',
           ticket_status: 'NEEDS_HUMAN',
           route: 'needs-human',
+          triage: triaged,
         });
         await db.saveMessage(p.externalKey, 'assistant', reply);
         if (!release.held) log({ type: 'stop_bot', channel: p.channel, to: p.replyTo });
@@ -113,6 +116,13 @@ async function handleMessage(p) {
       // They came back on their own — reset the nudge counter.
       if (customer) followup.stopFor(customer.id).catch(() => {});
 
+      // Refunds, returns, exchanges, complaints, and anger never reach the
+      // model. The canned draft does not approve anything. It stays
+      // PENDING_REVIEW and the roster handover still runs.
+      if (triaged.skipModel) {
+        return holdUrgent(p, customer, triaged, log);
+      }
+
       // 2c. An angry customer must not receive one more automated reply, so
       //     this is settled before the model is called at all.
       if (drift.soundsAbusive(p.text)) {
@@ -126,7 +136,7 @@ async function handleMessage(p) {
       // these locally saves a full prompt every time, and they are common.
       const quick = quickReply(p.text);
       if (quick) {
-        const release = await hitl.releaseToCustomer(p, quick, { intent: p.text });
+        const release = await hitl.releaseToCustomer(p, quick, { intent: p.text, triage: triaged });
         await db.saveMessage(p.externalKey, 'assistant', quick);
         if (!release.held) log({ type: 'quick_reply', channel: p.channel, to: p.replyTo });
         return { ok: true, quick: true, held: release.held, draftId: release.draft?.id || null };
@@ -193,6 +203,7 @@ async function handleMessage(p) {
         kiot_summary: stockHold?.summary || undefined,
         ticket_status: stockHeld ? 'Cần đối soát kho' : undefined,
         pii_note: piiNote || undefined,
+        triage: triaged,
       });
       if (!release.held) {
         log({
@@ -263,6 +274,7 @@ async function handleMessage(p) {
         held: release.held,
         draftId: release.draft?.id || null,
         stock: stockHold?.decision || null,
+        triage: triaged.level,
       };
     } catch (err) {
       console.error(`Pipeline error (${p.channel}):`, err);
@@ -361,6 +373,7 @@ async function stepAside(p, customer, verdict, log, options = {}) {
       needsHuman: options.needsHuman === true || String(ticketStatus).includes('NEEDS_HUMAN'),
       pii_note: options.pii_note || undefined,
       route: 'needs-human',
+      triage: options.triage,
     });
     await db.saveMessage(p.externalKey, 'assistant', text);
     if (customer) {
@@ -387,11 +400,32 @@ async function stepAside(p, customer, verdict, log, options = {}) {
       needsHuman: options.needsHuman === true || String(ticketStatus).includes('NEEDS_HUMAN'),
       confidence: options.confidence ?? null,
       assignee: release.assignment?.assignee_name || null,
+      triage: options.triage?.level || release.triage || null,
     };
   } catch (e) {
     console.error('stepAside failed:', e.message);
     return { ok: false, error: e.message };
   }
+}
+
+/**
+ * Urgent after-sales and complaints skip the model. The reply is the
+ * shared canned text from services/triage.js. stepAside pauses the bot
+ * and releaseToCustomer assigns whoever is on shift.
+ */
+function holdUrgent(p, customer, triaged, log) {
+  return stepAside(p, customer, {
+    signal: triaged.kind || 'triage_urgent',
+    urgency: 'high',
+    reason: triaged.reason,
+  }, log, {
+    reply: triage.customerReply(triaged),
+    forceHold: true,
+    ack: false,
+    ticket_status: 'NEEDS_HUMAN',
+    needsHuman: true,
+    triage: triaged,
+  });
 }
 
 /**

@@ -219,6 +219,7 @@ async function list(req, res) {
       ops: typeof q.ops === 'string' && q.ops ? q.ops : null,
       type: typeof q.type === 'string' && q.type ? q.type : null,
       salesChannel: typeof q.kenh === 'string' && q.kenh ? q.kenh : null,
+      triage: typeof q.triage === 'string' && q.triage ? q.triage : null,
     }));
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : 'Không tải được danh sách' });

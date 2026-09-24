@@ -3,6 +3,8 @@
  *
  * 1. Filter & routing — read the customer text, name the main need, pick
  *    sales | faq | needs-human | other. Stored on the HITL draft.
+ *    services/triage.js maps the same text onto Hot / Urgent / Normal
+ *    without replacing these four routes.
  * 2. Prompt station — the Vietnamese instruction wrapped around the existing
  *    farm prompt. The model only writes a draft.
  * 3. Response station — services/drafts.js deliver(), and only after a
@@ -35,8 +37,8 @@ const FAQ = [
 ];
 
 const HUMAN = [
-  'khieu nai', 'doi tra', 'tra hang', 'bom hang', 'lua dao',
-  'tuc gian', 'buc minh', 'nhan vien', 'nguoi that',
+  'khieu nai', 'doi tra', 'tra hang', 'doi hang', 'hoan tien',
+  'bom hang', 'lua dao', 'tuc gian', 'buc minh', 'nhan vien', 'nguoi that',
 ];
 
 function has(text, phrases) {
@@ -103,16 +105,27 @@ function filterAndRoute(text, forceRoute) {
 }
 
 /** Current user turn for the model. `maskedText` is already PII-masked. */
-function llmUserTurn(maskedText, routed) {
-  return [
+function llmUserTurn(maskedText, routed, triaged) {
+  const lines = [
     'Trạm lọc đã đọc câu hỏi.',
     `Nhu cầu chính: ${routed.need}`,
     `Tuyến: ${routed.route} (${routed.department})`,
+  ];
+  if (triaged && triaged.level && triaged.label) {
+    lines.push(`Mức hộp thư: ${triaged.label} (${triaged.level}).`);
+    if (triaged.level === 'urgent') {
+      lines.push(
+        'Không được viết rằng đổi trả, trả hàng, đổi hàng hay hoàn tiền đã được duyệt. Chỉ ghi nhận, hỏi thêm, hoặc nói nhân viên sẽ xem.'
+      );
+    }
+  }
+  lines.push(
     'Viết câu trả lời ngắn gọn, lịch sự bằng tiếng Việt. Giữ quy tắc bán hàng, giá, và tồn kho của farm. Đây chỉ là bản nháp.',
     '',
     'Câu hỏi của khách:',
     String(maskedText ?? ''),
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 module.exports = {
