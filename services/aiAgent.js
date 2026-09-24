@@ -16,6 +16,7 @@ const audit = require('./audit');
 const llm = require('./llm');
 const pii = require('./pii');
 const stations = require('./stations');
+const trainingLog = require('./trainingLog');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -788,11 +789,12 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
 
   // 3. Call Claude with tools
   // Static half cached, customer half fresh. Order matters: the cached prefix
-  // must come first and be byte-identical between calls.
-  const systemPrompt = [
-    { type: 'text', text: buildStaticPrompt(), cache_control: { type: 'ephemeral' } },
-    { type: 'text', text: buildCustomerPrompt(customer, memories, recentOrders, preferences) },
-  ];
+  // must come first and be byte-identical between calls. Manager corrections
+  // sit in the uncached block so they are in context before generation
+  // without busting the shared cache.
+  const systemPrompt = await systemBlocks(
+    customer, memories, recentOrders, preferences, userMessage, 'farm'
+  );
   const piiReports = [];
   let created = await llm.anthropicCreate(claude, {
     model: 'claude-sonnet-4-6',
@@ -889,4 +891,20 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
   };
 }
 
-module.exports = { respond, attemptCreateOrder, finalizeReply };
+async function systemBlocks(customer, memories, recentOrders, preferences, userMessage, salesChannel) {
+  let trainingText = '';
+  try {
+    trainingText = await trainingLog.promptBlock(userMessage, salesChannel || 'farm');
+  } catch (e) {
+    console.error('Training examples skipped:', e.message);
+  }
+  return [
+    { type: 'text', text: buildStaticPrompt(), cache_control: { type: 'ephemeral' } },
+    {
+      type: 'text',
+      text: buildCustomerPrompt(customer, memories, recentOrders, preferences) + trainingText,
+    },
+  ];
+}
+
+module.exports = { respond, attemptCreateOrder, finalizeReply, systemBlocks };

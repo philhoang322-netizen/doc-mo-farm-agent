@@ -5,15 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#3f6b4c">
-<title>Duyệt tin nhắn — Dốc Mơ Farm</title>
+<title>Tin nhắn — {{PRODUCT_NAME}}</title>
 <link rel="stylesheet" href="/admin/review.css">
 </head>
 <body>
 <header class="top">
   <div>
-    <p class="brand">Omni Sale DMF</p>
-    <h1>Duyệt tin trước khi gửi</h1>
-    <p class="sub">Sửa bản nháp, rồi mới gửi cho khách.</p>
+    <h1><span id="product-name">{{PRODUCT_NAME}}</span> <span class="ver" id="app-version">{{VERSION_LABEL}}</span></h1>
+    <p class="sub">Duyệt trước khi gửi. Xem trạng thái, loại tin và kênh bán.</p>
   </div>
   <div class="top-actions">
     <label class="actor-field">Tên người duyệt
@@ -27,18 +26,63 @@
   </div>
 </header>
 <p id="storage" class="note warn" hidden></p>
-<div class="tabs" role="tablist" aria-label="Trạng thái bản nháp">
-  <button type="button" role="tab" data-status="PENDING_REVIEW" aria-selected="true">Chờ duyệt <b class="count"></b></button>
-  <button type="button" role="tab" data-status="APPROVED" aria-selected="false">Đã duyệt <b class="count"></b></button>
-  <button type="button" role="tab" data-status="REJECTED" aria-selected="false">Từ chối <b class="count"></b></button>
-  <button type="button" role="tab" data-status="SENT" aria-selected="false">Đã gửi <b class="count"></b></button>
+<div class="channels-bar">
+  <div id="channels" class="channels" role="tablist" aria-label="Kênh bán"></div>
+  <form id="add-channel" class="add-channel">
+    <input name="name" maxlength="40" placeholder="Tên kênh" aria-label="Tên kênh bán mới" required>
+    <button type="submit">Thêm kênh bán</button>
+  </form>
+</div>
+<section class="stats" aria-label="Thống kê tin gửi">
+  <article>
+    <h2>Tin gửi theo ngày</h2>
+    <div id="stats-day"></div>
+  </article>
+  <article>
+    <h2>Tin gửi theo mẫu</h2>
+    <div id="stats-template"></div>
+  </article>
+</section>
+<div class="types" id="types" role="tablist" aria-label="Loại tin">
+  <button type="button" role="tab" data-type="" aria-selected="true">Tất cả</button>
+  <button type="button" role="tab" data-type="follower">Follower</button>
+  <button type="button" role="tab" data-type="zns">ZNS</button>
+  <button type="button" role="tab" data-type="broadcast">Broadcast</button>
+</div>
+<div class="tabs" role="tablist" aria-label="Trạng thái tin">
+  <button type="button" role="tab" data-ops="success">Thành công <b class="count"></b></button>
+  <button type="button" role="tab" data-ops="failure">Thất bại <b class="count"></b></button>
+  <button type="button" role="tab" data-ops="pending" aria-selected="true">Chờ xử lý <b class="count"></b></button>
+  <button type="button" role="tab" data-ops="sending">Đang gửi <b class="count"></b></button>
+  <button type="button" role="tab" data-ops="queued">Chờ gửi <b class="count"></b></button>
+  <button type="button" role="tab" data-ops="rejected" class="extra">Từ chối <b class="count"></b></button>
 </div>
 <div class="layout">
-  <section id="list" aria-live="polite"></section>
+  <section id="queue">
+    <details class="composer">
+      <summary>Tạo tin</summary>
+      <form id="create-form">
+        <label>Tên khách <input name="customer_name" maxlength="200"></label>
+        <label>Loại tin
+          <select name="message_type">
+            <option value="follower">Follower</option>
+            <option value="zns">ZNS</option>
+            <option value="broadcast">Broadcast</option>
+          </select>
+        </label>
+        <label>Mẫu <input name="template_name" maxlength="120" placeholder="Tên mẫu, nếu có"></label>
+        <label class="span-2">Câu khách hỏi <input name="customer_query" maxlength="1000" placeholder="Câu khách gửi, nếu có"></label>
+        <label class="span-2">Nội dung <textarea name="draft_reply" required rows="4" maxlength="8000"></textarea></label>
+        <button type="submit">Đưa vào chờ xử lý</button>
+      </form>
+    </details>
+    <div id="list" aria-live="polite"></div>
+  </section>
   <section id="detail"></section>
 </div>
 <p id="toast" class="toast" role="status" hidden></p>
 <noscript><p class="note warn">Trang này cần JavaScript để duyệt tin.</p></noscript>
+<script>window.OMNI_SALE={{BRAND_JSON}};</script>
 <script src="/admin/review.js"></script>
 </body>
 </html>
