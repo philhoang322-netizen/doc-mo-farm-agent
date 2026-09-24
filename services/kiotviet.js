@@ -9,6 +9,11 @@
  * Design rule: KiotViet must never break a conversation. Every function here
  * fails soft — the customer's order is already saved in our own database, and
  * a push failure becomes a message to the farm, not an error to the customer.
+ *
+ * Stock: getOnHand() reads live inventories (onHand − reserved) for
+ * KIOTVIET_RETAILER. services/stockGate.js compares that to STOCK_LOW_THRESHOLD
+ * (default 5) before an order is confirmed. The 10-minute product cache is
+ * only used to resolve a name to an id — never as the quantity we sell against.
  */
 const axios = require('axios');
 const state = require('./state');
@@ -239,6 +244,143 @@ async function pushOrder(order) {
   }
 }
 
+function unwrapProduct(body) {
+  if (!body || typeof body !== 'object') return null;
+  if (body.id || body.code) return body;
+  if (body.data && !Array.isArray(body.data) && (body.data.id || body.data.code)) return body.data;
+  if (Array.isArray(body.data) && (body.data[0]?.id || body.data[0]?.code)) return body.data[0];
+  return null;
+}
+
+function qtyField(row, keys) {
+  if (!row) return 0;
+  for (const key of keys) {
+    if (row[key] == null || row[key] === '') continue;
+    const n = Number(row[key]);
+    if (Number.isFinite(n)) return n;
+  }
+  return 0;
+}
+
+/**
+ * Sellable quantity at one branch: physical on-hand minus already reserved.
+ * Accepts both onHand (product detail) and onhand (productOnHands).
+ * No inventory rows → null (unknown, not zero). A chosen branch with no row → 0.
+ *
+ * @returns {{onHand:number, reserved:number, available:number}|null}
+ */
+function sellableFromInventories(inventories, branchId) {
+  const rows = Array.isArray(inventories) ? inventories : [];
+  if (!rows.length) return null;
+  const scoped = branchId
+    ? rows.filter(r => Number(r.branchId) === Number(branchId))
+    : rows;
+  if (branchId && !scoped.length) return { onHand: 0, reserved: 0, available: 0 };
+  let onHand = 0;
+  let reserved = 0;
+  for (const row of scoped) {
+    onHand += qtyField(row, ['onHand', 'onhand', 'OnHand']);
+    reserved += qtyField(row, ['reserved', 'Reserved']);
+  }
+  return { onHand, reserved, available: Math.max(0, onHand - reserved) };
+}
+
+/**
+ * Live on-hand for one SKU. Prefers GET /products/code/{sku}, which returns
+ * inventories.onHand per branch, then GET /products/{id}, then /productOnHands.
+ *
+ * @returns {Promise<{ok:boolean, sku?:string, name?:string, productId?:number,
+ *   branchId?:number, onHand?:number, reserved?:number, available?:number,
+ *   reason?:string, error?:string}>}
+ */
+async function getOnHand({ sku, name } = {}) {
+  if (!enabled()) return { ok: false, reason: 'disabled' };
+  const code = sku ? String(sku).trim() : '';
+  try {
+    const branch = await getBranchId();
+    let product = null;
+    if (code) {
+      try {
+        product = unwrapProduct(await call('get', `/products/code/${encodeURIComponent(code)}`));
+      } catch (_) {
+        product = null;
+      }
+    }
+    if (!product) product = await findProduct({ sku: code, name });
+    if (!product) {
+      return { ok: false, reason: 'not_found', sku: code || null, name: name || null };
+    }
+
+    let inventories = product.inventories;
+    if (!Array.isArray(inventories) && product.id) {
+      try {
+        const detail = unwrapProduct(await call('get', `/products/${product.id}`));
+        if (detail) {
+          product = { ...product, ...detail };
+          inventories = detail.inventories;
+        }
+      } catch (e) {
+        return {
+          ok: false,
+          reason: 'lookup_failed',
+          error: e.message,
+          sku: product.code || code || null,
+          name: product.fullName || product.name || name || null,
+          productId: product.id,
+          branchId: branch,
+        };
+      }
+    }
+    if (!Array.isArray(inventories) && (product.code || code)) {
+      const hands = await findProductOnHands(product.code || code, branch);
+      if (hands) {
+        product = { ...product, ...hands };
+        inventories = hands.inventories;
+      }
+    }
+
+    const qty = sellableFromInventories(inventories, branch);
+    if (!qty) {
+      return {
+        ok: false,
+        reason: 'no_inventory',
+        sku: product.code || code || null,
+        name: product.fullName || product.name || name || null,
+        productId: product.id || null,
+        branchId: branch,
+      };
+    }
+    return {
+      ok: true,
+      sku: product.code || code || null,
+      name: product.fullName || product.name || name || null,
+      productId: product.id || null,
+      branchId: branch,
+      ...qty,
+    };
+  } catch (e) {
+    return { ok: false, reason: 'lookup_failed', error: e.message, sku: code || null, name: name || null };
+  }
+}
+
+/** Page /productOnHands until this code shows up. Stock-only payload uses onhand. */
+async function findProductOnHands(code, branchId) {
+  const want = String(code || '').toUpperCase();
+  if (!want) return null;
+  let currentItem = 0;
+  for (let page = 0; page < 20; page++) {
+    const params = { pageSize: 100, currentItem };
+    if (branchId) params.branchIds = branchId;
+    const r = await call('get', '/productOnHands', { params });
+    const items = r?.data || [];
+    const hit = items.find(p => String(p.code || '').toUpperCase() === want);
+    if (hit) return hit;
+    currentItem += items.length;
+    if (!items.length || items.length < 100 || currentItem >= (r.total || 0)) break;
+  }
+  return null;
+}
+
 /** Cheap liveness probe for the health check. */
 async function ping() {
   if (!enabled()) return { enabled: false };
@@ -250,4 +392,7 @@ async function ping() {
   }
 }
 
-module.exports = { enabled, pushOrder, findProduct, loadProducts, ping, getToken };
+module.exports = {
+  enabled, pushOrder, findProduct, loadProducts, ping, getToken,
+  getOnHand, sellableFromInventories,
+};

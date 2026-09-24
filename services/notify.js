@@ -83,6 +83,12 @@ async function newOrder(o) {
   if (o.kiot) {
     if (o.kiot.ok) {
       lines.push('', `🧾 KiotViet: đã tạo đơn ${o.kiot.kiotOrderCode || ''}`.trim());
+    } else if (o.kiot.blocked) {
+      lines.push(
+        '',
+        `⚠️ Chưa đẩy KiotViet: ${o.kiot.error}`,
+        'Cần Sales đối soát tồn kho trước khi chốt. Chưa trừ kho, chưa xuất hoá đơn.'
+      );
     } else if (o.kiot.missing?.length) {
       lines.push(
         '',
