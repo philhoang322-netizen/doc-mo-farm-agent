@@ -256,6 +256,9 @@
     form.appendChild(back);
     form.appendChild(el('h2', { text: d.customer_name || 'Khách chưa có tên' }));
     form.appendChild(el('p', { class: 'sub', text: LABELS[d.approval_status] + ' · ' + when(d.created_at) }));
+    if (d.pii_note) {
+      form.appendChild(el('p', { class: 'hint', text: d.pii_note }));
+    }
 
     if (needsHumanTicket(d)) {
       form.appendChild(el('p', {

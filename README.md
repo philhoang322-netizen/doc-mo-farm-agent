@@ -59,3 +59,13 @@ Assignment runs when:
 - a low-confidence or non-text turn is held as `NEEDS_HUMAN`
 
 `services/handover.js` → `escalate()` / `classifyHumanNeed()` assigns those human turns. A normal sales draft is not assigned. HITL is unchanged: AI sales text stays `PENDING_REVIEW` and is not sent until someone approves it.
+
+## PII masking before the model
+
+Customer text is masked in `services/pii.js` before it is sent to Claude or OpenAI. The saved message and the HITL draft still keep the original (phones, emails, and so on) on this server. Placeholders the model sees: `[PHONE]`, `[EMAIL]`, `[CCCD]`, `[CMND]`, `[BANK]`, `[VIETQR]`, `[ADDRESS]`. Product names, quantities, and order codes (`ORD-…`, `HD0…`) stay readable. OpenAI calls set `store: false`. Anthropic's Messages API has no per-request training flag; commercial API data is not used for training.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PII_MASKING_ENABLED` | on when unset | `false`, `0`, `no`, or `off` sends prompts in the clear. Leave unset in production. |
+
+A draft note (no raw value) appears on `/admin` when a model call ran.

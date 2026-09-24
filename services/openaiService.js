@@ -1,6 +1,7 @@
 require("dotenv").config();
 
 const OpenAI = require("openai");
+const llm = require("./llm");
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -11,7 +12,7 @@ async function askChatGPT(
   systemPrompt = "You are Doc Mo Farm AI assistant."
 ) {
   try {
-    const response = await client.chat.completions.create({
+    const { response } = await llm.openaiChat(client, {
       model: "gpt-4o-mini",
 
       temperature: 0.7,
@@ -54,7 +55,7 @@ async function askChatGPTWithHistory(
       ...messages,
     ];
 
-    const response = await client.chat.completions.create({
+    const { response } = await llm.openaiChat(client, {
       model: "gpt-4o-mini",
 
       temperature: 0.7,

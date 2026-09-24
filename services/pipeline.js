@@ -156,7 +156,7 @@ async function handleMessage(p) {
         }, log);
       }
 
-      const { text: reply, tokensUsed, handoff, newOrder, stockHold, confidence } =
+      const { text: reply, tokensUsed, handoff, newOrder, stockHold, confidence, piiNote } =
         await aiAgent.respond(p.externalKey, p.text);
 
       // Low / zero stock: the reply is a warning, not a confirmation.
@@ -172,6 +172,7 @@ async function handleMessage(p) {
             `${confidenceGate.formatPercent(confidenceGate.minConfidence())} — ` +
             `${confidenceGate.HUMAN_LABEL}`,
           signal: 'low_confidence',
+          piiNote,
         }, log);
       }
 
@@ -190,6 +191,7 @@ async function handleMessage(p) {
         ack: stockHeld ? false : undefined,
         kiot_summary: stockHold?.summary || undefined,
         ticket_status: stockHeld ? 'Cần đối soát kho' : undefined,
+        pii_note: piiNote || undefined,
       });
       if (!release.held) {
         log({
@@ -332,6 +334,7 @@ function urgentHuman(p, customer, info, log) {
     ticket_status: confidenceGate.TICKET_STATUS,
     needsHuman: true,
     confidence: info.confidence,
+    pii_note: info.piiNote,
   });
 }
 
@@ -355,6 +358,7 @@ async function stepAside(p, customer, verdict, log, options = {}) {
       urgency: verdict.urgency || 'high',
       reason: verdict.reason,
       needsHuman: options.needsHuman === true || String(ticketStatus).includes('NEEDS_HUMAN'),
+      pii_note: options.pii_note || undefined,
     });
     await db.saveMessage(p.externalKey, 'assistant', text);
     if (customer) {

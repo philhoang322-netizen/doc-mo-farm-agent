@@ -95,6 +95,7 @@ async function releaseToCustomer(p, text, extra = {}) {
     ticket_status: clip(extra.ticket_status || 'Mới tiếp nhận', 120),
     qr_image_url: httpUrl(extra.qr_image_url),
     kiot_summary: clip(extra.kiot_summary, 4000),
+    pii_note: clip(extra.pii_note, 300),
   });
 
   let acked = false;
