@@ -21,6 +21,7 @@ const followup    = require('./services/followup');
 const shipping    = require('./services/shipping');
 const hitlAdmin   = require('./services/hitlAdmin');
 const hitl        = require('./services/hitlGate');
+const confidenceGate = require('./services/confidenceGate');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -165,8 +166,16 @@ app.get('/debug/events', (req, res) => {
 app.get('/debug/test-ai', async (req, res) => {
   if (!debugAuth(req, res)) return;
   try {
-    const { text: reply, tokensUsed } = await aiAgent.respond('debug_user', req.query.text || 'Xin chào');
-    res.json({ ok: true, reply, tokensUsed });
+    const result = await aiAgent.respond('debug_user', req.query.text || 'Xin chào');
+    const low = confidenceGate.isLow(result.confidence);
+    res.json({
+      ok: true,
+      reply: low ? confidenceGate.WAITING_REPLY : result.text,
+      tokensUsed: result.tokensUsed,
+      confidence: result.confidence,
+      needs_human: low,
+      ticket_status: low ? confidenceGate.TICKET_STATUS : null,
+    });
   } catch (e) {
     res.json({ ok: false, error: e.message, stack: e.stack?.split('\n').slice(0, 3) });
   }
@@ -1045,14 +1054,22 @@ app.post('/chat', async (req, res) => {
     await db.getOrCreateCustomer(zalo_user_id, 'Test User');
     await db.saveMessage(zalo_user_id, 'user', message);
 
-    const { text, tokensUsed } = await aiAgent.respond(zalo_user_id, message);
+    const result = await aiAgent.respond(zalo_user_id, message);
+    const low = confidenceGate.isLow(result.confidence);
+    const text = low ? confidenceGate.WAITING_REPLY : result.text;
 
     await db.saveMessage(zalo_user_id, 'assistant', text, {
       model: 'claude-sonnet-4-6',
-      tokensUsed
+      tokensUsed: result.tokensUsed,
     });
 
-    res.json({ reply: text, tokens: tokensUsed });
+    res.json({
+      reply: text,
+      tokens: result.tokensUsed,
+      confidence: result.confidence,
+      needs_human: low,
+      ticket_status: low ? confidenceGate.TICKET_STATUS : null,
+    });
   } catch (e) {
     console.error('Chat error:', e);
     res.status(500).json({ error: e.message });
@@ -1072,4 +1089,5 @@ app.listen(PORT, () => {
   console.log(`   FAQ:     GET  /api/faq | POST /api/faq/generate`);
   console.log(`   Drafts:  GET  /admin`);
   console.log(`   HITL:    ${hitl.hitlRequired() ? 'ON — replies wait as PENDING_REVIEW' : 'OFF — auto-send (HITL_REQUIRE_APPROVAL=false)'}`);
+  console.log(`   Confidence: below ${confidenceGate.minConfidence()} → ${confidenceGate.TICKET_STATUS} (AI_CONFIDENCE_MIN)`);
 });

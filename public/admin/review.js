@@ -24,6 +24,10 @@
   let listStamp = '';
   let detailStamp = '';
 
+  function needsHumanTicket(d) {
+    return String(d.ticket_status || '').indexOf('NEEDS_HUMAN') !== -1;
+  }
+
   function rememberUrl() {
     const hash = selectedId ? '#' + selectedId : '';
     history.replaceState(null, '', location.pathname + '?status=' + status + hash);
@@ -192,6 +196,9 @@
         text: d.channel === 'messenger' ? 'Messenger' : 'Zalo',
       }));
       if (d.assigned_department) meta.appendChild(el('span', { class: 'tag muted', text: d.assigned_department }));
+      if (needsHumanTicket(d)) {
+        meta.appendChild(el('span', { class: 'tag warn', text: 'Cần human hỗ trợ khẩn cấp' }));
+      }
       meta.appendChild(el('span', { class: 'when', text: when(d.created_at) }));
       btn.appendChild(meta);
       btn.addEventListener('click', () => {
@@ -236,6 +243,13 @@
     form.appendChild(back);
     form.appendChild(el('h2', { text: d.customer_name || 'Khách chưa có tên' }));
     form.appendChild(el('p', { class: 'sub', text: LABELS[d.approval_status] + ' · ' + when(d.created_at) }));
+
+    if (needsHumanTicket(d)) {
+      form.appendChild(el('p', {
+        class: 'banner warn',
+        text: 'Cần human hỗ trợ khẩn cấp — bản nháp này chỉ là câu chờ, không phải câu bán hàng. Sửa trước khi gửi.',
+      }));
+    }
 
     if (d.send_error) {
       form.appendChild(el('p', {

@@ -131,6 +131,7 @@ textarea:focus-visible, select:focus-visible {
 }
 .tag.messenger { background: #e7f0fb; color: #1d4f91; }
 .tag.muted { background: #f3efe8; color: var(--soft); font-weight: 600; }
+.tag.warn { background: var(--warn-bg); color: var(--warn); }
 .when { color: var(--soft); font-size: 13px; font-weight: 500; }
 .empty { color: var(--soft); padding: 18px 8px; }
 .draft h2 { margin: 0 0 4px; font-size: 22px; }

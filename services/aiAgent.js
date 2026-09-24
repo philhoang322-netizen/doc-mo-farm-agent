@@ -11,6 +11,7 @@ const money = require('./money');
 const promo = require('./promo');
 const priceMemo = require('./priceMemo');
 const stockGate = require('./stockGate');
+const confidenceGate = require('./confidenceGate');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -133,7 +134,18 @@ Khách từ chối thì thôi ngay.
 6. HÀNG SẮP HẾT thì nói thật khi bảng giá ghi vậy. KHÔNG bịa "sắp hết" để giục.
 
 7. KHÁCH NÓI "ĐỂ EM SUY NGHĨ" — đừng níu. Chốt bằng một câu ấm, chừa đường quay lại:
-"Dạ mình cứ suy nghĩ thoải mái, cần gì nhắn farm nhen."`;
+"Dạ mình cứ suy nghĩ thoải mái, cần gì nhắn farm nhen."
+
+════════════════════════════════════════
+ĐỘ TIN Ý KHÁCH — gọi tool report_intent_confidence ĐÚNG MỘT LẦN mỗi lượt,
+trước create_order và trước câu trả lời cuối. Không chép con số này vào tin gửi khách.
+
+- confidence từ 0 đến 1: bạn chắc khách đang muốn gì.
+- Dưới ngưỡng (mặc định 0.6, hệ thống báo lại trong kết quả tool): sticker, ảnh không rõ,
+  câu đùa, ký tự vô nghĩa, hoặc bạn không hiểu ý. KHÔNG bịa sản phẩm, giá, công dụng.
+  KHÔNG gọi create_order. Một câu ngắn nói farm nhờ nhân viên xem là đủ — hệ thống
+  sẽ giữ tin chờ người, không gửi câu bán hàng.
+- Từ ngưỡng trở lên: trả lời bình thường theo tài liệu farm.`;
 }
 
 function buildCustomerPrompt(customer, memories, recentOrders, preferences) {
@@ -315,6 +327,29 @@ const tools = [
     },
   },
   {
+    name: 'report_intent_confidence',
+    description:
+      'Báo độ chắc bạn hiểu ý khách trong tin này. Gọi đúng một lần mỗi lượt, trước create_order ' +
+      'và trước câu trả lời cuối. Không chép con số này vào tin cho khách. ' +
+      'Dưới ngưỡng: không bịa câu bán hàng và không tạo đơn.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        confidence: {
+          type: 'number',
+          description:
+            'Từ 0 đến 1 (hoặc phần trăm 0–100). Dưới 0.6 khi tin vô nghĩa, đùa, sticker, ' +
+            'ảnh không rõ, hoặc không chắc khách muốn hỏi gì.',
+        },
+        intent: {
+          type: 'string',
+          description: 'Một câu ngắn: khách muốn gì. Không rõ thì ghi "không rõ".',
+        },
+      },
+      required: ['confidence'],
+    },
+  },
+  {
     name: 'request_human',
     description:
       'Chuyển cuộc trò chuyện cho người thật của farm. Dùng khi khách yêu cầu gặp người, khiếu nại, ' +
@@ -349,6 +384,7 @@ const tools = [
 const pendingHandoff = new Map();
 const pendingOrder = new Map();
 const pendingStockHold = new Map();
+const pendingConfidence = new Map();
 
 function attachSku(items) {
   return (items || []).map(item => {
@@ -369,6 +405,15 @@ function attachSku(items) {
  * model reply in finalizeReply().
  */
 async function attemptCreateOrder(customer, toolInput, zaloUserId) {
+  if (confidenceGate.isLow(pendingConfidence.get(zaloUserId))) {
+    return {
+      decision: 'blocked',
+      toolResult:
+        'CHƯA TẠO ĐƠN. Độ tin ý khách dưới ngưỡng — không chốt đơn, không bịa giá. Hệ thống chuyển nhân viên.',
+      draftReply: null,
+      stockHold: null,
+    };
+  }
   if (!customer) {
     return { decision: 'error', toolResult: 'Chưa xác định được khách hàng.', draftReply: null, stockHold: null };
   }
@@ -434,23 +479,52 @@ async function attemptCreateOrder(customer, toolInput, zaloUserId) {
   };
 }
 
-/** Apply a stock hold over whatever the model wrote, then clear the turn flags. */
+/**
+ * Apply a stock hold over whatever the model wrote, then clear the turn flags.
+ * A low confidence score drops any order from this turn so the caller cannot
+ * confirm it. The caller also replaces the model text — this function still
+ * returns that text so a mistaken draft can be detected in tests.
+ */
 function finalizeReply(zaloUserId, modelText) {
   const handoff = pendingHandoff.get(zaloUserId) || null;
-  const newOrder = pendingOrder.get(zaloUserId) || null;
+  let newOrder = pendingOrder.get(zaloUserId) || null;
   const stockHold = pendingStockHold.get(zaloUserId) || null;
+  const confidence = pendingConfidence.has(zaloUserId)
+    ? pendingConfidence.get(zaloUserId)
+    : null;
   pendingHandoff.delete(zaloUserId);
   pendingOrder.delete(zaloUserId);
   pendingStockHold.delete(zaloUserId);
+  pendingConfidence.delete(zaloUserId);
+
+  if (confidenceGate.isLow(confidence)) newOrder = null;
 
   let text = String(modelText || '').trim();
   if (stockHold?.draftReply) text = stockHold.draftReply;
-  if (!text) text = 'Dạ mình chưa rõ ý bạn lắm ạ. Bạn nói rõ hơn giúp mình nha! 🌿';
-  return { text, handoff, newOrder, stockHold };
+  if (!text && !confidenceGate.isLow(confidence)) {
+    text = 'Dạ mình chưa rõ ý bạn lắm ạ. Bạn nói rõ hơn giúp mình nha! 🌿';
+  }
+  return { text, handoff, newOrder, stockHold, confidence };
 }
 
 async function executeTool(toolName, toolInput, customer, zaloUserId, daBaoGia = null) {
   try {
+    if (toolName === 'report_intent_confidence') {
+      const score = confidenceGate.clamp(toolInput.confidence);
+      if (score == null) {
+        return 'confidence không hợp lệ. Gọi lại với số từ 0 đến 1.';
+      }
+      pendingConfidence.set(zaloUserId, score);
+      const min = confidenceGate.minConfidence();
+      if (confidenceGate.isLow(score)) {
+        return (
+          `Độ tin ${score} dưới ngưỡng ${min}. KHÔNG gọi create_order. ` +
+          'KHÔNG bịa giá, công dụng, hay câu chốt đơn. Hệ thống sẽ chuyển nhân viên.'
+        );
+      }
+      return `Đã ghi độ tin ${score} (ngưỡng ${min}). Được trả lời theo tài liệu farm.`;
+    }
+
     if (toolName === 'request_human') {
       const info = {
         reason: toolInput.reason || 'Khách muốn gặp người thật',
@@ -645,6 +719,9 @@ async function executeTool(toolName, toolInput, customer, zaloUserId, daBaoGia =
 // Called from webhook for every incoming Zalo message
 // ============================================================
 async function respond(zaloUserId, userMessage, sessionId = null) {
+  // A previous turn that threw must not leak its score into this one.
+  pendingConfidence.delete(zaloUserId);
+
   // 1. Load customer context (resolves across channels)
   const customer = await db.getCustomerByExternalId(zaloUserId);
   let memories = [], recentOrders = [], preferences = [];
@@ -749,7 +826,20 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
     );
   }
 
-  // Stock warning replaces a silent "đã chốt". Empty text still gets a fallback.
+  // Low confidence must not leave a live order behind for the pipeline to push.
+  if (confidenceGate.isLow(pendingConfidence.get(zaloUserId))) {
+    const abandoned = pendingOrder.get(zaloUserId);
+    pendingOrder.delete(zaloUserId);
+    if (abandoned?.order_number && db.DB_ENABLED) {
+      await db.pool.query(
+        `UPDATE orders SET status = 'cancelled' WHERE order_number = $1 AND status = 'pending'`,
+        [abandoned.order_number]
+      ).catch(err => console.error('cancel low-confidence order:', err.message));
+    }
+  }
+
+  // Stock warning replaces a silent "đã chốt". Empty text still gets a fallback
+  // unless this turn is already below the confidence gate.
   const flags = finalizeReply(zaloUserId, finalText);
 
   return {
@@ -758,6 +848,7 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
     handoff: flags.handoff,
     newOrder: flags.newOrder,
     stockHold: flags.stockHold,
+    confidence: flags.confidence,
     customer,
   };
 }

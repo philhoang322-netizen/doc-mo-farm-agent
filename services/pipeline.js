@@ -23,6 +23,7 @@ const catalog = require('./catalog');
 const money = require('./money');
 const hitl = require('./hitlGate');
 const stockGate = require('./stockGate');
+const confidenceGate = require('./confidenceGate');
 
 const FALLBACK_REPLY =
   'Dạ farm đang bận xử lý một chút, bạn nhắn lại giúp mình sau ít phút nha 🌿 ' +
@@ -134,18 +135,42 @@ async function handleMessage(p) {
         return stepAside(p, customer, verdict, log);
       }
 
-      const { text: reply, tokensUsed, handoff, newOrder, stockHold } =
+      // Sticker text, empty intent, jokes, and keyboard mash never become a
+      // sales draft — and never spend a model call inventing one.
+      const edge = confidenceGate.edgeCase(p.text);
+      if (edge) {
+        return urgentHuman(p, customer, {
+          confidence: edge.confidence,
+          reason: edge.reason,
+          signal: 'low_confidence',
+        }, log);
+      }
+
+      const { text: reply, tokensUsed, handoff, newOrder, stockHold, confidence } =
         await aiAgent.respond(p.externalKey, p.text);
+
+      // Low / zero stock: the reply is a warning, not a confirmation.
+      // Hold it for Sales even when HITL_REQUIRE_APPROVAL is off.
+      // That warning wins over the confidence gate: it is not a fake sales pitch.
+      const stockHeld = stockHold && (stockHold.decision === 'low' || stockHold.decision === 'blocked');
+
+      if (!stockHeld && confidenceGate.isLow(confidence)) {
+        return urgentHuman(p, customer, {
+          confidence,
+          reason:
+            `Độ tin AI ${confidenceGate.formatPercent(confidence)} dưới ngưỡng ` +
+            `${confidenceGate.formatPercent(confidenceGate.minConfidence())} — ` +
+            `${confidenceGate.HUMAN_LABEL}`,
+          signal: 'low_confidence',
+        }, log);
+      }
+
       drift.noteAnswer(p.externalKey, reply);
 
       await db.saveMessage(p.externalKey, 'assistant', reply, {
         model: 'claude-sonnet-4-6',
         tokensUsed,
       });
-
-      // Low / zero stock: the reply is a warning, not a confirmation.
-      // Hold it for Sales even when HITL_REQUIRE_APPROVAL is off.
-      const stockHeld = stockHold && (stockHold.decision === 'low' || stockHold.decision === 'blocked');
 
       // HITL_REQUIRE_APPROVAL (default on): hold this text as PENDING_REVIEW.
       // Do not call p.send with the AI body. See services/hitlGate.js.
@@ -275,13 +300,39 @@ async function learnHonorific(customer, p) {
 }
 
 /**
+ * Low confidence, empty intent, or a non-text message.
+ * Reuses stepAside (pause, opt out of nudges, owner handoff card) and holds
+ * only the short waiting line. The model sales text is not drafted and not sent.
+ */
+function urgentHuman(p, customer, info, log) {
+  return stepAside(p, customer, {
+    signal: info.signal || 'low_confidence',
+    urgency: 'high',
+    reason: info.reason || confidenceGate.HUMAN_LABEL,
+  }, log, {
+    reply: confidenceGate.WAITING_REPLY,
+    forceHold: true,
+    ack: false,
+    ticket_status: confidenceGate.TICKET_STATUS,
+    needsHuman: true,
+    confidence: info.confidence,
+  });
+}
+
+/**
  * Bow out gracefully: tell the customer, stop answering, and put the thread
  * in front of a person. Used whenever the bot is more likely to hurt than help.
+ * options.forceHold keeps the text as a draft even when auto-send is on.
  */
-async function stepAside(p, customer, verdict, log) {
-  const text = drift.message(verdict.signal);
+async function stepAside(p, customer, verdict, log, options = {}) {
+  const text = options.reply || drift.message(verdict.signal);
   try {
-    const release = await hitl.releaseToCustomer(p, text, { intent: p.text });
+    const release = await hitl.releaseToCustomer(p, text, {
+      intent: p.text,
+      forceHold: options.forceHold === true,
+      ack: options.ack,
+      ticket_status: options.ticket_status,
+    });
     await db.saveMessage(p.externalKey, 'assistant', text);
     if (customer) {
       await db.pauseBot(customer.id, verdict.reason);
@@ -290,15 +341,27 @@ async function stepAside(p, customer, verdict, log) {
     }
     drift.markHandedOff(p.externalKey);
 
-    if (!release.held) {
-      log({ type: 'stepped_aside', channel: p.channel, signal: verdict.signal, to: p.replyTo });
-    }
+    log({
+      type: 'stepped_aside',
+      channel: p.channel,
+      signal: verdict.signal,
+      to: p.replyTo,
+      held: release.held,
+      needs_human: options.needsHuman === true,
+    });
     await notify.handoff(
       { reason: verdict.reason, urgency: verdict.urgency || 'high', externalId: p.externalKey },
       customer,
       p.text
     );
-    return { ok: true, steppedAside: verdict.signal, held: release.held, draftId: release.draft?.id || null };
+    return {
+      ok: true,
+      steppedAside: verdict.signal,
+      held: release.held,
+      draftId: release.draft?.id || null,
+      needsHuman: options.needsHuman === true,
+      confidence: options.confidence ?? null,
+    };
   } catch (e) {
     console.error('stepAside failed:', e.message);
     return { ok: false, error: e.message };
@@ -426,32 +489,24 @@ async function afterOrder(order, p, log, askedTransfer = false) {
 }
 
 /**
- * Non-text messages. Zalo sends images, stickers, files and voice notes;
- * answering something warm beats silence, and payment screenshots need a human.
+ * Non-text messages. Zalo sends images, stickers, files and voice notes.
+ * We cannot read them, so a warm guess ("bạn cần tư vấn gì?") is a sales
+ * draft that pretends to understand. Hold the waiting line for a person.
+ * Payment screenshots still ping the farm directly.
  */
+const UNCLEAR_KINDS = new Set(['image', 'sticker', 'audio', 'video', 'file']);
+
 async function handleNonText(p) {
   const log = p.log || (() => {});
   if (!(await ops.isNewEvent(p.msgId, p.channel))) return { skipped: 'duplicate' };
+  if (!UNCLEAR_KINDS.has(p.kind)) return { skipped: 'ignored' };
 
-  const kinds = {
-    image: 'Dạ farm nhận được ảnh của bạn rồi ạ! 📸 Bạn nhắn thêm vài chữ cho farm biết ảnh này là gì nha — ' +
-           'ảnh sản phẩm, ảnh chuyển khoản hay bạn muốn hỏi gì ạ?',
-    sticker: 'Dạ 😊🌿 Bạn cần farm tư vấn gì không ạ?',
-    audio: 'Dạ farm nhận được tin nhắn thoại ạ. Bạn gõ giúp farm vài chữ được không — ' +
-           'trợ lý chưa nghe được voice, farm sợ trả lời sai ý bạn 🙏',
-    video: 'Dạ farm nhận được video của bạn rồi ạ! Bạn mô tả ngắn giúp farm nội dung nha 🌿',
-    file: 'Dạ farm nhận được tệp của bạn ạ. Bạn nói rõ nội dung giúp farm nha 🌿',
-    link: null, // links are handled as plain text
-  };
-
-  const reply = kinds[p.kind];
-  if (!reply) return { skipped: 'ignored' };
+  const shown = `[${p.kind}]`;
+  const inbound = { ...p, text: shown };
 
   try {
-    await db.getOrCreateCustomer(p.externalKey, p.senderName);
-    await db.saveMessage(p.externalKey, 'user', `[${p.kind}]`);
-    const release = await hitl.releaseToCustomer(p, reply, { intent: `[${p.kind}]` });
-    if (!release.held) log({ type: 'non_text_replied', channel: p.channel, kind: p.kind });
+    const customer = await db.getOrCreateCustomer(p.externalKey, p.senderName);
+    await db.saveMessage(p.externalKey, 'user', shown);
 
     // An image is very often a bank transfer receipt — the farm should look.
     if (p.kind === 'image') {
@@ -460,7 +515,12 @@ async function handleNonText(p) {
         `Xem tại Zalo. Khách: ${p.senderName || p.externalKey}`
       );
     }
-    return { ok: true, held: release.held, draftId: release.draft?.id || null };
+
+    return urgentHuman(inbound, customer, {
+      confidence: 0,
+      signal: 'non_text',
+      reason: `Khách gửi ${p.kind} — không đủ ý để trả lời tự động. ${confidenceGate.HUMAN_LABEL}`,
+    }, log);
   } catch (e) {
     console.error('Non-text handling failed:', e.message);
     return { ok: false, error: e.message };
