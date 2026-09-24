@@ -6,6 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const auth = require('./adminAuth');
+const db = require('./database');
 const drafts = require('./drafts');
 const audit = require('./audit');
 const roster = require('./roster');
@@ -371,6 +372,33 @@ async function rosterSave(req, res) {
   }
 }
 
+/**
+ * Same effect as the owner command `/mo <external_key>`.
+ * Body: { external_key: "fb_…" | "bot_…" | Zalo user id }.
+ */
+async function resumeCustomer(req, res) {
+  const raw = req.body && req.body.external_key;
+  const key = typeof raw === 'string' ? raw.trim() : '';
+  if (!key) return res.status(400).json({ error: 'Thiếu external_key' });
+  if (key.length > 200) return res.status(400).json({ error: 'external_key quá dài' });
+  try {
+    const customer = await db.getCustomerByExternalId(key);
+    if (!customer) return res.status(404).json({ error: 'Không tìm thấy khách' });
+    const resumed = await db.resumeBot(customer.id);
+    if (!resumed) return res.status(503).json({ error: 'Chưa có database để mở lại bot' });
+    res.json({
+      ok: true,
+      external_key: key,
+      customer_id: customer.id,
+      display_name: customer.display_name || null,
+      bot_paused: false,
+    });
+  } catch (e) {
+    console.error('Resume customer failed:', e.message);
+    res.status(500).json({ error: 'Không mở lại được bot' });
+  }
+}
+
 function mount(app) {
   app.post('/admin/login', login);
   app.post('/admin/logout', logout);
@@ -387,6 +415,7 @@ function mount(app) {
   app.get('/admin/api/drafts', requireApi, list);
   app.post('/admin/api/drafts', requireApi, create);
   app.patch('/admin/api/drafts/:id', requireApi, patch);
+  app.post('/admin/api/customers/resume', requireApi, resumeCustomer);
 }
 
 function fallback(req, res) {

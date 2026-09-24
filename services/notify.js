@@ -136,7 +136,11 @@ async function handoff(info, customer, lastMessage) {
   }
 
   lines.push('', `📌 Lý do chuyển: ${info.reason}`);
-  lines.push('', 'Bot đã tạm dừng với khách này.', `Trả lời xong, nhắn: /mo ${info.externalId}`);
+  if (info.botPaused) {
+    lines.push('', 'Bot đã tạm dừng với khách này.', `Trả lời xong, nhắn: /mo ${info.externalId}`);
+  } else {
+    lines.push('', 'Tin đang chờ duyệt trên /admin. Bot không tự gửi, và không tạm dừng.');
+  }
   const text = lines.join('\n');
   if (info?._fromRoster) return deliver(text, assigneeTargets(info));
   return send(text);

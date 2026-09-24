@@ -448,7 +448,6 @@ async function attemptCreateOrder(customer, toolInput, zaloUserId) {
     pendingHandoff.set(zaloUserId, handoff);
     pendingStockHold.set(zaloUserId, stock);
     pendingOrder.delete(zaloUserId);
-    if (customer.id) await db.pauseBot(customer.id, stock.summary).catch(() => {});
     return {
       decision: stock.decision,
       toolResult:
@@ -561,9 +560,7 @@ async function executeTool(toolName, toolInput, customer, zaloUserId, daBaoGia =
         externalId: zaloUserId,
       };
       pendingHandoff.set(zaloUserId, info);
-      if (customer && db.DB_ENABLED) {
-        await db.pauseBot(customer.id, info.reason);
-      }
+      // The model asking for a person does not pause. Only ops.wantsHuman does.
       const when = ops.isWorkingHours()
         ? 'Người của farm sẽ trả lời bạn ngay ạ'
         : `Ngoài giờ làm việc (${ops.workHoursText()}) nên farm sẽ phản hồi vào đầu giờ làm việc ạ`;

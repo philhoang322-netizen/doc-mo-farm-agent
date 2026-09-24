@@ -10,8 +10,12 @@
  *   - claim / claimed is true (approve flow marks the thread for a person)
  *   - wantsHuman is true (the customer asked for a human)
  *   - a request_human / step-aside handoff object is passed through
- *   - notify.handoff() is called (force), which is the pause/handoff hook
+ *   - notify.handoff() is called (force), which is the handoff hook
  *     already on main
+ *
+ * bot_paused is set only when the customer explicitly asked to stop the
+ * bot (wantsHuman / ops.wantsHuman). A low-confidence or NEEDS_HUMAN card
+ * assigns someone and does not pause.
  *
  * classifyHumanNeed() returns null for an ordinary sales draft. Those drafts
  * stay on the HITL queue and are not assigned and not auto-sent.
@@ -112,11 +116,15 @@ function customerIdOf(input) {
   return roster.isUuid(id) ? String(id) : null;
 }
 
+function explicitHumanStop(input, kind) {
+  return input?.wantsHuman === true || kind?.source === 'wants_human';
+}
+
+/** Pause only for an explicit "gặp người thật" / stop. Other handoffs do not. */
 async function pauseIfPossible(input, reason) {
-  if (!db.DB_ENABLED) return;
   try {
     let id = customerIdOf(input);
-    if (!id && input.externalId) {
+    if (!id && input.externalId && db.DB_ENABLED) {
       const found = await db.getCustomerByExternalId(input.externalId);
       id = found?.id || null;
     }
@@ -234,10 +242,13 @@ async function escalate(input = {}, now = new Date()) {
     deduped: false,
   };
 
-  await pauseIfPossible(
-    { ...input, externalId },
-    `${reason || kind.reason} → ${staff.name}`
-  );
+  const explicitStop = explicitHumanStop(input, kind);
+  if (explicitStop) {
+    await pauseIfPossible(
+      { ...input, externalId },
+      `${reason || kind.reason} → ${staff.name}`
+    );
+  }
 
   const sent = await notify.handoff(
     {
@@ -245,6 +256,7 @@ async function escalate(input = {}, now = new Date()) {
       urgency: rec.urgency,
       externalId: rec.external_id,
       assignee: rec,
+      botPaused: explicitStop,
       _fromRoster: true,
     },
     input.customer || null,

@@ -135,9 +135,104 @@ describe('Messenger channel', { concurrency: 1 }, () => {
   test('POST /messenger/webhook rejects a bad signature and does not draft', async () => {
     const psid = `sig_${Date.now()}`;
     const raw = JSON.stringify(pageEvent(psid, { mid: `m-${psid}`, text: 'gia bao nhieu' }));
-    const res = await postSigned(raw, 'sha256=deadbeef');
-    assert.equal(res.status, 403);
-    assert.equal(await draftFor(`fb_${psid}`), null);
+    const errors = [];
+    const original = console.error;
+    console.error = (...args) => { errors.push(args); };
+    try {
+      const res = await postSigned(raw, 'sha256=deadbeef');
+      assert.equal(res.status, 403);
+      assert.deepEqual(JSON.parse(res.body), { ok: false, error: 'bad_signature' });
+      assert.equal(await draftFor(`fb_${psid}`), null);
+      const line = errors.find((args) => args[0] === 'messenger_bad_signature');
+      assert.ok(line, 'expected a messenger_bad_signature log');
+      assert.equal(line[1].reason, 'bad_signature');
+      assert.equal(line[1].rawBodyLength, Buffer.byteLength(raw));
+      assert.equal(line[1].signatureHeaderPresent, true);
+      const dumped = JSON.stringify(errors);
+      assert.equal(dumped.includes('app-secret-test'), false);
+      assert.equal(dumped.includes('gia bao nhieu'), false);
+      assert.equal(dumped.includes('deadbeef'), false);
+    } finally {
+      console.error = original;
+    }
+  });
+
+  test('a missing signature header is logged with rawBodyLength and no secret', async () => {
+    const psid = `nosig_${Date.now()}`;
+    const raw = JSON.stringify(pageEvent(psid, { mid: `m-${psid}`, text: 'secret-body-text' }));
+    const errors = [];
+    const original = console.error;
+    console.error = (...args) => { errors.push(args); };
+    try {
+      const body = Buffer.from(raw);
+      const res = await httpCall('POST', '/messenger/webhook', {
+        raw: body,
+        headers: {
+          'content-type': 'application/json',
+          'content-length': body.length,
+        },
+      });
+      assert.equal(res.status, 403);
+      assert.deepEqual(JSON.parse(res.body), { ok: false, error: 'bad_signature' });
+      const line = errors.find((args) => args[0] === 'messenger_bad_signature');
+      assert.equal(line[1].reason, 'missing_header');
+      assert.equal(line[1].signatureHeaderPresent, false);
+      assert.equal(line[1].rawBodyLength, body.length);
+      assert.equal(JSON.stringify(errors).includes('app-secret-test'), false);
+      assert.equal(JSON.stringify(errors).includes('secret-body-text'), false);
+    } finally {
+      console.error = original;
+    }
+  });
+
+  test('bytes survive a non-json content type when capture runs before express.json', async () => {
+    mockAi();
+    const rawApp = express();
+    rawApp.use('/messenger/webhook', messenger.captureRawBody);
+    rawApp.use(express.json({
+      verify: (req, _res, buf) => {
+        if (!Buffer.isBuffer(req.rawBody)) req.rawBody = buf;
+      },
+    }));
+    messenger.mount(rawApp, { pipeline, log() {} });
+    const rawServer = http.createServer(rawApp);
+    await new Promise((resolve) => rawServer.listen(0, '127.0.0.1', resolve));
+    const rawPort = rawServer.address().port;
+    const psid = `raw_${Date.now()}`;
+    const raw = JSON.stringify(pageEvent(psid, { mid: `m-${psid}`, text: 'Dau goi gia bao nhieu?' }));
+    const body = Buffer.from(raw);
+    try {
+      const res = await new Promise((resolve, reject) => {
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port: rawPort,
+          path: '/messenger/webhook',
+          method: 'POST',
+          headers: {
+            'content-type': 'text/plain',
+            'content-length': body.length,
+            'x-hub-signature-256': messenger.signBody(body),
+          },
+        }, (response) => {
+          const chunks = [];
+          response.on('data', (c) => chunks.push(c));
+          response.on('end', () => resolve({
+            status: response.statusCode,
+            body: Buffer.concat(chunks).toString('utf8'),
+          }));
+        });
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+      });
+      assert.equal(res.status, 200);
+      const draft = await draftFor(`fb_${psid}`);
+      assert.ok(draft, 'non-json content type must still draft from the raw bytes');
+      assert.equal(draft.approval_status, 'PENDING_REVIEW');
+      assert.equal(draft.channel, 'messenger');
+    } finally {
+      await new Promise((resolve) => rawServer.close(resolve));
+    }
   });
 
   test('POST is ignored while MESSENGER_ENABLED is off', async () => {

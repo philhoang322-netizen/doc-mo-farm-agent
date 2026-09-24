@@ -9,6 +9,7 @@
  * and ignored so a public Railway URL does not draft or reply.
  */
 const crypto = require('crypto');
+const express = require('express');
 const axios = require('axios');
 
 const GRAPH_VERSION = 'v21.0';
@@ -73,13 +74,59 @@ function safeEqual(a, b) {
 function verifySignature(rawBody, signatureHeader) {
   const secret = appSecret();
   if (!secret) return { ok: false, reason: 'missing_secret' };
-  const header = String(signatureHeader || '');
+  const header = signatureHeader == null ? '' : String(signatureHeader);
+  if (!header) return { ok: false, reason: 'missing_header' };
   if (!header.startsWith('sha256=')) return { ok: false, reason: 'bad_signature' };
   const raw = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8');
   const expected = crypto.createHmac('sha256', secret).update(raw).digest('hex');
   const got = header.slice('sha256='.length);
   if (!safeEqual(got, expected)) return { ok: false, reason: 'bad_signature' };
   return { ok: true };
+}
+
+/**
+ * Read the exact POST bytes for /messenger/webhook before express.json.
+ * Meta signs those bytes. A JSON parser that skips a non-json content type
+ * would otherwise leave req.rawBody unset and every Page POST looks unsigned.
+ * Sets req._body so the later global JSON parser does not read the stream again.
+ */
+function captureRawBody(req, res, next) {
+  if (req.method !== 'POST') return next();
+  return express.raw({ type: () => true, limit: '1mb' })(req, res, (err) => {
+    if (err) {
+      console.error('messenger_bad_signature', {
+        reason: 'raw_body',
+        rawBodyLength: 0,
+        signatureHeaderPresent: Boolean(req.get('x-hub-signature-256')),
+      });
+      return res.status(err.status || 400).json({ ok: false, error: 'bad_body' });
+    }
+    const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    req.rawBody = raw;
+    req._body = true;
+    if (!raw.length) {
+      req.body = {};
+      return next();
+    }
+    try {
+      req.body = JSON.parse(raw.toString('utf8'));
+      req.messengerJsonError = false;
+    } catch {
+      req.body = {};
+      req.messengerJsonError = true;
+    }
+    next();
+  });
+}
+
+function signatureDetail(req, reason) {
+  const raw = Buffer.isBuffer(req.rawBody) ? req.rawBody : null;
+  const header = req.get('x-hub-signature-256');
+  return {
+    reason,
+    rawBodyLength: raw ? raw.length : 0,
+    signatureHeaderPresent: Boolean(header),
+  };
 }
 
 function signBody(rawBody, secret = appSecret()) {
@@ -286,8 +333,16 @@ function mount(app, deps) {
     }
     const sig = verifySignature(req.rawBody, req.get('x-hub-signature-256'));
     if (!sig.ok) {
-      log({ type: 'messenger_bad_signature', reason: sig.reason });
-      return res.sendStatus(403);
+      const detail = signatureDetail(req, sig.reason);
+      // stdout/stderr, not only the in-memory debug log. Never include the
+      // secret, the signature value, or the body.
+      console.error('messenger_bad_signature', detail);
+      log({ type: 'messenger_bad_signature', ...detail });
+      return res.status(403).json({ ok: false, error: 'bad_signature' });
+    }
+    if (req.messengerJsonError) {
+      console.error('messenger_invalid_json', signatureDetail(req, 'invalid_json'));
+      return res.status(400).json({ ok: false, error: 'invalid_json' });
     }
 
     const run = () => processBody(req.body, deps).catch((err) => {
@@ -308,6 +363,7 @@ function mount(app, deps) {
 module.exports = {
   enabled,
   verifySignature,
+  captureRawBody,
   signBody,
   mount,
   processBody,

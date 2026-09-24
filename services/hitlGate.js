@@ -82,6 +82,11 @@ function httpUrl(value) {
  * Send `text` to the customer, or hold it for review.
  * Never calls p.send with `text` while approval is required.
  * `extra.ack === false` skips HITL_ACK_MESSAGE (follow-up drafts in the same turn).
+ * `extra.clearTriage` stores no Hot/Urgent/Normal level and does not treat the
+ * turn as urgent. A paused follow-up uses this so the inbox card is the
+ * customer text, not a new escalation.
+ * `extra.forceHold` keeps PENDING_REVIEW even when auto-send is on.
+ * `extra.handover === false` does not assign or re-pause.
  *
  * @param {object} p pipeline params (channel, replyTo, externalKey, send, text, senderName, log)
  * @param {string} text customer-facing body
@@ -91,7 +96,9 @@ function httpUrl(value) {
 async function releaseToCustomer(p, text, extra = {}) {
   const body = String(text ?? '').replace(/\0/g, '').trim();
   const source = extra.intent != null ? extra.intent : p.text;
-  const triaged = coerceTriage(extra.triage, source);
+  const triaged = extra.clearTriage === true
+    ? clearedTriage()
+    : coerceTriage(extra.triage, source);
   // Stock warnings, Messenger, and Urgent inbox rows wait for a person
   // even if the emergency auto-send switch is off. forceHold never calls
   // p.send with the customer body.
@@ -167,6 +174,18 @@ async function releaseToCustomer(p, text, extra = {}) {
     reason: extra.reason || (urgentHold ? triaged.reason : undefined),
   });
   return { held: true, sent: false, draft, acked, assignment, route: routed.route, triage: triaged.level };
+}
+
+function clearedTriage() {
+  return {
+    level: null,
+    label: null,
+    kind: null,
+    reason: null,
+    skipModel: true,
+    needsHuman: false,
+    safeDraft: null,
+  };
 }
 
 function coerceTriage(given, source) {

@@ -28,8 +28,13 @@ const messenger   = require('./services/messenger');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
+// Meta signs the raw POST bytes. Capture them before express.json, which
+// skips any content type that is not JSON and would leave rawBody empty.
+app.use('/messenger/webhook', messenger.captureRawBody);
 app.use(express.json({
-  verify: (req, _res, buf) => { req.rawBody = buf; },
+  verify: (req, _res, buf) => {
+    if (!Buffer.isBuffer(req.rawBody)) req.rawBody = buf;
+  },
 }));
 app.use(express.urlencoded({ extended: false })); // admin form posts
 app.set('trust proxy', 1);
