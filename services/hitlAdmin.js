@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const auth = require('./adminAuth');
 const drafts = require('./drafts');
+const audit = require('./audit');
 
 const PUBLIC = path.join(__dirname, '..', 'public', 'admin');
 
@@ -213,9 +214,17 @@ async function list(req, res) {
   }
 }
 
+function actorNameFrom(req) {
+  const bodyName = req.body && typeof req.body.actor_name === 'string' ? req.body.actor_name : '';
+  const headerName = req.get('x-actor-name') || '';
+  return bodyName || headerName;
+}
+
 async function create(req, res) {
   try {
-    const draft = await drafts.createDraft(req.body);
+    const draft = await drafts.createDraft(req.body, {
+      actor: audit.managerActor(actorNameFrom(req)),
+    });
     res.status(201).json({ draft });
   } catch (e) {
     const status = e.status || 500;
@@ -226,7 +235,9 @@ async function create(req, res) {
 
 async function patch(req, res) {
   try {
-    const result = await drafts.updateDraft(req.params.id, req.body);
+    const result = await drafts.updateDraft(req.params.id, req.body, {
+      actorName: actorNameFrom(req),
+    });
     if (!result) return res.status(404).json({ error: 'Không thấy bản nháp' });
     res.json(result);
   } catch (e) {
@@ -236,11 +247,44 @@ async function patch(req, res) {
   }
 }
 
+async function listAudit(req, res) {
+  try {
+    const q = req.query || {};
+    res.json(await audit.list({
+      conversation: q.conversation,
+      order: q.order,
+      entity_type: q.entity_type,
+      entity_id: q.entity_id,
+      action: q.action,
+      from: q.from,
+      to: q.to,
+      limit: q.limit,
+    }));
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'Không tải được nhật ký' });
+  }
+}
+
+async function auditPage(req, res) {
+  guard(res);
+  if (!auth.passwordConfigured()) {
+    return res.status(503).type('html').send(unconfiguredHtml());
+  }
+  if (!auth.passwordAuthed(req)) {
+    return res.status(200).type('html').send(loginHtml(null));
+  }
+  const html = await fs.promises.readFile(path.join(PUBLIC, 'audit.html'), 'utf8');
+  res.type('html').send(html);
+}
+
 function mount(app) {
   app.post('/admin/login', login);
   app.post('/admin/logout', logout);
   app.get('/admin/review.css', requirePageAsset, sendAsset('review.css', 'text/css; charset=utf-8'));
   app.get('/admin/review.js', requirePageAsset, sendAsset('review.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/audit.js', requirePageAsset, sendAsset('audit.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/audit', auditPage);
+  app.get('/admin/api/audit', requireApi, listAudit);
   app.get('/admin/api/drafts', requireApi, list);
   app.post('/admin/api/drafts', requireApi, create);
   app.patch('/admin/api/drafts/:id', requireApi, patch);

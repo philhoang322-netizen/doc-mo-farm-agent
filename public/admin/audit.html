@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#3f6b4c">
+<title>Nhật ký thao tác — Dốc Mơ Farm</title>
+<link rel="stylesheet" href="/admin/review.css">
+</head>
+<body>
+<header class="top">
+  <div>
+    <p class="brand">Dốc Mơ Farm</p>
+    <h1>Nhật ký thao tác</h1>
+    <p class="sub">Khách nhắn gì, AI soạn gì, ai sửa, ai gửi, ai đẩy đơn.</p>
+  </div>
+  <div class="top-actions">
+    <a class="ghost" href="/admin">Về duyệt tin</a>
+    <form method="post" action="/admin/logout">
+      <button class="ghost" type="submit">Đăng xuất</button>
+    </form>
+  </div>
+</header>
+<p id="storage" class="note warn" hidden></p>
+<form id="filters" class="filters">
+  <label>Hội thoại / user id
+    <input name="conversation" maxlength="200" placeholder="user id Zalo hoặc bot_…">
+  </label>
+  <label>Mã đơn
+    <input name="order" maxlength="80" placeholder="ORD-…">
+  </label>
+  <label>Từ ngày
+    <input name="from" type="date">
+  </label>
+  <label>Đến ngày
+    <input name="to" type="date">
+  </label>
+  <button type="submit">Lọc</button>
+</form>
+<p class="hint">Lọc theo hội thoại hoặc đơn thì hiện từ cũ đến mới, để đọc cả chuỗi.</p>
+<section id="list" aria-live="polite"></section>
+<noscript><p class="note warn">Trang này cần JavaScript để xem nhật ký.</p></noscript>
+<script src="/admin/audit.js"></script>
+</body>
+</html>

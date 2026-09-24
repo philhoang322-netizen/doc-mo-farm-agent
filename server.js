@@ -22,6 +22,7 @@ const shipping    = require('./services/shipping');
 const hitlAdmin   = require('./services/hitlAdmin');
 const hitl        = require('./services/hitlGate');
 const confidenceGate = require('./services/confidenceGate');
+const audit       = require('./services/audit');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -462,12 +463,32 @@ app.post('/admin/order', async (req, res) => {
   const key = req.body.key;
   if (key !== process.env.ZALO_WEBHOOK_TOKEN) return res.status(403).send('Forbidden');
   try {
+    const prev = await db.pool.query(
+      'SELECT order_number, status, customer_id FROM orders WHERE id=$1',
+      [req.body.id]
+    );
+    const before = prev.rows[0];
     const r = await db.pool.query(
-      'UPDATE orders SET status=$2, updated_at=NOW() WHERE id=$1 RETURNING order_number, customer_id',
+      'UPDATE orders SET status=$2, updated_at=NOW() WHERE id=$1 RETURNING order_number, customer_id, status',
       [req.body.id, req.body.status]
     );
     const row = r.rows[0];
     if (row) await db.updateCustomerLtv(row.customer_id).catch(() => {});
+    if (before && row && before.status !== row.status) {
+      await audit.record({
+        actor: audit.staffActor(req.body.staff_name),
+        action: audit.orderStatusAction(row.status),
+        entity_type: 'order',
+        entity_id: String(row.order_number),
+        before: { status: before.status },
+        after: { status: row.status, order_number: row.order_number },
+        meta: {
+          order_number: String(row.order_number),
+          customer_id: row.customer_id,
+          source: 'admin',
+        },
+      });
+    }
     res.redirect(`/admin?key=${encodeURIComponent(key)}&ok=${encodeURIComponent(
       `Đơn ${row ? row.order_number : ''} → ${req.body.status}`)}`);
   } catch (e) {

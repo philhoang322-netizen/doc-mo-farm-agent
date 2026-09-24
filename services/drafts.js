@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const db = require('./database');
+const audit = require('./audit');
 const zaloService = require('./zaloService');
 const botService = require('./zaloBotService');
 
@@ -325,10 +326,20 @@ async function saveDraft(draft) {
   return fromRow(r.rows[0]);
 }
 
-async function createDraft(body) {
+async function createDraft(body, ctx = {}) {
   await ensureReady();
   const fields = fieldsFrom(body, { requireReply: true });
-  return insertDraft(blankDraft(fields));
+  const draft = await insertDraft(blankDraft(fields));
+  await audit.record({
+    actor: ctx.actor || 'ai',
+    action: 'draft.created',
+    entity_type: 'draft',
+    entity_id: draft.id,
+    before: null,
+    after: audit.draftSnapshot(draft),
+    meta: audit.draftMeta(draft),
+  });
+  return draft;
 }
 
 async function getDraft(id) {
@@ -505,24 +516,97 @@ function withLock(id, fn) {
   return next;
 }
 
-async function updateDraft(id, body) {
+function sameText(a, b) {
+  return String(a ?? '') === String(b ?? '');
+}
+
+const CONTENT_KEYS = [
+  'channel', 'customer_name', 'customer_phone', 'customer_user_id', 'customer_intent',
+  'assigned_department', 'ticket_status', 'draft_reply', 'kiot_summary',
+  'invoice_code', 'customer_code', 'qr_image_url',
+];
+
+function contentChanged(before, after) {
+  return CONTENT_KEYS.some(key => !sameText(before[key], after[key]));
+}
+
+async function writeDraftAudit(existing, saved, { actor, wantSend, send }) {
+  const meta = audit.draftMeta(saved);
+  if (contentChanged(existing, saved)) {
+    await audit.record({
+      actor,
+      action: 'draft.edited',
+      entity_type: 'draft',
+      entity_id: saved.id,
+      before: audit.draftSnapshot(existing),
+      after: audit.draftSnapshot(saved),
+      meta,
+    });
+  }
+  if (wantSend) {
+    await audit.record({
+      actor,
+      action: 'draft.approved',
+      entity_type: 'draft',
+      entity_id: saved.id,
+      before: audit.draftSnapshot(existing),
+      after: audit.draftSnapshot({ ...saved, approval_status: 'APPROVED' }),
+      meta,
+    });
+    await audit.record({
+      actor,
+      action: send && send.sent ? 'draft.sent' : 'draft.send_failed',
+      entity_type: 'draft',
+      entity_id: saved.id,
+      before: { approval_status: existing.approval_status },
+      after: {
+        approval_status: saved.approval_status,
+        draft_reply: saved.draft_reply,
+        send_via: saved.send_via,
+        send_error: saved.send_error,
+      },
+      meta,
+    });
+    return;
+  }
+  if (saved.approval_status === existing.approval_status) return;
+  let action = 'draft.status_changed';
+  if (saved.approval_status === 'APPROVED') action = 'draft.approved';
+  else if (saved.approval_status === 'REJECTED') action = 'draft.rejected';
+  else if (saved.approval_status === 'PENDING_REVIEW') action = 'draft.reopened';
+  await audit.record({
+    actor,
+    action,
+    entity_type: 'draft',
+    entity_id: saved.id,
+    before: audit.draftSnapshot(existing),
+    after: audit.draftSnapshot(saved),
+    meta,
+  });
+}
+
+async function updateDraft(id, body, ctx = {}) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new DraftError(400, 'Cần một JSON object');
   }
-  if (body.approval_status === 'SENT' && body.send !== true) {
+  const input = { ...body };
+  const named = ctx.actorName != null ? ctx.actorName : input.actor_name;
+  delete input.actor_name;
+  if (input.approval_status === 'SENT' && input.send !== true) {
     throw new DraftError(400, 'Không đặt SENT trực tiếp. Dùng send: true để gửi.');
   }
-  if (body.approval_status && body.approval_status !== 'SENT' && !STATUS_SET.has(body.approval_status)) {
+  if (input.approval_status && input.approval_status !== 'SENT' && !STATUS_SET.has(input.approval_status)) {
     throw new DraftError(400, 'approval_status không hợp lệ');
   }
   await ensureReady();
   if (!isUuid(id)) return null;
+  const actor = ctx.actor || audit.managerActor(named);
 
   return withLock(id, async () => {
     const existing = await getDraft(id);
     if (!existing) return null;
-    let next = applyEdits(existing, body);
-    const wantSend = body.send === true;
+    let next = applyEdits(existing, input);
+    const wantSend = input.send === true;
     let send = null;
 
     if (wantSend) {
@@ -532,7 +616,7 @@ async function updateDraft(id, body) {
           send: { ok: false, sent: false, via: existing.send_via, hook: null, error: 'Tin này đã gửi rồi.' },
         };
       }
-      if (body.approval_status === 'REJECTED') {
+      if (input.approval_status === 'REJECTED') {
         throw new DraftError(400, 'Không gửi một bản nháp đang từ chối.');
       }
       next.approval_status = 'APPROVED';
@@ -550,9 +634,9 @@ async function updateDraft(id, body) {
       }
       next.send_hook = send.hook || null;
       next.send_error = send.error || null;
-    } else if (Object.prototype.hasOwnProperty.call(body, 'approval_status')) {
-      next.approval_status = body.approval_status;
-      if (body.approval_status === 'PENDING_REVIEW') {
+    } else if (Object.prototype.hasOwnProperty.call(input, 'approval_status')) {
+      next.approval_status = input.approval_status;
+      if (input.approval_status === 'PENDING_REVIEW') {
         next.reviewed_at = null;
         next.sent_at = null;
         next.send_error = null;
@@ -564,6 +648,8 @@ async function updateDraft(id, body) {
     }
 
     const saved = await saveDraft(next);
+    if (!saved) return { draft: null, send };
+    await writeDraftAudit(existing, saved, { actor, wantSend, send });
     return { draft: saved, send };
   });
 }

@@ -124,6 +124,7 @@ async function render(key, flash = null) {
         <form method="post" action="/admin/order" class="inline">
           <input type="hidden" name="key" value="${esc(key)}">
           <input type="hidden" name="id" value="${esc(o.id)}">
+          <input name="staff_name" maxlength="80" placeholder="Tên NV" class="in staff" title="Điền tên trước khi đổi trạng thái — nhật ký ghi người này">
           <select name="status" onchange="this.form.submit()">
             ${STATUSES.map(s => `<option value="${s}"${s === o.status ? ' selected' : ''}>${s}</option>`).join('')}
           </select>
@@ -285,7 +286,8 @@ async function render(key, flash = null) {
   .msg .who { font-size:13px; color:var(--soft); margin-bottom:5px; font-weight:600 }
   .msg .body { white-space:pre-wrap; font-size:17px; line-height:1.6 }
   .scroll { max-height:520px; overflow:auto }
-  form.inline { margin:0 }
+  form.inline { margin:0; display:flex; flex-direction:column; gap:6px; min-width:9em }
+  input.staff { width:100%; min-height:44px }
   select, .in { font:inherit; font-size:17px; color:inherit; background:var(--card);
                 border:1px solid var(--line); border-radius:9px; padding:9px 11px; width:100%;
                 transition:border-color .2s, box-shadow .2s }

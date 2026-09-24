@@ -12,6 +12,7 @@ const promo = require('./promo');
 const priceMemo = require('./priceMemo');
 const stockGate = require('./stockGate');
 const confidenceGate = require('./confidenceGate');
+const audit = require('./audit');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -460,7 +461,7 @@ async function attemptCreateOrder(customer, toolInput, zaloUserId) {
   const total = items.reduce((sum, item) => sum + Number(item.quantity) * Number(item.unit_price || 0), 0);
   if (pendingHandoff.get(zaloUserId)?.kind === 'stock') pendingHandoff.delete(zaloUserId);
   pendingStockHold.delete(zaloUserId);
-  pendingOrder.set(zaloUserId, {
+  const pending = {
     order_number: order.order_number,
     total,
     items,
@@ -469,6 +470,20 @@ async function attemptCreateOrder(customer, toolInput, zaloUserId) {
     note: toolInput.customer_note || null,
     payment: toolInput.payment_method || 'cod',
     customerName: customer.display_name || customer.full_name || 'Khách',
+  };
+  pendingOrder.set(zaloUserId, pending);
+  await audit.record({
+    actor: 'ai',
+    action: 'order.created',
+    entity_type: 'order',
+    entity_id: String(order.order_number || order.id || ''),
+    before: null,
+    after: audit.orderSnapshot(pending),
+    meta: {
+      conversation_id: zaloUserId,
+      order_number: order.order_number ? String(order.order_number) : null,
+      customer_id: customer.id,
+    },
   });
   return {
     decision: stock.decision,
