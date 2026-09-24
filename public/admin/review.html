@@ -33,7 +33,10 @@
 <p id="storage" class="note warn" hidden></p>
 
 <div class="channel-row">
-  <div id="channels" class="pills" role="tablist" aria-label="Kênh bán"></div>
+  <div class="channel-group">
+    <span class="filter-label">Kênh bán</span>
+    <div id="channels" class="pills" role="tablist" aria-label="Kênh bán"></div>
+  </div>
   <button type="button" class="linkish" id="channel-settings-toggle">Cài đặt kênh</button>
 </div>
 <div id="channel-panel" class="channel-panel hidden">
@@ -52,6 +55,12 @@
       <button type="button" class="chip" role="tab" data-ops="success">Đã gửi <span class="count"></span></button>
       <button type="button" class="chip" role="tab" data-ops="failure">Thất bại <span class="count"></span></button>
       <button type="button" class="chip" role="tab" data-ops="rejected">Từ chối <span class="count"></span></button>
+    </div>
+    <div class="filter-row" id="platform-tabs" role="tablist" aria-label="Nền tảng nhắn tin">
+      <span class="filter-label">Tin từ</span>
+      <button type="button" class="chip" role="tab" data-platform="" aria-selected="true">Tất cả</button>
+      <button type="button" class="chip" role="tab" data-platform="zalo">Zalo OA <span class="count"></span></button>
+      <button type="button" class="chip" role="tab" data-platform="messenger">Messenger <span class="count"></span></button>
     </div>
     <div class="filter-row" id="triage-tabs" role="tablist" aria-label="Mức ưu tiên">
       <span class="filter-label">Mức</span>
