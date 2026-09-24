@@ -33,7 +33,7 @@ Subscribe the Page to **`messages`** and **`messaging_postbacks`**. Echoes, deli
 |---|---|---|
 | `MESSENGER_ENABLED` | off | `true`, `1`, `yes`, or `on` accepts inbound events and allows Graph send. Anything else (including unset) answers POST with `200` and does not draft or send. |
 | `FB_VERIFY_TOKEN` | required to verify | Shared secret you invent. Meta sends it as `hub.verify_token` on GET. Same value in the Meta webhook form and on Railway. |
-| `FB_APP_SECRET` | required when enabled | App secret (App settings → Basic). POST must carry a valid `X-Hub-Signature-256`. Missing or wrong signature is `403`. |
+| `FB_APP_SECRET` | required when enabled | App secret (App settings → Basic). POST must carry a valid `X-Hub-Signature-256`. A bad signature is HTTP 403 `{ "ok": false, "error": "bad_signature" }`. Railway logs `messenger_bad_signature` with `reason`, `rawBodyLength` (0 if the body was missing), and `signatureHeaderPresent`. The secret, the signature value, and the body are not logged. |
 | `FB_PAGE_ACCESS_TOKEN` | required to send | Page token with `pages_messaging`. Approve & Send calls `POST https://graph.facebook.com/v21.0/me/messages`. |
 | `FB_PAGE_ID` | optional | Numeric Page id. Events whose sender is this id are ignored. |
 
