@@ -25,7 +25,6 @@ const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const hitl = require('./hitlGate');
 const llm = require('./llm');
 const pii = require('./pii');
-const piiHook = require('./piiHook');
 
 const MODEL = process.env.FOLLOWUP_MODEL || 'claude-haiku-4-5-20251001';
 const STAGE_HOURS = [
@@ -116,7 +115,7 @@ async function compose(c) {
       system: SYSTEM,
       messages: [{
         role: 'user',
-        content: piiHook.maskForLlm(`${brief}\n\nNhững gì đã trao đổi với khách này:\n${context}`),
+        content: `${brief}\n\nNhững gì đã trao đổi với khách này:\n${context}`,
       }],
     });
     const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('').trim();

@@ -15,7 +15,6 @@ const confidenceGate = require('./confidenceGate');
 const audit = require('./audit');
 const llm = require('./llm');
 const pii = require('./pii');
-const piiHook = require('./piiHook');
 const stations = require('./stations');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -777,16 +776,14 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
   const history = await db.getConversationHistory(zaloUserId, HISTORY_TURNS);
   const messages = history.map(h => ({
     role: h.role,
-    content: piiHook.maskForLlm(
-      (h.role === 'assistant' && h.content.length > MAX_TURN_CHARS)
-        ? h.content.slice(0, MAX_TURN_CHARS) + ' […]'
-        : h.content
-    ),
+    content: (h.role === 'assistant' && h.content.length > MAX_TURN_CHARS)
+      ? h.content.slice(0, MAX_TURN_CHARS) + ' […]'
+      : h.content,
   }));
   const routed = stations.filterAndRoute(userMessage);
   messages.push({
     role: 'user',
-    content: stations.llmUserTurn(piiHook.maskForLlm(userMessage), routed),
+    content: stations.llmUserTurn(userMessage, routed),
   });
 
   // 3. Call Claude with tools
@@ -794,7 +791,7 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
   // must come first and be byte-identical between calls.
   const systemPrompt = [
     { type: 'text', text: buildStaticPrompt(), cache_control: { type: 'ephemeral' } },
-    { type: 'text', text: piiHook.maskForLlm(buildCustomerPrompt(customer, memories, recentOrders, preferences)) },
+    { type: 'text', text: buildCustomerPrompt(customer, memories, recentOrders, preferences) },
   ];
   const piiReports = [];
   let created = await llm.anthropicCreate(claude, {
@@ -823,7 +820,7 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
       toolResults.push({
         type: 'tool_result',
         tool_use_id: block.id,
-        content: piiHook.maskForLlm(result)
+        content: result
       });
     }
 
