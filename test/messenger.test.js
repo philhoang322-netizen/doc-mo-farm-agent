@@ -20,6 +20,7 @@ delete process.env.HITL_ACK_MESSAGE;
 
 const { describe, test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('crypto');
 const express = require('express');
 
 const messenger = require('../services/messenger');
@@ -135,23 +136,33 @@ describe('Messenger channel', { concurrency: 1 }, () => {
   test('POST /messenger/webhook rejects a bad signature and does not draft', async () => {
     const psid = `sig_${Date.now()}`;
     const raw = JSON.stringify(pageEvent(psid, { mid: `m-${psid}`, text: 'gia bao nhieu' }));
+    const body = Buffer.from(raw);
+    const wrong = `sha256=${'0123456789abcdef'.repeat(4)}`;
     const errors = [];
     const original = console.error;
     console.error = (...args) => { errors.push(args); };
     try {
-      const res = await postSigned(raw, 'sha256=deadbeef');
+      const res = await postSigned(raw, wrong);
       assert.equal(res.status, 403);
       assert.deepEqual(JSON.parse(res.body), { ok: false, error: 'bad_signature' });
       assert.equal(await draftFor(`fb_${psid}`), null);
       const line = errors.find((args) => args[0] === 'messenger_bad_signature');
       assert.ok(line, 'expected a messenger_bad_signature log');
-      assert.equal(line[1].reason, 'bad_signature');
-      assert.equal(line[1].rawBodyLength, Buffer.byteLength(raw));
+      assert.equal(line[1].reason, 'mismatch');
+      assert.equal(line[1].scheme, 'sha256');
+      assert.equal(line[1].gotLen, 64);
+      assert.equal(line[1].gotPrefix, '01234567');
+      assert.equal(line[1].expectedPrefix, messenger.signBody(body).slice(7, 15));
+      assert.equal(line[1].bodySha256Prefix, crypto.createHash('sha256').update(body).digest('hex').slice(0, 8));
+      assert.notEqual(line[1].gotPrefix, line[1].expectedPrefix);
+      assert.equal(line[1].rawBodyLength, body.length);
       assert.equal(line[1].signatureHeaderPresent, true);
+      assert.equal(line[1].contentType, 'application/json');
       const dumped = JSON.stringify(errors);
       assert.equal(dumped.includes('app-secret-test'), false);
       assert.equal(dumped.includes('gia bao nhieu'), false);
-      assert.equal(dumped.includes('deadbeef'), false);
+      assert.equal(dumped.includes('0123456789abcdef0123'), false);
+      assert.equal(dumped.includes(wrong), false);
     } finally {
       console.error = original;
     }
@@ -178,8 +189,96 @@ describe('Messenger channel', { concurrency: 1 }, () => {
       assert.equal(line[1].reason, 'missing_header');
       assert.equal(line[1].signatureHeaderPresent, false);
       assert.equal(line[1].rawBodyLength, body.length);
+      assert.equal(line[1].expectedPrefix, undefined);
+      assert.equal(line[1].gotPrefix, undefined);
+      assert.equal(line[1].reason === 'mismatch', false);
       assert.equal(JSON.stringify(errors).includes('app-secret-test'), false);
       assert.equal(JSON.stringify(errors).includes('secret-body-text'), false);
+    } finally {
+      console.error = original;
+    }
+  });
+
+  test('verifySignature accepts any hex case and separates mismatch from a missing header', () => {
+    const raw = Buffer.from('{"object":"page","text":"\\u00e4"}');
+    const good = messenger.signBody(raw);
+    const hex = good.slice('sha256='.length);
+    assert.equal(messenger.verifySignature(raw, `SHA256=${hex.toUpperCase()}`).ok, true);
+    assert.equal(messenger.verifySignature(raw, `Sha256=${hex.slice(0, 8).toUpperCase()}${hex.slice(8)}`).ok, true);
+    assert.equal(messenger.verifySignature(raw, `  sha256=${hex}  `).ok, true);
+    assert.equal(messenger.verifySignature(raw, `sha1=abcd, SHA256=${hex.toUpperCase()}`).ok, true);
+
+    const missing = messenger.verifySignature(raw, undefined);
+    assert.equal(missing.ok, false);
+    assert.equal(missing.reason, 'missing_header');
+    assert.equal(missing.expectedPrefix, undefined);
+
+    const short = messenger.verifySignature(raw, 'sha256=deadbeef');
+    assert.equal(short.reason, 'mismatch');
+    assert.equal(short.gotLen, 8);
+    assert.equal(short.gotPrefix, undefined);
+    assert.equal(JSON.stringify(short).includes('deadbeef'), false);
+    assert.equal(JSON.stringify(short).includes('app-secret-test'), false);
+
+    const wrongHex = '0123456789abcdef'.repeat(4);
+    const mismatch = messenger.verifySignature(raw, `sha256=${wrongHex}`);
+    assert.equal(mismatch.reason, 'mismatch');
+    assert.equal(mismatch.gotPrefix, '01234567');
+    assert.equal(mismatch.expectedPrefix, hex.slice(0, 8));
+    assert.notEqual(mismatch.gotPrefix, mismatch.expectedPrefix);
+    assert.equal(mismatch.bodySha256Prefix.length, 8);
+    assert.equal(JSON.stringify(mismatch).includes(wrongHex), false);
+
+    const prefixed = messenger.verifySignature(raw, `sha1=${hex}`);
+    assert.equal(prefixed.reason, 'bad_prefix');
+    assert.equal(prefixed.scheme, 'sha1');
+    assert.equal(JSON.stringify(prefixed).includes(hex), false);
+  });
+
+  test('an uppercase SHA256= signature is accepted and stays PENDING_REVIEW', async () => {
+    mockAi();
+    const calls = [];
+    const original = messenger.graphHttp.post;
+    messenger.graphHttp.post = async () => {
+      calls.push(1);
+      return { status: 200, data: { message_id: 'should-not-send' } };
+    };
+    const psid = `case_${Date.now()}`;
+    const raw = JSON.stringify(pageEvent(psid, { mid: `m-${psid}`, text: 'Dau goi gia bao nhieu?' }));
+    const upper = `SHA256=${messenger.signBody(raw).slice(7).toUpperCase()}`;
+    try {
+      const res = await postSigned(raw, upper);
+      assert.equal(res.status, 200);
+      assert.equal(calls.length, 0);
+      const draft = await draftFor(`fb_${psid}`);
+      assert.ok(draft, 'case-normalized signature must still draft');
+      assert.equal(draft.approval_status, 'PENDING_REVIEW');
+      assert.equal(draft.channel, 'messenger');
+    } finally {
+      messenger.graphHttp.post = original;
+    }
+  });
+
+  test('a sha1= prefix is bad_prefix, not a digest mismatch', async () => {
+    const psid = `pre_${Date.now()}`;
+    const raw = JSON.stringify(pageEvent(psid, { mid: `m-${psid}`, text: 'gia bao nhieu' }));
+    const header = `sha1=${messenger.signBody(raw).slice(7)}`;
+    const errors = [];
+    const original = console.error;
+    console.error = (...args) => { errors.push(args); };
+    try {
+      const res = await postSigned(raw, header);
+      assert.equal(res.status, 403);
+      assert.deepEqual(JSON.parse(res.body), { ok: false, error: 'bad_signature' });
+      assert.equal(await draftFor(`fb_${psid}`), null);
+      const line = errors.find((args) => args[0] === 'messenger_bad_signature');
+      assert.equal(line[1].reason, 'bad_prefix');
+      assert.equal(line[1].scheme, 'sha1');
+      assert.equal(line[1].reason === 'mismatch', false);
+      const dumped = JSON.stringify(errors);
+      assert.equal(dumped.includes(header), false);
+      assert.equal(dumped.includes('app-secret-test'), false);
+      assert.equal(dumped.includes('gia bao nhieu'), false);
     } finally {
       console.error = original;
     }
@@ -231,6 +330,68 @@ describe('Messenger channel', { concurrency: 1 }, () => {
       assert.equal(draft.approval_status, 'PENDING_REVIEW');
       assert.equal(draft.channel, 'messenger');
     } finally {
+      await new Promise((resolve) => rawServer.close(resolve));
+    }
+  });
+
+  test('escaped unicode bytes are verified as sent, including charset and uppercase hex', async () => {
+    mockAi();
+    const rawApp = express();
+    rawApp.use('/messenger/webhook', messenger.captureRawBody);
+    rawApp.use(express.json({
+      verify: (req, _res, buf) => {
+        if (!Buffer.isBuffer(req.rawBody)) req.rawBody = buf;
+      },
+    }));
+    messenger.mount(rawApp, { pipeline, log() {} });
+    const rawServer = http.createServer(rawApp);
+    await new Promise((resolve) => rawServer.listen(0, '127.0.0.1', resolve));
+    const rawPort = rawServer.address().port;
+    const psid = `esc_${Date.now()}`;
+    // Meta signs the escaped form. Hashing a re-serialized UTF-8 body would 403.
+    const raw = Buffer.from(
+      `{"object":"page","entry":[{"id":"${PAGE}","time":1,"messaging":[{"sender":{"id":"${psid}"},"recipient":{"id":"${PAGE}"},"timestamp":1,"message":{"mid":"m-${psid}","text":"D\\u1ea7u g\\u1ed9i"}}]}]}`,
+    );
+    const signature = `SHA256=${messenger.signBody(raw).slice(7).toUpperCase()}`;
+    const calls = [];
+    const original = messenger.graphHttp.post;
+    messenger.graphHttp.post = async () => {
+      calls.push(1);
+      return { status: 200, data: { message_id: 'should-not-send' } };
+    };
+    try {
+      const res = await new Promise((resolve, reject) => {
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port: rawPort,
+          path: '/messenger/webhook',
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json; charset=UTF-8',
+            'content-length': raw.length,
+            'x-hub-signature-256': signature,
+          },
+        }, (response) => {
+          const chunks = [];
+          response.on('data', (c) => chunks.push(c));
+          response.on('end', () => resolve({
+            status: response.statusCode,
+            body: Buffer.concat(chunks).toString('utf8'),
+          }));
+        });
+        req.on('error', reject);
+        req.write(raw);
+        req.end();
+      });
+      assert.equal(res.status, 200);
+      assert.equal(calls.length, 0);
+      const draft = await draftFor(`fb_${psid}`);
+      assert.ok(draft, 'escaped unicode payload must draft from the raw bytes');
+      assert.equal(draft.approval_status, 'PENDING_REVIEW');
+      assert.equal(draft.channel, 'messenger');
+      assert.match(draft.customer_intent, /Dầu gội/);
+    } finally {
+      messenger.graphHttp.post = original;
       await new Promise((resolve) => rawServer.close(resolve));
     }
   });
