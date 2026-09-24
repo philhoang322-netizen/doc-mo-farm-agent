@@ -128,6 +128,7 @@
           channel: 'zalo',
           sales_channel: salesChannel,
           customer_name: data.customer_name,
+          customer_query: data.customer_query,
           message_type: data.message_type,
           template_name: data.template_name,
           draft_reply: data.draft_reply,
@@ -446,6 +447,9 @@
     }));
     if (d.pii_note) {
       form.appendChild(el('p', { class: 'hint', text: d.pii_note }));
+    }
+    if (d.customer_query) {
+      form.appendChild(el('p', { class: 'hint', text: 'Câu khách: ' + d.customer_query }));
     }
 
     if (needsHumanTicket(d)) {

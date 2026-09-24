@@ -17,6 +17,7 @@ const audit = require('./audit');
 const zaloService = require('./zaloService');
 const botService = require('./zaloBotService');
 const messenger = require('./messenger');
+const trainingLog = require('./trainingLog');
 
 const STATUSES = ['PENDING_REVIEW', 'APPROVED', 'REJECTED', 'SENT'];
 const STATUS_SET = new Set(STATUSES);
@@ -47,6 +48,7 @@ const LIMITS = {
   qr_image_url: 1000,
   pii_note: 300,
   template_name: 120,
+  customer_query: 2000,
 };
 
 const EDITABLE = [
@@ -110,6 +112,8 @@ function blankDraft(fields) {
     template_name: fields.template_name,
     sales_channel: fields.sales_channel || 'farm',
     delivery_phase: null,
+    customer_query: fields.customer_query || fields.customer_intent || null,
+    ai_draft_version: fields.draft_reply,
   };
 }
 
@@ -174,6 +178,8 @@ function fromRow(row) {
     template_name: row.template_name || null,
     sales_channel: row.sales_channel || 'farm',
     delivery_phase: row.delivery_phase || null,
+    customer_query: row.customer_query || null,
+    ai_draft_version: row.ai_draft_version || null,
   });
 }
 
@@ -205,7 +211,9 @@ CREATE TABLE IF NOT EXISTS outbound_drafts (
     message_type        TEXT,
     template_name       TEXT,
     sales_channel       TEXT,
-    delivery_phase      TEXT
+    delivery_phase      TEXT,
+    customer_query      TEXT,
+    ai_draft_version    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_outbound_drafts_status_created
     ON outbound_drafts (approval_status, created_at DESC);
@@ -213,6 +221,8 @@ ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS message_type TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS template_name TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS sales_channel TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS delivery_phase TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS customer_query TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS ai_draft_version TEXT;
 CREATE TABLE IF NOT EXISTS sales_channels (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
@@ -231,10 +241,11 @@ async function ensureReady() {
       await db.pool.query(
         'ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS pii_note TEXT'
       );
-      return;
+    } else {
+      await loadFile();
+      await loadChannels();
     }
-    await loadFile();
-    await loadChannels();
+    await trainingLog.ensureReady();
   })().catch((err) => {
     ready = null;
     throw err;
@@ -363,6 +374,7 @@ function fieldsFrom(body, { requireReply }) {
     pii_note: cleanText('pii_note', body.pii_note),
     message_type: cleanMessageType(body.message_type),
     template_name: cleanText('template_name', body.template_name),
+    customer_query: cleanText('customer_query', body.customer_query),
   };
 }
 
@@ -406,9 +418,10 @@ async function insertDraft(draft) {
        customer_user_id, customer_intent, assigned_department, ticket_status,
        draft_reply, approval_status, kiot_summary, invoice_code, customer_code,
        qr_image_url, pii_note, reviewed_at, sent_at, send_error, send_via, send_hook,
-       message_type, template_name, sales_channel, delivery_phase
+       message_type, template_name, sales_channel, delivery_phase,
+       customer_query, ai_draft_version
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28
      ) RETURNING *`,
     [
       draft.id, draft.created_at, draft.updated_at, draft.channel,
@@ -420,6 +433,7 @@ async function insertDraft(draft) {
       draft.reviewed_at, draft.sent_at, draft.send_error, draft.send_via,
       draft.send_hook, draft.message_type, draft.template_name,
       draft.sales_channel, draft.delivery_phase,
+      draft.customer_query, draft.ai_draft_version,
     ]
   );
   return fromRow(r.rows[0]);
@@ -439,7 +453,8 @@ async function saveDraft(draft) {
        draft_reply=$9, approval_status=$10, kiot_summary=$11, invoice_code=$12,
        customer_code=$13, qr_image_url=$14, pii_note=$15, reviewed_at=$16, sent_at=$17,
        send_error=$18, send_via=$19, send_hook=$20, updated_at=$21,
-       message_type=$22, template_name=$23, sales_channel=$24, delivery_phase=$25
+       message_type=$22, template_name=$23, sales_channel=$24, delivery_phase=$25,
+       customer_query=$26, ai_draft_version=$27
      WHERE id=$1
      RETURNING *`,
     [
@@ -450,6 +465,7 @@ async function saveDraft(draft) {
       draft.qr_image_url, draft.pii_note, draft.reviewed_at, draft.sent_at, draft.send_error,
       draft.send_via, draft.send_hook, draft.updated_at,
       draft.message_type, draft.template_name, draft.sales_channel, draft.delivery_phase,
+      draft.customer_query, draft.ai_draft_version,
     ]
   );
   return fromRow(r.rows[0]);
@@ -913,6 +929,11 @@ async function updateDraft(id, body, ctx = {}) {
       next.delivery_phase = 'sending';
       next.send_error = null;
       await saveDraft(next);
+      try {
+        await trainingLog.storeIfEdited(next);
+      } catch (e) {
+        console.error('Training log failed:', e.message);
+      }
       send = await deliver(next);
       next.delivery_phase = null;
       if (send.pendingAdapter) {
