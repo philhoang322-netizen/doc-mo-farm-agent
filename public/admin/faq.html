@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#0f5a35">
+<title>Kiến thức FAQ — {{PRODUCT_NAME}}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/admin/invoices.css">
+<link rel="stylesheet" href="/admin/faq.css">
+</head>
+<body>
+<header class="bar">
+  <a class="back" href="/admin">← Hàng chờ</a>
+  <h1>Kiến thức FAQ</h1>
+</header>
+<section class="card rules" aria-label="Quy tắc bot">
+  <h2>Quy tắc Văn Mơ</h2>
+  <p class="hint" id="rules-meta">Đang tải phiên bản…</p>
+  <p class="hint">Nạp sau deploy: POST /admin/api/faq/rules với JSON {"rules":"nội dung bot_rules.md","system_prompt":"nội dung system_prompt.txt"}. Một trong hai trường là đủ. Ô bên dưới vẫn gửi {"body":"…"}.</p>
+  <textarea id="rules" rows="8" maxlength="100000" aria-label="Quy tắc bot"></textarea>
+  <div class="filter-actions">
+    <button type="button" class="btn primary" id="save-rules">Lưu quy tắc</button>
+    <label class="btn file-btn">Tệp quy tắc
+      <input id="rules-file" type="file" accept=".md,.txt,text/markdown,text/plain">
+    </label>
+    <label class="btn file-btn">Tệp prompt
+      <input id="prompt-file" type="file" accept=".md,.txt,text/markdown,text/plain">
+    </label>
+    <button type="button" class="btn" id="import-rules" disabled>Nạp hai tệp</button>
+  </div>
+</section>
+<form id="filters" class="filters">
+  <label class="q">Tìm mã, câu hỏi, sản phẩm
+    <input id="q" name="q" type="search" placeholder="Mã hoặc câu hỏi" autocomplete="off">
+  </label>
+  <div class="filter-actions">
+    <button type="submit" class="btn primary">Lọc</button>
+    <label class="btn file-btn">Chọn CSV
+      <input id="file" type="file" accept=".csv,text/csv">
+    </label>
+    <button type="button" class="btn" id="preview" disabled>Xem trước</button>
+    <button type="button" class="btn primary" id="confirm" disabled>Thay toàn bộ</button>
+  </div>
+</form>
+<p class="hint">Nhận tệp 16 cột (id, nhom_san_pham, san_pham, nhom_cau_hoi, cau_hoi, bien_the_tu_khoa, y_dinh_khach, cau_tra_loi_chuan, gia_dieu_kien, hanh_dong, do_tin_cay, trang_thai_xac_minh, ly_do_can_xac_minh, nguon_chinh, moc_nguon, ghi_chu_noi_bo) hoặc cột tiếng Anh cùng nghĩa. Hành động hoặc xác minh lạ bị từ chối, không gán tự động. File FAQ không nằm trong kho mã.</p>
+<p id="note" class="note" role="status"></p>
+<div id="list" class="list"></div>
+<section class="card editor" id="editor" hidden>
+  <h2 id="editor-title">Sửa câu trả lời</h2>
+  <textarea id="answer" rows="6" aria-label="Câu trả lời"></textarea>
+  <button type="button" class="btn primary" id="save-answer">Lưu câu trả lời</button>
+</section>
+<script src="/admin/faq.js"></script>
+</body>
+</html>

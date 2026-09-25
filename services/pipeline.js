@@ -26,6 +26,7 @@ const stockGate = require('./stockGate');
 const confidenceGate = require('./confidenceGate');
 const audit = require('./audit');
 const triage = require('./triage');
+const faqDraft = require('./faqDraft');
 
 const FALLBACK_REPLY =
   'Dạ farm đang bận xử lý một chút, bạn nhắn lại giúp mình sau ít phút nha 🌿 ' +
@@ -198,6 +199,31 @@ async function handleMessage(p) {
           reason: edge.reason,
           signal: 'low_confidence',
         }, log);
+      }
+
+      const grounded = await faqDraft.compose(p.text);
+      if (grounded && grounded.handled) {
+        const release = await hitl.releaseToCustomer(p, grounded.text, {
+          intent: p.text,
+          forceHold: true,
+          ack: false,
+          rewriteDv: false,
+          triage: grounded.triage,
+          needsHuman: grounded.reviewer.handoff === true,
+          reason: grounded.reviewer.reason,
+          urgency: grounded.reviewer.handoff ? 'high' : undefined,
+          route: grounded.reviewer.handoff ? 'needs-human' : undefined,
+          ticket_status: grounded.reviewer.handoff ? 'Cần người thật' : undefined,
+          faq_review: grounded.reviewer,
+        });
+        return {
+          ok: true,
+          held: !!release.held,
+          sent: false,
+          draftId: release.draft && release.draft.id,
+          faq: true,
+          triage: grounded.triage && grounded.triage.level,
+        };
       }
 
       const { text: reply, tokensUsed, handoff, newOrder, stockHold, confidence, piiNote } =

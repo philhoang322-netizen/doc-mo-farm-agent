@@ -161,6 +161,7 @@ async function releaseToCustomer(p, text, extra = {}) {
     pii_note: clip(extra.pii_note, 300),
     triage_level: triaged.level,
     triage_label: triaged.label,
+    faq_review: extra.faq_review || null,
   });
   if (heardPhone) {
     try {

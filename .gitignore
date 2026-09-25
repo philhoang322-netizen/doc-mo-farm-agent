@@ -15,3 +15,9 @@ Zalo account info/
 *.doc
 *.pdf
 ~$*
+
+# FAQ đã duyệt, giá và kết quả xét nghiệm — nhập sau khi deploy, không commit.
+/faq.csv
+/faq.md
+/open_issues.md
+/uploads/

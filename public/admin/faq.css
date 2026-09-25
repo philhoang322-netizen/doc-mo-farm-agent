@@ -1,0 +1,92 @@
+.rules h2, .editor h2 { margin: 0 0 8px; font-size: 18px; color: var(--green); }
+.hint { color: var(--soft); font-size: 13px; margin: 0 0 8px; }
+textarea {
+  width: 100%;
+  font: inherit;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: #fff;
+  color: var(--ink);
+}
+.btn:disabled { opacity: 0.45; cursor: default; }
+.file-btn { position: relative; overflow: hidden; cursor: pointer; }
+.file-btn input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  width: 100%;
+  min-height: 44px;
+}
+.faq-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.faq-open {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.faq-code {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-weight: 700;
+  color: var(--green);
+}
+.faq-q {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.faq-flag, .faq-verify {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+}
+.faq-flag.off { color: #8d2f2f; }
+.switch {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+.switch.on { background: #e8f3ec; color: var(--green); border-color: #b7d7c4; }
+.card .faq-row { min-height: 44px; }
+@media (min-width: 900px) {
+  .filters { flex-wrap: nowrap; }
+  .filters > .q { flex: 1 1 auto; }
+  .filter-actions { margin-left: auto; flex-wrap: nowrap; }
+}

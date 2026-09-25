@@ -5,6 +5,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const express = require('express');
 const auth = require('./adminAuth');
 const db = require('./database');
 const drafts = require('./drafts');
@@ -22,6 +23,7 @@ const access = require('./access');
 const adminUsers = require('./adminUsers');
 const invoices = require('./invoices');
 const invoiceImage = require('./invoiceImage');
+const faqAdmin = require('./faqAdmin');
 
 const PUBLIC = path.join(__dirname, '..', 'public', 'admin');
 
@@ -1021,6 +1023,19 @@ function mount(app) {
   app.get('/admin/audit.js', requirePageAsset, sendAsset('audit.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/invoices.css', requirePageAsset, sendAsset('invoices.css', 'text/css; charset=utf-8'));
   app.get('/admin/invoices.js', requirePageAsset, sendAsset('invoices.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/faq.css', requirePageAsset, sendAsset('faq.css', 'text/css; charset=utf-8'));
+  app.get('/admin/faq.js', requirePageAsset, sendAsset('faq.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/faq', faqAdmin.page);
+  app.get('/admin/api/faq/rules', requireApi, faqAdmin.getRules);
+  app.post('/admin/api/faq/rules', requireApi, faqAdmin.saveRules);
+  app.post(
+    '/admin/api/faq/import',
+    requireApi,
+    express.text({ type: ['text/csv', 'text/plain', 'application/csv'], limit: '3mb' }),
+    faqAdmin.importCsv
+  );
+  app.get('/admin/api/faq', requireApi, faqAdmin.list);
+  app.patch('/admin/api/faq/:code', requireApi, faqAdmin.update);
   app.get('/admin/invoices', invoicesPage);
   app.get('/admin/api/invoices.csv', requireApi, invoicesCsv);
   app.get('/admin/api/invoices', requireApi, invoicesList);
