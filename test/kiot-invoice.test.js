@@ -12,7 +12,9 @@ process.env.DATABASE_URL = '';
 process.env.DRAFTS_JSON_PATH = path.join(dir, 'drafts.json');
 process.env.NODE_ENV = 'test';
 process.env.ADMIN_PASSWORD = 'secret';
-process.env.PUBLIC_URL = 'https://docmofarm.com';
+delete process.env.PUBLIC_URL;
+delete process.env.RAILWAY_PUBLIC_DOMAIN;
+delete process.env.INVOICE_LINK_SECRET;
 process.env.KIOTVIET_CLIENT_ID = 'test-client';
 process.env.KIOTVIET_CLIENT_SECRET = 'test-secret';
 process.env.KIOTVIET_RETAILER = 'nongsansachdn';
@@ -176,6 +178,48 @@ after(() => {
   zaloService.sendImageMessage = real.zaloImage;
 });
 
+const PUBLIC_APP = 'https://doc-mo-farm-agent-production.up.railway.app';
+
+test('invoice links use this server, not the docmofarm.com storefront', () => {
+  const prev = {
+    publicUrl: process.env.PUBLIC_URL,
+    railway: process.env.RAILWAY_PUBLIC_DOMAIN,
+  };
+  try {
+    delete process.env.PUBLIC_URL;
+    delete process.env.RAILWAY_PUBLIC_DOMAIN;
+    assert.ok(invoices.imageUrl('HD011637').startsWith(`${PUBLIC_APP}/hd/HD011637/anh?t=`));
+    process.env.RAILWAY_PUBLIC_DOMAIN = 'agent.example.railway.app';
+    assert.ok(invoices.pageUrl('HD9').startsWith('https://agent.example.railway.app/hd/HD9?t='));
+    process.env.PUBLIC_URL = 'https://inbox.example/';
+    assert.ok(invoices.imageUrl('HD9').startsWith('https://inbox.example/hd/HD9/anh?t='));
+    assert.equal(invoices.imageUrl('HD9').includes('docmofarm.com'), false);
+  } finally {
+    if (prev.publicUrl == null) delete process.env.PUBLIC_URL;
+    else process.env.PUBLIC_URL = prev.publicUrl;
+    if (prev.railway == null) delete process.env.RAILWAY_PUBLIC_DOMAIN;
+    else process.env.RAILWAY_PUBLIC_DOMAIN = prev.railway;
+  }
+});
+
+test('INVOICE_LINK_SECRET keeps sent links valid after the admin password changes', () => {
+  const previousPassword = process.env.ADMIN_PASSWORD;
+  try {
+    delete process.env.INVOICE_LINK_SECRET;
+    const fromPassword = invoices.sign('HD011637');
+    assert.equal(invoices.verify('HD011637', fromPassword), true);
+    process.env.INVOICE_LINK_SECRET = 'link-secret';
+    const fromSecret = invoices.sign('HD011637');
+    assert.notEqual(fromSecret, fromPassword);
+    process.env.ADMIN_PASSWORD = 'rotated';
+    assert.equal(invoices.verify('HD011637', fromSecret), true);
+    assert.equal(invoices.verify('HD011637', fromPassword), false);
+  } finally {
+    delete process.env.INVOICE_LINK_SECRET;
+    process.env.ADMIN_PASSWORD = previousPassword;
+  }
+});
+
 test('CRC-16/CCITT-FALSE matches the EMV test vector and a Vietcombank VietQR', () => {
   assert.equal(emvco.crc16('123456789'), '29B1');
   const payload = emvco.buildPayload({ amount: 100000, addInfo: 'HD011637' });
@@ -232,8 +276,9 @@ test('confirm creates an invoice, keeps the draft pending, and does not send', a
     assert.equal(body.draft.send_via, null);
     assert.match(body.draft.draft_reply, /nội dung CK: HD011637/);
     assert.match(body.draft.draft_reply, /1058 43 7590/);
-    assert.match(body.draft.draft_reply, /\/hd\/HD011637\?t=/);
-    assert.match(body.draft.qr_image_url, /\/hd\/HD011637\/anh\?t=/);
+    assert.ok(body.draft.draft_reply.includes(`${PUBLIC_APP}/hd/HD011637?t=`));
+    assert.ok(body.draft.qr_image_url.startsWith(`${PUBLIC_APP}/hd/HD011637/anh?t=`));
+    assert.equal(body.draft.qr_image_url.includes('docmofarm.com'), false);
     assert.equal(sent.texts.length, 0);
     assert.equal(sent.images.length, 0);
     const row = await invoices.getByCode('HD011637');
@@ -245,7 +290,7 @@ test('confirm creates an invoice, keeps the draft pending, and does not send', a
     assert.equal(row.items[0].name, 'Xúc xích');
 
     const token = body.draft.qr_image_url.split('t=')[1];
-    const png = await fetch(`${base}/hd/HD011637/anh?t=${token}`);
+    const png = await fetch(`${base}/hd/HD011637/anh?t=${token}`, { headers: {} });
     assert.equal(png.status, 200);
     const bytes = Buffer.from(await png.arrayBuffer());
     assert.equal(bytes.readUInt32BE(0), 0x89504e47);
@@ -258,6 +303,46 @@ test('confirm creates an invoice, keeps the draft pending, and does not send', a
 
     const logs = await audit.list({ entity_id: 'HD011637', action: 'invoice.created' });
     assert.equal(logs.logs.length, 1);
+  } finally {
+    await stop(server);
+  }
+});
+
+test('Messenger can fetch the invoice image with the token and no admin login', async () => {
+  installMocks();
+  invoices.resetForTests();
+  const server = await appServer();
+  try {
+    const port = server.address().port;
+    const base = `http://127.0.0.1:${port}`;
+    const draft = await seedDraft({ customer_user_id: 'fb_public_png' });
+    const created = await fetch(`${base}/admin/api/drafts/${draft.id}/kiotviet`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({
+        confirm: true,
+        document: 'invoice',
+        phone: '0901234567',
+        customer_name: 'Chị Lan',
+        lines: [{ sku: 'SP-XX', product_name: 'Xúc xích', quantity: 1 }],
+        actor_name: 'Phước',
+      }),
+    });
+    const body = await created.json();
+    const imageUrl = new URL(body.draft.qr_image_url);
+    assert.equal(imageUrl.origin, PUBLIC_APP);
+    assert.equal(imageUrl.pathname, '/hd/HD011637/anh');
+    const token = imageUrl.searchParams.get('t');
+    assert.ok(token);
+    const open = await fetch(`${base}/hd/HD011637/anh?t=${encodeURIComponent(token)}`);
+    assert.equal(open.status, 200);
+    assert.match(open.headers.get('content-type') || '', /image\/png/);
+    const bytes = Buffer.from(await open.arrayBuffer());
+    assert.equal(bytes.readUInt32BE(0), 0x89504e47);
+    const bare = await fetch(`${base}/hd/HD011637/anh`);
+    assert.equal(bare.status, 404);
+    const adminOnly = await fetch(`${base}/admin/api/invoices/HD011637/anh`);
+    assert.equal(adminOnly.status, 401);
   } finally {
     await stop(server);
   }
@@ -372,7 +457,8 @@ test('Duyệt & Gửi is the only send, and a failed image falls back to the sig
     assert.equal(sentBody.send.sent, true);
     assert.match(sentBody.send.error, /chưa gửi được ảnh/);
     assert.equal(sent.images.length, 1);
-    assert.match(sent.images[0].url, /\/hd\/HD011637\/anh/);
+    assert.ok(sent.images[0].url.startsWith(`${PUBLIC_APP}/hd/HD011637/anh?t=`));
+    assert.equal(sent.images[0].url.includes('docmofarm.com'), false);
     assert.ok(sent.texts.some(row => /\/hd\/HD011637\?t=/.test(row.text)));
     const row = await invoices.getByCode('HD011637');
     assert.ok(row.sent_at);

@@ -2,7 +2,12 @@
  * Invoices and orders created from the review inbox.
  * DATABASE_URL set → kiot_invoices (migration 030). Otherwise memory,
  * so tests and a laptop without Postgres still record the sale.
- * The public /hd/<code>?t= link is an HMAC of the code with ADMIN_PASSWORD.
+ * The public /hd/<code>?t= link is an HMAC of the code. The key is
+ * INVOICE_LINK_SECRET when set, otherwise ADMIN_PASSWORD. Set the dedicated
+ * secret before customers receive links: rotating ADMIN_PASSWORD must not
+ * invalidate invoices already sent.
+ * The link host is PUBLIC_URL, else https://${RAILWAY_PUBLIC_DOMAIN}, else
+ * the Railway app. docmofarm.com is the storefront and does not serve /hd.
  */
 const crypto = require('crypto');
 const db = require('./database');
@@ -110,18 +115,32 @@ function fromRow(row) {
   };
 }
 
+const RAILWAY_APP = 'https://doc-mo-farm-agent-production.up.railway.app';
+
 function origin() {
-  return String(process.env.PUBLIC_URL || 'https://docmofarm.com').replace(/\/$/, '');
+  const explicit = String(process.env.PUBLIC_URL || '').trim();
+  if (explicit) return explicit.replace(/\/$/, '');
+  const railway = String(process.env.RAILWAY_PUBLIC_DOMAIN || '')
+    .trim()
+    .replace(/^https?:\/\//, '')
+    .replace(/\/$/, '');
+  if (railway) return `https://${railway}`;
+  return RAILWAY_APP;
+}
+
+function linkSecret() {
+  const dedicated = String(process.env.INVOICE_LINK_SECRET || '').trim();
+  if (dedicated) return dedicated;
+  return String(process.env.ADMIN_PASSWORD || '');
 }
 
 function sign(code) {
-  const secret = process.env.ADMIN_PASSWORD || '';
-  return crypto.createHmac('sha256', secret).update(`hd:${code}`).digest('base64url');
+  return crypto.createHmac('sha256', linkSecret()).update(`hd:${code}`).digest('base64url');
 }
 
 function verify(code, token) {
   const clean = cleanCode(code);
-  if (!clean || !token || !process.env.ADMIN_PASSWORD) return false;
+  if (!clean || !token || !linkSecret()) return false;
   const expected = sign(clean);
   const a = Buffer.from(String(token));
   const b = Buffer.from(expected);

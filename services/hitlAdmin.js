@@ -637,6 +637,8 @@ async function publicInvoice(req, res) {
   }
 }
 
+// Public on purpose: Messenger asks Facebook to fetch this URL with no
+// admin cookie. The HMAC in ?t= is the only gate.
 async function publicInvoiceImage(req, res) {
   const code = String(req.params.code || '');
   if (!invoices.verify(code, req.query.t)) return res.status(404).end();

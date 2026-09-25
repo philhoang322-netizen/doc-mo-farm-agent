@@ -1261,7 +1261,9 @@ async function deliver(draft) {
           error: `Facebook chưa gửi được: ${detail}. Bản nháp giữ ở APPROVED. Hook: services/messenger.js sendText(psid, text).`,
         };
       }
-      const fail = await sendInvoicePicture(draft, ({ url }) => messenger.sendImage(psid, url));
+      // Meta downloads payload.url itself. qr_image_url is the public
+// /hd/<code>/anh?t= link on this server (token, no admin session).
+const fail = await sendInvoicePicture(draft, ({ url }) => messenger.sendImage(psid, url));
       const qrError = await noteImageFallback(extra => messenger.sendText(psid, extra), text, fail);
       return { ok: true, sent: true, via: 'messenger', hook, error: qrError };
     } catch (e) {
