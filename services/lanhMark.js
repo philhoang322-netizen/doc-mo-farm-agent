@@ -26,8 +26,29 @@ function textHasLanh(text) {
   return tokens(text).some(isLanhToken);
 }
 
+/**
+ * Same predicate as textHasLanh, with the original substring and offsets.
+ * Read-only. Does not change what counts as a match.
+ */
+function findLanhTokens(text) {
+  const src = String(text || '');
+  const hits = [];
+  const re = /[\p{L}\p{N}]+/gu;
+  let match;
+  while ((match = re.exec(src))) {
+    if (!isLanhToken(match[0])) continue;
+    hits.push({
+      token: match[0],
+      start: match.index,
+      end: match.index + match[0].length,
+    });
+  }
+  return hits;
+}
+
 module.exports = {
   tokens,
   isLanhToken,
   textHasLanh,
+  findLanhTokens,
 };
