@@ -186,6 +186,19 @@ async function mergeCustomers(survivorId, mergedId, matchedOn = 'phone') {
       [survivorId, mergedId]
     );
 
+    await client.query('SAVEPOINT channel_names_merge');
+    try {
+      await client.query(
+        `UPDATE customers s SET channel_names =
+           COALESCE(s.channel_names, '{}'::jsonb) || COALESCE(m.channel_names, '{}'::jsonb)
+         FROM customers m WHERE s.id=$1 AND m.id=$2`,
+        [survivorId, mergedId]
+      );
+    } catch (err) {
+      await client.query('ROLLBACK TO SAVEPOINT channel_names_merge');
+      if (err.code !== '42703') throw err;
+    }
+
     await client.query(
       'INSERT INTO customer_merges (survivor_id, merged_id, matched_on) VALUES ($1,$2,$3)',
       [survivorId, mergedId, matchedOn]

@@ -33,6 +33,7 @@ const real = {
   createSaleDocument: kiotviet.createSaleDocument,
   listProductsForMatch: kiotviet.listProductsForMatch,
   searchProducts: kiotviet.searchProducts,
+  findCustomerByPhone: kiotviet.findCustomerByPhone,
 };
 
 const CATALOG = [
@@ -76,8 +77,18 @@ function installMocks(stock) {
       return sum + (product ? product.price * Number(line.quantity) : 0);
     }, 0);
     const total = Math.max(0, sub - Number(input.discount || 0) + Number(input.shippingFee || 0));
-    return { ok: true, code, total, documentType: input.documentType || 'invoice', branchId: 26947 };
+    return {
+      ok: true,
+      code,
+      total,
+      documentType: input.documentType || 'invoice',
+      branchId: 26947,
+      customerId: input.customerId || null,
+      customerCode: input.customerCode || null,
+      customerName: input.customerName || null,
+    };
   };
+  kiotviet.findCustomerByPhone = async () => null;
 }
 
 function appServer() {
@@ -132,6 +143,7 @@ after(() => {
   kiotviet.createSaleDocument = real.createSaleDocument;
   kiotviet.listProductsForMatch = real.listProductsForMatch;
   kiotviet.searchProducts = real.searchProducts;
+  kiotviet.findCustomerByPhone = real.findCustomerByPhone;
   delete process.env.KIOTVIET_BRANCH_ID;
 });
 
@@ -255,6 +267,45 @@ test('confirm creates an invoice, prefills the reply, and does not send it', asy
     assert.equal(logs.logs[0].actor, 'manager:Hoàng Công Phước');
     assert.match(JSON.stringify(logs.logs[0].before), /xúc xích và nước nghệ|ghi nhận/i);
     assert.equal(logs.logs[0].meta.kiot_code, 'HD011700');
+  } finally {
+    await stop(server);
+  }
+});
+
+test('confirm stores the new Kiot customer code on the conversation header', async () => {
+  installMocks();
+  const server = await appServer();
+  try {
+    const port = server.address().port;
+    const base = `http://127.0.0.1:${port}`;
+    const draft = await seedDraft({ customer_user_id: 'fb_kiot_code', customer_phone: '0907776666' });
+    const created = await fetch(`${base}/admin/api/drafts/${draft.id}/kiotviet`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({
+        confirm: true,
+        document: 'invoice',
+        customer_name: 'Chị Lan',
+        phone: '0907776666',
+        kiot_customer_id: 7,
+        kiot_customer_code: 'KH000123',
+        lines: [{ sku: 'SP-XX', product_name: 'Xúc xích', quantity: 1 }],
+        expected_total: 85000,
+      }),
+    });
+    assert.equal(created.status, 200);
+    const body = await created.json();
+    assert.equal(body.created, true);
+    assert.equal(body.customer_code, 'KH000123');
+    assert.equal(calls[0].customerId, 7);
+    assert.equal(calls[0].customerCode, 'KH000123');
+    assert.equal(body.draft.customer_code, 'KH000123');
+
+    const list = await fetch(`${base}/admin/api/drafts?kenh=farm`, { headers: authHeaders() });
+    const rows = await list.json();
+    const row = rows.drafts.find(item => item.id === draft.id);
+    assert.ok(row);
+    assert.equal(row.channel_names[0].text, 'Tên Kiot: Chị Lan · Mã KH: KH000123');
   } finally {
     await stop(server);
   }

@@ -13,6 +13,7 @@ const shipping = require('./shipping');
 const catalog = require('./catalog');
 const db = require('./database');
 const quickEntry = require('./quickEntry');
+const channelNames = require('./channelNames');
 
 const BANK_BLOCK = 'HTX Nong Trai Doc Mo\nVCB 1058 43 7590';
 
@@ -192,10 +193,23 @@ async function prefill(id) {
   const text = [draft.customer_query, draft.customer_intent, draft.draft_reply].filter(Boolean).join('\n');
   const ship = shippingFeeFor(facts.address);
   const suggested = suggestLines(text);
+  let names = [];
+  try {
+    names = await channelNames.forDraft({ ...draft, customer_phone: facts.phone || draft.customer_phone });
+  } catch (_) { names = []; }
+  const kiotLine = names.find(item => item && item.source === 'kiot');
+  const chosen = channelNames.formName({
+    kiotName: kiotLine && kiotLine.name,
+    channelNames: names,
+    draftName: facts.name || '',
+  });
   return {
     status: 200,
     body: {
-      customer_name: facts.name || '',
+      customer_name: chosen.name,
+      name_hint: chosen.hint,
+      kiot_customer_id: kiotLine && kiotLine.id ? kiotLine.id : null,
+      kiot_customer_code: kiotLine && kiotLine.code ? kiotLine.code : '',
       phone: facts.phone || '',
       address: facts.address || '',
       shipping_fee: ship,
@@ -509,9 +523,14 @@ async function prepareOrCreate(id, body, actorName) {
       note || null,
     ].filter(Boolean).join(' | ').slice(0, 500);
 
+    let customerComment = '';
+    try {
+      customerComment = channelNames.kiotComment(await channelNames.forDraft(draft));
+    } catch (_) { customerComment = ''; }
     const created = await kiotviet.createSaleDocument({
       documentType: kind,
       customerName: customerName || draft.customer_name,
+      customerComment,
       phone,
       address,
       note,
@@ -523,6 +542,8 @@ async function prepareOrCreate(id, body, actorName) {
         quantity: line.quantity,
       })),
       description,
+      customerId: body.kiot_customer_id,
+      customerCode: body.kiot_customer_code,
     });
     if (!created || !created.ok) {
       return {
@@ -556,13 +577,34 @@ async function prepareOrCreate(id, body, actorName) {
       actor_name: actorName || '',
     };
     if (draft.approval_status !== 'SENT') patch.draft_reply = reply;
-    if (!draft.customer_phone) patch.customer_phone = phone;
+    const kiotCode = created.customerCode || body.kiot_customer_code || '';
+    const kiotId = created.customerId || body.kiot_customer_id || '';
+    const samePhone = db.normalizePhone(draft.customer_phone) && db.normalizePhone(draft.customer_phone) === db.normalizePhone(phone);
+    if (!draft.customer_phone || (kiotCode && phone && !samePhone)) patch.customer_phone = phone;
     if (!draft.customer_name && customerName) patch.customer_name = customerName;
+    if (!draft.customer_code && kiotCode) patch.customer_code = String(kiotCode).slice(0, 40);
+    try {
+      await channelNames.rememberKiot(draft.customer_user_id, {
+        id: kiotId,
+        code: kiotCode,
+        name: created.customerName || customerName || draft.customer_name,
+        phone,
+      });
+    } catch (err) {
+      console.error('Kiot customer code save skipped:', err.message);
+    }
 
     let saved = null;
     try {
       const updated = await drafts.updateDraft(draft.id, patch, { actorName });
       saved = updated && updated.draft;
+      if (saved) {
+        saved = await drafts.setInboxStatus(saved.id, 'bought', {
+          actor: audit.managerActor(actorName),
+          auto: true,
+          orderCode: created.code,
+        }) || saved;
+      }
     } catch (e) {
       return {
         status: 200,
@@ -612,6 +654,7 @@ async function prepareOrCreate(id, body, actorName) {
         code: created.code,
         total: created.total,
         document: created.documentType || kind,
+        customer_code: kiotCode || null,
         summary,
         draft: saved,
         low_stock: !!low,

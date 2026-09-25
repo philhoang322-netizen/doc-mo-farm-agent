@@ -16,7 +16,7 @@
 <header class="top">
   <div class="brand">
     <h1><span id="product-name">{{PRODUCT_NAME}}</span> <span class="ver" id="app-version">{{VERSION_LABEL}}</span></h1>
-    <p>Tin chỉ gửi khi bạn bấm Duyệt và gửi. Lọc nhanh Nóng / Khẩn / Thường.</p>
+    <p>Tin chỉ gửi khi bạn bấm Duyệt và gửi. Nhóm Zalo OA, FB-Sale và FB-DV.</p>
   </div>
   <div class="top-actions">
     <div class="field actor-field">
@@ -31,6 +31,13 @@
   </div>
 </header>
 <p id="storage" class="note warn" hidden></p>
+<div class="refresh-row" id="inbox-refresh">
+  <span id="updated-at" class="updated-at">Cập nhật lúc --:--</span>
+  <button type="button" id="new-indicator" class="new-pill" hidden>Có 0 tin mới — bấm để hiện</button>
+  <button type="button" id="refresh-now" class="btn btn-sm">Làm mới</button>
+  <button type="button" id="sync-missed" class="btn btn-sm">Đồng bộ tin bị sót</button>
+  <span id="sync-result" class="sync-result" role="status"></span>
+</div>
 
 <div class="channel-row">
   <div class="channel-group">
@@ -49,18 +56,23 @@
 <section class="queue-shell" aria-label="Hàng chờ duyệt">
   <div class="queue-head">
     <h2>Hàng chờ duyệt</h2>
-    <div class="filter-row" role="tablist" aria-label="Trạng thái">
-      <span class="filter-label">Trạng thái</span>
-      <button type="button" class="chip" role="tab" data-ops="pending" aria-selected="true">Chờ xử lý <span class="count"></span></button>
-      <button type="button" class="chip" role="tab" data-ops="success">Đã gửi <span class="count"></span></button>
-      <button type="button" class="chip" role="tab" data-ops="failure">Thất bại <span class="count"></span></button>
-      <button type="button" class="chip" role="tab" data-ops="rejected">Từ chối <span class="count"></span></button>
+    <div class="filter-row" id="legacy-ops" hidden>
+      <button type="button" class="chip" data-ops="pending">Chờ xử lý <span class="count"></span></button>
+      <button type="button" class="chip" data-ops="success">Đã gửi <span class="count"></span></button>
+      <button type="button" class="chip" data-ops="failure">Thất bại <span class="count"></span></button>
+      <button type="button" class="chip" data-ops="rejected">Từ chối <span class="count"></span></button>
     </div>
-    <div class="filter-row" id="platform-tabs" role="tablist" aria-label="Nền tảng nhắn tin">
-      <span class="filter-label">Tin từ</span>
-      <button type="button" class="chip" role="tab" data-platform="" aria-selected="true">Tất cả</button>
-      <button type="button" class="chip" role="tab" data-platform="zalo">Zalo OA <span class="count"></span></button>
-      <button type="button" class="chip" role="tab" data-platform="messenger">Messenger <span class="count"></span></button>
+    <div class="filter-row" id="group-tabs" role="tablist" aria-label="Nhóm hộp thư">
+      <span class="filter-label">Nhóm</span>
+      <button type="button" class="chip" role="tab" data-nhom="zalo" aria-selected="true">Zalo OA <span class="count"></span></button>
+      <button type="button" class="chip" role="tab" data-nhom="fb-sale">FB-Sale <span class="count"></span></button>
+      <button type="button" class="chip" role="tab" data-nhom="fb-dv">FB-DV <span class="count"></span></button>
+    </div>
+    <div class="filter-row" id="zalo-line" role="tablist" aria-label="Nhãn Zalo" hidden>
+      <span class="filter-label">Nhãn</span>
+      <button type="button" class="chip" role="tab" data-zline="" aria-selected="true">Tất cả</button>
+      <button type="button" class="chip" role="tab" data-zline="sale">Sale</button>
+      <button type="button" class="chip" role="tab" data-zline="dv">DV</button>
     </div>
     <div class="filter-row" id="triage-tabs" role="tablist" aria-label="Mức ưu tiên">
       <span class="filter-label">Mức</span>
@@ -110,6 +122,14 @@
     </div>
   </div>
   <div class="workspace">
+    <nav class="folders" id="folder-nav" aria-label="Thư mục trạng thái">
+      <button type="button" class="folder" data-folder="pending" aria-selected="true">Chờ xử lý <span class="count"></span></button>
+      <button type="button" class="folder" data-folder="sent">Đã gửi <span class="count"></span></button>
+      <button type="button" class="folder" data-folder="bought">Đã mua <span class="count"></span></button>
+      <button type="button" class="folder" data-folder="hesitant">Do dự <span class="count"></span></button>
+      <button type="button" class="folder" data-folder="declined">Từ chối <span class="count"></span></button>
+      <button type="button" class="folder folder-deleted" data-folder="deleted">Đã xóa <span class="count"></span></button>
+    </nav>
     <aside class="list" id="queue">
       <div id="list" class="list-scroll" aria-live="polite"></div>
     </aside>
@@ -120,6 +140,7 @@
 <p id="toast" class="toast" role="status" hidden></p>
 <noscript><p class="note warn">Trang này cần JavaScript để duyệt tin.</p></noscript>
 <script>window.OMNI_SALE={{BRAND_JSON}};</script>
+<script src="/admin/inbox-refresh.js"></script>
 <script src="/admin/review.js"></script>
 </body>
 </html>

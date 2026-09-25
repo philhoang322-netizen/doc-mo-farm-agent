@@ -10,11 +10,13 @@ const db = require('./database');
 const drafts = require('./drafts');
 const audit = require('./audit');
 const kiotInbox = require('./kiotInbox');
+const inboxSync = require('./inboxSync');
 const kiotviet = require('./kiotviet');
 const roster = require('./roster');
 const handover = require('./handover');
 const rosterPage = require('./rosterPage');
 const brand = require('./brand');
+const channelNames = require('./channelNames');
 
 const PUBLIC = path.join(__dirname, '..', 'public', 'admin');
 
@@ -214,17 +216,30 @@ function sendAsset(name, type) {
   };
 }
 
+async function attachChannelNames(payload) {
+  const rows = payload && payload.drafts;
+  if (!Array.isArray(rows)) return payload;
+  await Promise.all(rows.map(async (draft) => {
+    draft.channel_names = await channelNames.forDraft(draft);
+  }));
+  return payload;
+}
+
 async function list(req, res) {
   try {
     const q = req.query || {};
-    res.json(await drafts.listDrafts({
+    const payload = await drafts.listDrafts({
       status: typeof q.status === 'string' && q.status ? q.status : null,
       ops: typeof q.ops === 'string' && q.ops ? q.ops : null,
       type: typeof q.type === 'string' && q.type ? q.type : null,
       salesChannel: typeof q.kenh === 'string' && q.kenh ? q.kenh : null,
       triage: typeof q.triage === 'string' && q.triage ? q.triage : null,
       platform: typeof q.platform === 'string' && q.platform ? q.platform : null,
-    }));
+      nhom: typeof q.nhom === 'string' && q.nhom ? q.nhom : null,
+      zline: typeof q.zline === 'string' && q.zline ? q.zline : null,
+      hop: typeof q.hop === 'string' && q.hop ? q.hop : null,
+    });
+    res.json(await attachChannelNames(payload));
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : 'Không tải được danh sách' });
   }
@@ -273,6 +288,78 @@ async function create(req, res) {
     const status = e.status || 500;
     res.status(status).json({ error: e.status ? e.message : 'Không tạo được bản nháp' });
     if (!e.status) console.error('HITL create failed:', e.message);
+  }
+}
+
+async function moveLine(req, res) {
+  try {
+    const draft = await drafts.moveBizLine(req.params.id, req.body && req.body.biz_line, {
+      actor: audit.managerActor(actorNameFrom(req)),
+    });
+    if (!draft) return res.status(404).json({ error: 'Không thấy tin' });
+    res.json({ draft });
+  } catch (e) {
+    const status = e.status || 500;
+    res.status(status).json({ error: e.status ? e.message : 'Không chuyển được nhóm' });
+  }
+}
+
+async function removeDraft(req, res) {
+  try {
+    const draft = await drafts.softDelete(req.params.id, {
+      actor: audit.managerActor(actorNameFrom(req)),
+    });
+    if (!draft) return res.status(404).json({ error: 'Không thấy tin' });
+    res.json({ draft });
+  } catch (e) {
+    const status = e.status || 500;
+    res.status(status).json({ error: e.status ? e.message : 'Không xoá được tin' });
+  }
+}
+
+async function restoreOne(req, res) {
+  try {
+    const draft = await drafts.restoreDraft(req.params.id, {
+      actor: audit.managerActor(actorNameFrom(req)),
+    });
+    if (!draft) return res.status(404).json({ error: 'Không thấy tin' });
+    res.json({ draft });
+  } catch (e) {
+    const status = e.status || 500;
+    res.status(status).json({ error: e.status ? e.message : 'Không hoàn tác được' });
+  }
+}
+
+async function setFolder(req, res) {
+  try {
+    const draft = await drafts.setInboxStatus(req.params.id, req.body && req.body.inbox_status, {
+      actor: audit.managerActor(actorNameFrom(req)),
+      auto: false,
+      orderCode: req.body && req.body.order_code,
+    });
+    if (!draft) return res.status(404).json({ error: 'Không thấy tin' });
+    res.json({ draft });
+  } catch (e) {
+    const status = e.status || 500;
+    res.status(status).json({ error: e.status ? e.message : 'Không chuyển được thư mục' });
+  }
+}
+
+async function syncInbox(req, res) {
+  try {
+    const result = await inboxSync.syncMissed();
+    if (result.rate_limited) {
+      return res.status(429).json({
+        error: result.error,
+        retry_after_ms: result.retry_after_ms,
+        added: 0,
+        skipped: 0,
+      });
+    }
+    res.json(result);
+  } catch (e) {
+    console.error('inbox sync failed:', e.message);
+    res.status(500).json({ error: 'Không đồng bộ được' });
   }
 }
 
@@ -410,6 +497,19 @@ async function kiotQuick(req, res) {
   }
 }
 
+async function kiotCustomer(req, res) {
+  const phone = typeof req.query.phone === 'string' ? req.query.phone : '';
+  const draftId = typeof req.query.draft_id === 'string' ? req.query.draft_id : '';
+  try {
+    const draft = draftId ? await drafts.getDraft(draftId) : null;
+    const preview = await channelNames.previewPhone(draft, phone);
+    res.json(preview);
+  } catch (e) {
+    console.error('Kiot customer lookup failed:', e.message);
+    res.json({ name: '', code: '', id: null, channel_names: [] });
+  }
+}
+
 async function kiotCreate(req, res) {
   try {
     const result = await kiotInbox.prepareOrCreate(req.params.id, req.body, actorNameFrom(req));
@@ -449,6 +549,7 @@ function mount(app) {
   app.get('/admin/roster', rosterView);
   app.post('/admin/roster', rosterSave);
   app.get('/admin/review.css', requirePageAsset, sendAsset('review.css', 'text/css; charset=utf-8'));
+  app.get('/admin/inbox-refresh.js', requirePageAsset, sendAsset('inbox-refresh.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/review.js', requirePageAsset, sendAsset('review.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/audit.js', requirePageAsset, sendAsset('audit.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/audit', auditPage);
@@ -459,7 +560,13 @@ function mount(app) {
   app.get('/admin/api/drafts', requireApi, list);
   app.post('/admin/api/drafts', requireApi, create);
   app.patch('/admin/api/drafts/:id', requireApi, patch);
+  app.post('/admin/api/drafts/:id/biz-line', requireApi, moveLine);
+  app.post('/admin/api/drafts/:id/delete', requireApi, removeDraft);
+  app.post('/admin/api/drafts/:id/restore', requireApi, restoreOne);
+  app.post('/admin/api/inbox/sync', requireApi, syncInbox);
+  app.post('/admin/api/drafts/:id/folder', requireApi, setFolder);
   app.get('/admin/api/kiotviet/products', requireApi, kiotSearch);
+  app.get('/admin/api/kiotviet/customer', requireApi, kiotCustomer);
   app.post('/admin/api/kiotviet/quick-entry', requireApi, kiotQuick);
   app.get('/admin/api/drafts/:id/kiotviet', requireApi, kiotPrefill);
   app.post('/admin/api/drafts/:id/kiotviet', requireApi, kiotCreate);

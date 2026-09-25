@@ -19,7 +19,8 @@
   };
   const TYPE_LABEL = { follower: 'Follower', zns: 'ZNS', broadcast: 'Broadcast' };
   const TRIAGE_LABEL = { hot: 'Nóng', urgent: 'Khẩn', normal: 'Thường' };
-  const PLATFORM_LABEL = { zalo: 'Zalo OA', messenger: 'Messenger' };
+  const GROUP_LABEL = { zalo: 'Zalo OA', 'fb-sale': 'FB-Sale', 'fb-dv': 'FB-DV' };
+  const GROUP_COUNT = { zalo: 'zalo', 'fb-sale': 'fbSale', 'fb-dv': 'fbDv' };
   const TRIAGE_CLASS = { hot: 'tag-nong', urgent: 'tag-khan', normal: 'tag-thuong' };
   const SLOTS = [
     { value: 'all', label: 'Cả ngày' },
@@ -59,7 +60,11 @@
   const tabs = [...document.querySelectorAll('[data-ops]')];
   const typeTabs = [...document.querySelectorAll('[data-type]')];
   const triageTabs = [...document.querySelectorAll('[data-triage]')];
-  const platformTabs = [...document.querySelectorAll('[data-platform]')];
+  const groupTabs = [...document.querySelectorAll('[data-nhom]')];
+  const zlineTabs = [...document.querySelectorAll('[data-zline]')];
+  const updatedEl = document.getElementById('updated-at');
+  const newEl = document.getElementById('new-indicator');
+  const syncResultEl = document.getElementById('sync-result');
 
   if (actorInput) {
     actorInput.value = localStorage.getItem(ACTOR_KEY) || '';
@@ -76,19 +81,36 @@
   let ops = OPS.includes(params.get('ops')) ? params.get('ops') : 'pending';
   let messageType = Object.prototype.hasOwnProperty.call(TYPE_LABEL, params.get('type')) ? params.get('type') : '';
   let triage = Object.prototype.hasOwnProperty.call(TRIAGE_LABEL, params.get('triage')) ? params.get('triage') : '';
-  let platform = Object.prototype.hasOwnProperty.call(PLATFORM_LABEL, params.get('platform')) ? params.get('platform') : '';
+  const FOLDER_LABEL = {
+    pending: 'Chờ xử lý',
+    sent: 'Đã gửi',
+    bought: 'Đã mua',
+    hesitant: 'Do dự',
+    declined: 'Từ chối',
+    deleted: 'Đã xóa',
+  };
+  const folderTabs = [...document.querySelectorAll('[data-folder]')];
+  let nhom = Object.prototype.hasOwnProperty.call(GROUP_LABEL, params.get('nhom'))
+    ? params.get('nhom')
+    : (params.get('platform') === 'messenger' ? 'fb-sale' : 'zalo');
+  let zline = params.get('zline') === 'sale' || params.get('zline') === 'dv' ? params.get('zline') : '';
+  let folder = Object.prototype.hasOwnProperty.call(FOLDER_LABEL, params.get('hop')) ? params.get('hop') : 'pending';
+  let folderCounts = { pending: 0, sent: 0, bought: 0, hesitant: 0, declined: 0, deleted: 0 };
+  const cardState = new Map();
   let salesChannel = params.get('kenh') || 'farm';
   let channels = [];
   let drafts = [];
   let counts = {};
   let triageCounts = { hot: 0, urgent: 0, normal: 0 };
-  let platformCounts = { zalo: 0, messenger: 0 };
+  let groupCounts = { zalo: 0, fbSale: 0, fbDv: 0 };
   let selectedId = location.hash ? location.hash.slice(1) : null;
   let dirty = false;
   let busy = false;
   let loadedOnce = false;
   let listStamp = '';
   let detailStamp = '';
+  let loadSeq = 0;
+  let queuedDrafts = null;
 
   function needsHumanTicket(d) {
     return String(d.ticket_status || '').indexOf('NEEDS_HUMAN') !== -1;
@@ -141,7 +163,9 @@
     q.set('kenh', salesChannel);
     if (messageType) q.set('type', messageType);
     if (triage) q.set('triage', triage);
-    if (platform) q.set('platform', platform);
+    if (nhom) q.set('nhom', nhom);
+    if (nhom === 'zalo' && zline) q.set('zline', zline);
+    if (folder) q.set('hop', folder);
     const hash = selectedId ? '#' + selectedId : '';
     history.replaceState(null, '', location.pathname + '?' + q.toString() + hash);
   }
@@ -182,11 +206,27 @@
     });
   });
 
-  platformTabs.forEach(btn => {
+  groupTabs.forEach(btn => {
     btn.addEventListener('click', () => {
-      const next = btn.dataset.platform || '';
-      if (next === platform) return;
-      guardSwitch(() => { platform = next; });
+      const next = btn.dataset.nhom || 'zalo';
+      if (next === nhom) return;
+      guardSwitch(() => { nhom = next; });
+    });
+  });
+
+  zlineTabs.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const next = btn.dataset.zline || '';
+      if (next === zline) return;
+      guardSwitch(() => { zline = next; });
+    });
+  });
+
+  folderTabs.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const next = btn.dataset.folder || 'pending';
+      if (next === folder) return;
+      guardSwitch(() => { folder = next; });
     });
   });
 
@@ -243,7 +283,9 @@
       ops = 'pending';
       messageType = '';
       triage = '';
-      platform = '';
+      nhom = res.draft.channel === 'messenger'
+        ? (res.draft.biz_line === 'dv' ? 'fb-dv' : 'fb-sale')
+        : 'zalo';
       selectedId = res.draft.id;
       dirty = false;
       toast('Đã đưa vào chờ xử lý.');
@@ -282,24 +324,62 @@
         b.textContent = n ? String(n) : '';
       }
     });
-    platformTabs.forEach(btn => {
-      const on = (btn.dataset.platform || '') === platform;
+    groupTabs.forEach(btn => {
+      const on = (btn.dataset.nhom || '') === nhom;
       btn.setAttribute('aria-selected', on ? 'true' : 'false');
       btn.classList.toggle('active', on);
-      const key = btn.dataset.platform;
       const b = btn.querySelector('.count');
       if (b) {
-        const n = key ? platformCounts[key] : 0;
-        b.textContent = n ? String(n) : '';
+        const n = groupCounts[GROUP_COUNT[btn.dataset.nhom]] || 0;
+        b.textContent = String(n);
       }
+    });
+    const zaloLine = document.getElementById('zalo-line');
+    if (zaloLine) zaloLine.hidden = nhom !== 'zalo';
+    zlineTabs.forEach(btn => {
+      const on = (btn.dataset.zline || '') === zline;
+      btn.setAttribute('aria-selected', on ? 'true' : 'false');
+      btn.classList.toggle('active', on);
+    });
+    folderTabs.forEach(btn => {
+      const on = (btn.dataset.folder || '') === folder;
+      btn.setAttribute('aria-selected', on ? 'true' : 'false');
+      btn.classList.toggle('active', on);
+      const b = btn.querySelector('.count');
+      if (b) b.textContent = String(folderCounts[btn.dataset.folder] || 0);
     });
   }
 
-  function toast(text) {
+  function ictClock(date) {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).format(date);
+  }
+
+  function paintNew(n) {
+    if (!newEl || !window.inboxRefresh) return;
+    const count = Number(n) || 0;
+    newEl.textContent = window.inboxRefresh.bannerLabel(count);
+    newEl.hidden = count < 1;
+  }
+
+  function toast(text, action) {
     toastEl.hidden = false;
-    toastEl.textContent = text;
+    toastEl.textContent = '';
+    toastEl.appendChild(document.createTextNode(text));
+    if (action) {
+      const b = el('button', { type: 'button', class: 'linkish', text: action.label });
+      b.addEventListener('click', () => {
+        toastEl.hidden = true;
+        action.run();
+      });
+      toastEl.appendChild(b);
+    }
     clearTimeout(toastEl._t);
-    toastEl._t = setTimeout(() => { toastEl.hidden = true; }, 3200);
+    toastEl._t = setTimeout(() => { toastEl.hidden = true; }, action ? 8000 : 3200);
   }
 
   function when(iso) {
@@ -439,25 +519,119 @@
     renderChannels();
   }
 
-  async function load() {
-    if (!loadedOnce) listEl.textContent = 'Đang tải…';
+  function editingHold() {
+    const policy = window.inboxRefresh;
+    if (!policy) return cardsDirty();
+    const active = document.activeElement;
+    const channelPanel = document.getElementById('channel-panel');
+    return policy.editingHold({
+      dirty: cardsDirty(),
+      kiotOpen: !!document.querySelector('details.kiot-fold[open]'),
+      composerOpen: !!document.querySelector('details.composer[open]'),
+      channelFormOpen: !!(channelPanel && !channelPanel.classList.contains('hidden')),
+      detailOpen: document.body.classList.contains('show-detail'),
+      focusedTag: active && active !== document.body ? active.tagName : '',
+    });
+  }
+
+  function renderedIds() {
+    return [...listEl.querySelectorAll('.msg-card')].map(node => node.getAttribute('data-draft-id'));
+  }
+
+  function topCardAnchor() {
+    const cards = listEl.querySelectorAll('.msg-card');
+    for (const card of cards) {
+      const rect = card.getBoundingClientRect();
+      if (rect.bottom <= 1) continue;
+      if (rect.top >= window.innerHeight) break;
+      return { id: card.getAttribute('data-draft-id'), top: rect.top };
+    }
+    return null;
+  }
+
+  function restoreAnchor(anchor) {
+    if (!anchor || !anchor.id || !window.inboxRefresh) return;
+    const safe = window.CSS && CSS.escape ? CSS.escape(anchor.id) : anchor.id;
+    const card = listEl.querySelector('.msg-card[data-draft-id="' + safe + '"]');
+    if (!card) return;
+    const delta = window.inboxRefresh.anchorDelta(anchor.top, card.getBoundingClientRect().top);
+    if (Math.abs(delta) < 1) return;
+    window.scrollBy(0, delta);
+  }
+
+  function insertMissing() {
+    const have = new Set(renderedIds());
+    const fresh = drafts.filter(d => d && d.id && !have.has(d.id));
+    if (!fresh.length) return 0;
+    const empty = listEl.querySelector('.empty-list');
+    if (empty) empty.remove();
+    fresh.forEach(d => {
+      const card = buildCard(d);
+      const idx = drafts.findIndex(item => item.id === d.id);
+      let before = null;
+      for (let i = idx + 1; i < drafts.length; i++) {
+        const id = drafts[i] && drafts[i].id;
+        if (!id) continue;
+        const safe = window.CSS && CSS.escape ? CSS.escape(id) : id;
+        const node = listEl.querySelector('.msg-card[data-draft-id="' + safe + '"]');
+        if (node) { before = node; break; }
+      }
+      if (before) listEl.insertBefore(card, before);
+      else listEl.appendChild(card);
+    });
+    return fresh.length;
+  }
+
+  async function load(opts) {
+    opts = opts || {};
+    const mode = opts.background ? 'background' : (opts.apply ? 'apply' : 'replace');
+    const seq = ++loadSeq;
+    if (!loadedOnce && mode === 'replace') listEl.textContent = 'Đang tải…';
     const q = new URLSearchParams();
     q.set('ops', ops);
     q.set('kenh', salesChannel);
     if (messageType) q.set('type', messageType);
     if (triage) q.set('triage', triage);
-    if (platform) q.set('platform', platform);
+    if (nhom) q.set('nhom', nhom);
+    if (nhom === 'zalo' && zline) q.set('zline', zline);
+    if (folder) q.set('hop', folder);
     try {
       const [data, stats] = await Promise.all([
         api('/admin/api/drafts?' + q.toString()),
         api('/admin/api/stats?kenh=' + encodeURIComponent(salesChannel)),
       ]);
-      drafts = data.drafts || [];
+      if (seq !== loadSeq) return;
+      const incoming = data.drafts || [];
       counts = data.counts || {};
       triageCounts = data.triageCounts || triageCounts;
-      platformCounts = data.platformCounts || platformCounts;
+      groupCounts = data.groupCounts || groupCounts;
+      folderCounts = data.folderCounts || folderCounts;
       loadedOnce = true;
+      const hold = editingHold();
+      const mutation = window.inboxRefresh
+        ? window.inboxRefresh.listMutation(mode, hold)
+        : (hold && mode !== 'replace' ? 'freeze' : 'replace');
+      const anchor = topCardAnchor();
       syncTabs();
+      if (updatedEl) updatedEl.textContent = 'Cập nhật lúc ' + ictClock(new Date());
+      if (mutation === 'freeze') {
+        queuedDrafts = incoming;
+        const unseen = window.inboxRefresh
+          ? window.inboxRefresh.unseenIds(renderedIds(), incoming).length
+          : 0;
+        paintNew(unseen);
+        restoreAnchor(anchor);
+        return;
+      }
+      drafts = incoming;
+      queuedDrafts = null;
+      if (mutation === 'insert') {
+        renderStats(stats);
+        insertMissing();
+        paintNew(0);
+        restoreAnchor(anchor);
+        return;
+      }
       renderStats(stats);
       if (data.storage && data.storage !== 'postgres') {
         storageEl.hidden = false;
@@ -465,11 +639,12 @@
       } else {
         storageEl.hidden = true;
       }
-      const stamp = JSON.stringify(drafts);
-      if (stamp !== listStamp) {
-        listStamp = stamp;
-        renderList();
-      }
+      const keepY = window.scrollY;
+      const keepList = listEl.scrollTop;
+      listStamp = JSON.stringify(drafts);
+      renderList();
+      listEl.scrollTop = keepList;
+      paintNew(0);
       const open = selectedId && drafts.find(d => d.id === selectedId);
       if (open) {
         const nextStamp = JSON.stringify(open);
@@ -477,14 +652,24 @@
           detailStamp = nextStamp;
           renderDetail();
         }
-      } else if (selectedId) {
+      } else if (selectedId && !dirty) {
         selectedId = null;
         detailStamp = '';
         document.body.classList.remove('show-detail');
         showPlaceholder();
       }
+      if (anchor && listEl.querySelector('.msg-card[data-draft-id="' + (window.CSS && CSS.escape ? CSS.escape(anchor.id) : anchor.id) + '"]')) {
+        restoreAnchor(anchor);
+      } else {
+        window.scrollTo(window.scrollX, keepY);
+      }
     } catch (e) {
       if (e.message === 'unauthorized') return;
+      if (seq !== loadSeq) return;
+      if (mode !== 'replace' || loadedOnce) {
+        toast(e.message);
+        return;
+      }
       listEl.textContent = '';
       listEl.appendChild(el('p', { class: 'empty', text: e.message }));
     }
@@ -500,11 +685,11 @@
   }
 
   function emptyCopy() {
-    if (platform) {
-      const name = PLATFORM_LABEL[platform];
+    const name = GROUP_LABEL[nhom] || 'nhóm này';
+    if (nhom) {
       return {
         title: 'Không có tin ' + name + '.',
-        body: 'Không có tin ' + name + ' khớp bộ lọc. Chọn Tất cả để xem cả Zalo OA và Messenger.',
+        body: 'Không có tin ' + name + ' khớp bộ lọc. Chọn nhóm khác để xem Zalo OA, FB-Sale hoặc FB-DV.',
       };
     }
     if (ops !== 'pending' || triage) {
@@ -517,6 +702,27 @@
       title: 'Không có tin chờ duyệt',
       body: 'Tin mới từ Zalo OA / Messenger sẽ hiện ở đây. Duyệt xong mới gửi cho khách.',
     };
+  }
+
+  function cardsDirty() {
+    if (dirty) return true;
+    for (const s of cardState.values()) if (s.dirty) return true;
+    return false;
+  }
+
+  function ensureCard(d) {
+    let s = cardState.get(d.id);
+    if (!s) {
+      s = { reply: d.draft_reply || d.ai_suggested_draft || '', learn: true, learnTouched: false, kiotOpen: wantsOrder(d), dirty: false };
+      cardState.set(d.id, s);
+    }
+    return s;
+  }
+
+  function wantsOrder(d) {
+    const raw = (d.customer_query || '') + ' ' + (d.customer_intent || '');
+    const t = raw.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/gi, 'd').toLowerCase();
+    return d.triage_level === 'hot' || /dat hang|dat mua|\bmua\b|\border\b|chot don/.test(t);
   }
 
   function renderList() {
@@ -536,7 +742,13 @@
       if (!selectedId) showPlaceholder();
       return;
     }
-    drafts.forEach(d => {
+    drafts.forEach(d => listEl.appendChild(buildCard(d)));
+    if (!selectedId) showPlaceholder();
+  }
+
+  function buildCard(d) {
+      const s = ensureCard(d);
+      if (!s.dirty) s.reply = d.draft_reply || d.ai_suggested_draft || '';
       const btn = el('button', {
         type: 'button',
         class: 'msg' + (d.id === selectedId ? ' selected' : ''),
@@ -551,38 +763,91 @@
       }
       const ch = channelTag(d);
       tags.appendChild(el('span', { class: 'tag ' + ch.cls, text: ch.text }));
+      const lineTag = bizTag(d);
+      if (lineTag) tags.appendChild(lineTag);
       const kind = kindTag(d);
       if (kind) tags.appendChild(el('span', { class: 'tag ' + kind.cls, text: kind.text }));
-      btn.appendChild(el('div', { class: 'msg-top' }, [
-        el('span', { class: 'msg-name', text: d.customer_name || 'Khách chưa có tên' }),
-        el('span', { class: 'msg-time', text: when(d.created_at) }),
-      ]));
-      btn.appendChild(el('div', { class: 'msg-preview', text: snippet(d) }));
+      if (d.inbox_prev_status && FOLDER_LABEL[d.inbox_prev_status]) {
+        tags.appendChild(el('span', { class: 'tag tag-prev', text: 'trước: ' + FOLDER_LABEL[d.inbox_prev_status] }));
+      }
+      if (d.decline_hint && d.inbox_status !== 'declined') {
+        tags.appendChild(el('span', { class: 'tag tag-refund', text: 'Gợi ý: Từ chối' }));
+      }
+      const top = el('div', { class: 'msg-top' });
+      const nameBox = el('div', { class: 'msg-names' });
+      channelNameNodes(d).forEach(node => nameBox.appendChild(node));
+      top.appendChild(nameBox);
+      top.appendChild(el('span', { class: 'msg-time', text: when(d.created_at) }));
+      btn.appendChild(top);
+      btn.appendChild(el('div', { class: 'msg-kicker', text: 'Khách nhắn' }));
+      btn.appendChild(el('div', { class: 'msg-customer', text: snippet(d) || '—' }));
       btn.appendChild(tags);
       btn.addEventListener('click', () => openDraft(d.id));
-      const card = el('div', { class: 'msg-card' + (d.id === selectedId ? ' selected' : '') });
+      const card = el('div', {
+        class: 'msg-card' + (d.id === selectedId ? ' selected' : ''),
+        'data-draft-id': d.id,
+      });
       card.appendChild(btn);
-      const under = el('div', { class: 'msg-under' });
-      const mark = kiotMark(d);
-      if (mark) {
-        const bits = mark.code + (mark.total != null && mark.total !== '' ? ' · ' + vnd(mark.total) : '');
-        under.appendChild(el('span', { class: 'kiot-badge', text: bits }));
+
+      const openReply = d.approval_status !== 'SENT' && d.approval_status !== 'REJECTED' && !d.deleted_at;
+      const replyLabel = el('div', { class: 'draft-label' }, [
+        el('label', { text: 'Gợi ý trả lời' }),
+        el('span', { text: 'Sửa được. Chỉ gửi khi bấm Duyệt & Gửi.' }),
+      ]);
+      const reply = el('textarea', {
+        class: 'card-reply',
+        rows: '4',
+        placeholder: 'Chưa có bản AI. Gõ câu trả lời cho khách.',
+      });
+      reply.value = s.reply || '';
+      if (!openReply) reply.disabled = true;
+      reply.addEventListener('input', () => {
+        s.reply = reply.value;
+        s.dirty = true;
+        dirty = true;
+      });
+      reply.addEventListener('click', (ev) => ev.stopPropagation());
+      card.appendChild(replyLabel);
+      card.appendChild(reply);
+
+      const actions = el('div', { class: 'card-actions' });
+      if (openReply) {
+        const sendBtn = el('button', { type: 'button', class: 'btn btn-primary', text: 'Duyệt & Gửi' });
+        sendBtn.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          approveCard(d);
+        });
+        actions.appendChild(sendBtn);
       }
-      const launch = el('button', {
-        type: 'button',
-        class: 'kiot-launch',
-        text: mark ? 'Đơn KiotViet' : 'Tạo đơn KiotViet',
+      actions.appendChild(lineActions(d));
+      card.appendChild(actions);
+
+      if (openReply) {
+        const learn = el('label', { class: 'learn-toggle' });
+        const box = el('input', { type: 'checkbox', class: 'learn-check' });
+        box.checked = s.learnTouched ? s.learn : true;
+        box.addEventListener('change', () => {
+          s.learn = box.checked;
+          s.learnTouched = true;
+        });
+        learn.appendChild(box);
+        learn.appendChild(document.createTextNode(' Cho AI học từ câu trả lời này'));
+        card.appendChild(learn);
+      }
+
+      if (!d.deleted_at) card.appendChild(statusActions(d));
+
+      const fold = el('details', { class: 'kiot-fold' });
+      if (s.kiotOpen || wantsOrder(d)) fold.open = true;
+      fold.appendChild(el('summary', { text: 'Tạo đơn KiotViet' }));
+      fold.addEventListener('toggle', () => {
+        s.kiotOpen = fold.open;
+        if (fold.open && !fold.querySelector('.kiot-panel')) fold.appendChild(kiotPanel(d, d.id));
       });
-      launch.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        openDraft(d.id, { focusKiot: true });
-      });
-      under.appendChild(launch);
-      card.appendChild(under);
-      listEl.appendChild(card);
-    });
-    if (!selectedId) showPlaceholder();
+      if (fold.open) fold.appendChild(kiotPanel(d, d.id));
+      card.appendChild(fold);
+      return card;
   }
 
   function triageBadge(d) {
@@ -654,10 +919,12 @@
 
     const body = el('div', { class: 'detail-body' });
     const code = d.customer_code || f.kiot_ref || '';
-    const nameRow = el('div', { class: 'name-row' }, [
-      el('h3', { text: d.customer_name || 'Khách chưa có tên' }),
-    ]);
-    if (code) {
+    const nameRow = el('div', { class: 'name-row' });
+    const nameBox = el('div', { class: 'msg-names' });
+    channelNameNodes(d).forEach(node => nameBox.appendChild(node));
+    nameRow.appendChild(nameBox);
+    const kiotShown = Array.isArray(d.channel_names) && d.channel_names.some(item => item && item.code);
+    if (code && !kiotShown) {
       nameRow.appendChild(el('span', { class: 'cust-code', title: 'Mã khách hàng', text: code }));
     }
     const meta = el('div', { class: 'detail-meta' }, [nameRow]);
@@ -665,9 +932,12 @@
     if (badge) meta.appendChild(badge);
     const ch = channelTag(d);
     meta.appendChild(el('span', { class: 'tag ' + ch.cls, text: ch.text }));
+    const lineTag = bizTag(d);
+    if (lineTag) meta.appendChild(lineTag);
     const kind = kindTag(d);
     if (kind) meta.appendChild(el('span', { class: 'tag ' + kind.cls, text: kind.text }));
     body.appendChild(meta);
+    body.appendChild(lineActions(d, 'detail-actions'));
 
     body.appendChild(el('div', { class: 'want-box' }, [
       el('span', { text: 'Khách đang muốn' }),
@@ -705,8 +975,23 @@
     const reply = el('textarea', { id: 'draft-reply', name: 'draft_reply', rows: '8' });
     reply.value = d.draft_reply || '';
     if (locked) reply.disabled = true;
-    reply.addEventListener('input', () => { dirty = true; });
+    reply.addEventListener('input', () => {
+      dirty = true;
+      const s = ensureCard(d);
+      s.reply = reply.value;
+      s.dirty = true;
+    });
     body.appendChild(el('div', { class: 'field-block' }, [reply]));
+    if (!locked) {
+      const learn = el('label', { class: 'learn-toggle' });
+      const box = el('input', { type: 'checkbox', class: 'learn-check' });
+      const s = ensureCard(d);
+      box.checked = s.learnTouched ? s.learn : true;
+      box.addEventListener('change', () => { s.learn = box.checked; s.learnTouched = true; });
+      learn.appendChild(box);
+      learn.appendChild(document.createTextNode(' Cho AI học từ câu trả lời này'));
+      body.appendChild(learn);
+    }
 
     const extra = el('details', { class: 'extra-detail' });
     extra.appendChild(el('summary', { text: 'Thêm chi tiết gửi' }));
@@ -947,6 +1232,14 @@
     };
   }
 
+  function learnChecked() {
+    const box = detailEl.querySelector('.learn-check');
+    if (box) return box.checked;
+    const s = selectedId && cardState.get(selectedId);
+    if (s && s.learnTouched) return s.learn !== false;
+    return true;
+  }
+
   function payload(extra) {
     const data = readForm();
     const body = {
@@ -967,6 +1260,7 @@
       qr_image_url: data.qr_image_url,
       actor_name: actorName(),
       review_form: reviewFormPayload(data),
+      learn: learnChecked(),
     };
     return Object.assign(body, extra || {});
   }
@@ -982,8 +1276,8 @@
       });
       dirty = false;
       const sendResult = res.send;
-      if (sendResult && sendResult.sent) toast('Đã gửi cho khách.');
-      else if (sendResult && sendResult.pendingAdapter) toast('Đã duyệt. Kênh chưa có đường gửi, tin nằm ở Chờ gửi.');
+      if (sendResult && sendResult.sent) toast(learnNote(res, true));
+      else if (sendResult && sendResult.pendingAdapter) toast(learnNote(res, false) + ' Kênh chưa có đường gửi.');
       else if (sendResult && !sendResult.sent) toast('Đã duyệt, chưa gửi được. Xem lý do phía trên.');
       else toast(okText);
       const next = res.draft;
@@ -1079,7 +1373,8 @@
     return 'Còn ' + stock.available;
   }
 
-  function kiotPanel(d) {
+  function kiotPanel(d, prefix) {
+    const pid = prefix ? String(prefix) : 'detail';
     const state = {
       document: 'invoice',
       lines: [blankKiotLine()],
@@ -1088,8 +1383,10 @@
       touched: {},
       existing: kiotMark(d),
       acknowledge: false,
+      kiotCustomer: null,
+      lookupTimer: null,
     };
-    const panel = el('section', { class: 'kiot-panel', id: 'kiot-panel' });
+    const panel = el('section', { class: 'kiot-panel', id: 'kiot-panel-' + pid });
     panel.appendChild(el('h4', { text: 'Tạo đơn KiotViet' }));
     panel.appendChild(el('p', {
       class: 'kiot-lead',
@@ -1143,11 +1440,25 @@
     panel.appendChild(docRow);
 
     const grid = el('div', { class: 'kiot-grid' });
-    const nameInput = kiotInput('Tên khách', d.customer_name || '', 'kiot-name');
-    const phoneInput = kiotInput('Số điện thoại', d.customer_phone || '', 'kiot-phone');
-    const addrInput = kiotInput('Địa chỉ giao', addressText(d), 'kiot-address');
-    nameInput.input.addEventListener('input', () => { state.touched.name = true; dirty = true; });
-    phoneInput.input.addEventListener('input', () => { state.touched.phone = true; dirty = true; state.quote = null; });
+    const seeded = seededKiotName(d);
+    const nameInput = kiotInput('Tên khách', seeded.name, 'kiot-name-' + pid);
+    const nameHint = el('p', { class: 'kiot-name-hint', text: seeded.hint });
+    nameHint.hidden = !seeded.hint;
+    nameInput.wrap.appendChild(nameHint);
+    const phoneInput = kiotInput('Số điện thoại', d.customer_phone || '', 'kiot-phone-' + pid);
+    const addrInput = kiotInput('Địa chỉ giao', addressText(d), 'kiot-address-' + pid);
+    nameInput.input.addEventListener('input', () => {
+      state.touched.name = true;
+      dirty = true;
+      nameHint.textContent = '';
+      nameHint.hidden = true;
+    });
+    phoneInput.input.addEventListener('input', () => {
+      state.touched.phone = true;
+      dirty = true;
+      state.quote = null;
+      scheduleKiotLookup();
+    });
     addrInput.input.addEventListener('input', () => { state.touched.address = true; dirty = true; });
     grid.appendChild(nameInput.wrap);
     grid.appendChild(phoneInput.wrap);
@@ -1165,9 +1476,9 @@
     panel.appendChild(addBtn);
 
     const moneyRow = el('div', { class: 'kiot-money' });
-    const discountInput = kiotInput('Giảm giá (đ)', '0', 'kiot-discount');
-    const shipInput = kiotInput('Phí ship (đ)', '0', 'kiot-ship');
-    const noteInput = kiotInput('Ghi chú', '', 'kiot-note');
+    const discountInput = kiotInput('Giảm giá (đ)', '0', 'kiot-discount-' + pid);
+    const shipInput = kiotInput('Phí ship (đ)', '0', 'kiot-ship-' + pid);
+    const noteInput = kiotInput('Ghi chú', '', 'kiot-note-' + pid);
     discountInput.input.addEventListener('input', () => { state.quote = null; paintTotals(); });
     shipInput.input.addEventListener('input', () => { state.touched.ship = true; state.quote = null; paintTotals(); });
     noteInput.input.addEventListener('input', () => { dirty = true; });
@@ -1467,6 +1778,11 @@
         acknowledge_existing: state.acknowledge === true,
       };
       if (confirm && state.quote && state.quote.total != null) body.expected_total = state.quote.total;
+      const matched = state.kiotCustomer;
+      if (matched && matched.id && phoneKey(matched.phone) === phoneKey(body.phone)) {
+        body.kiot_customer_id = matched.id;
+        if (matched.code) body.kiot_customer_code = matched.code;
+      }
       try {
         const data = await api('/admin/api/drafts/' + d.id + '/kiotviet', {
           method: 'POST',
@@ -1513,17 +1829,90 @@
       }
     }
 
+    const savedNames = Array.isArray(d.channel_names) ? d.channel_names.map(item => ({ ...item })) : [];
+
+    function applyKiotMatch(data, phone) {
+      if (data && (data.name || data.code)) {
+        state.kiotCustomer = {
+          id: data.id || null,
+          code: data.code || '',
+          name: data.name || '',
+          phone: phone,
+        };
+        if (!state.touched.name && data.name) {
+          nameInput.input.value = data.name;
+          nameHint.textContent = '';
+          nameHint.hidden = true;
+        }
+      } else {
+        state.kiotCustomer = null;
+      }
+      if (data && Array.isArray(data.channel_names)) {
+        d.channel_names = data.channel_names;
+        paintDraftNames(d);
+      }
+    }
+
+    function scheduleKiotLookup() {
+      clearTimeout(state.lookupTimer);
+      const phone = phoneInput.input.value.trim();
+      state.lookupTimer = setTimeout(async () => {
+        if (phoneKey(phone).length < 9) {
+          state.kiotCustomer = null;
+          d.channel_names = savedNames.map(item => ({ ...item }));
+          paintDraftNames(d);
+          return;
+        }
+        try {
+          const data = await api('/admin/api/kiotviet/customer?phone=' + encodeURIComponent(phone) + '&draft_id=' + encodeURIComponent(d.id));
+          if (!panel.isConnected || phoneInput.input.value.trim() !== phone) return;
+          applyKiotMatch(data, phone);
+        } catch (_) { /* a missed lookup leaves the header as it was */ }
+      }, 400);
+    }
+
     paintLines();
     api('/admin/api/drafts/' + d.id + '/kiotviet').then(data => {
       if (!panel.isConnected) return;
-      if (!state.touched.name && data.customer_name) nameInput.input.value = data.customer_name;
+      if (!state.touched.name && data.customer_name) {
+        nameInput.input.value = data.customer_name;
+        nameHint.textContent = data.name_hint || '';
+        nameHint.hidden = !data.name_hint;
+      }
       if (!state.touched.phone && data.phone) phoneInput.input.value = data.phone;
+      if (data.kiot_customer_id || data.kiot_customer_code) {
+        state.kiotCustomer = {
+          id: data.kiot_customer_id || null,
+          code: data.kiot_customer_code || '',
+          name: data.customer_name || '',
+          phone: data.phone || phoneInput.input.value.trim(),
+        };
+      }
       if (!state.touched.address && data.address) addrInput.input.value = data.address;
       if (!state.touched.quick && data.quick_text) quick.value = data.quick_text;
       if (!state.touched.ship && data.shipping_fee != null) shipInput.input.value = String(data.shipping_fee);
       if (data.existing) showExisting(data.existing);
     }).catch(() => {});
     return panel;
+  }
+
+  function phoneKey(value) {
+    let p = String(value || '').replace(/[^\d+]/g, '');
+    if (p.startsWith('+84')) p = '0' + p.slice(3);
+    else if (p.startsWith('84') && p.length >= 10) p = '0' + p.slice(2);
+    if (p && !p.startsWith('0')) p = '0' + p;
+    return p;
+  }
+
+  function paintDraftNames(d) {
+    const id = String(d && d.id || '');
+    if (!/^[A-Za-z0-9-]+$/.test(id)) return;
+    const fill = (box) => {
+      box.textContent = '';
+      channelNameNodes(d).forEach(node => box.appendChild(node));
+    };
+    document.querySelectorAll('[data-draft-id="' + id + '"] .msg-names').forEach(fill);
+    if (selectedId === d.id && detailEl) detailEl.querySelectorAll('.msg-names').forEach(fill);
   }
 
   function blankKiotLine() {
@@ -1542,6 +1931,40 @@
     };
   }
 
+  function channelNameNodes(d) {
+    const names = Array.isArray(d.channel_names)
+      ? d.channel_names.filter(item => item && (item.text || item.name))
+      : [];
+    if (!names.length) {
+      const phone = String(d.customer_phone || '').trim();
+      const id = String(d.customer_user_id || '').trim();
+      return [el('span', { class: 'msg-name', text: phone || id || d.customer_name || 'Khách chưa có tên' })];
+    }
+    return names.map(item => {
+      const bit = el('span', {
+        class: 'msg-channel-name' + (item.source === 'kiot' ? ' msg-kiot-name' : ''),
+      });
+      if (item.avatar && /^https:\/\//.test(item.avatar)) {
+        bit.appendChild(el('img', { class: 'msg-avatar', alt: '', src: item.avatar }));
+      }
+      bit.appendChild(el('span', { text: item.text || ((item.label || 'Tên') + ': ' + item.name) }));
+      return bit;
+    });
+  }
+
+  function seededKiotName(d) {
+    const names = Array.isArray(d.channel_names) ? d.channel_names : [];
+    const kiot = names.find(item => item && item.source === 'kiot' && item.name);
+    if (kiot) return { name: kiot.name, hint: '' };
+    const own = names.find(item => item && item.own && item.name)
+      || names.find(item => item && (item.source === 'zalo' || item.source === 'fb') && item.name);
+    if (!own) return { name: d.customer_name || '', hint: '' };
+    return {
+      name: own.name,
+      hint: own.source === 'fb' ? 'lấy từ Tên FB' : 'lấy từ Tên Zalo',
+    };
+  }
+
   function kiotInput(label, value, id) {
     const input = el('input', { type: 'text', id: id });
     input.value = value || '';
@@ -1552,15 +1975,249 @@
     return { wrap, input };
   }
 
+  function bizTag(d) {
+    if (d.biz_line !== 'sale' && d.biz_line !== 'dv') return null;
+    return el('span', { class: 'tag tag-line', text: d.biz_line === 'dv' ? 'DV' : 'Sale' });
+  }
+
+  function moveBtn(d, line, label) {
+    const btn = el('button', { type: 'button', class: 'card-act', text: label });
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      moveLine(d.id, line);
+    });
+    return btn;
+  }
+
+  function statusActions(d) {
+    const row = el('div', { class: 'status-actions' });
+    const boughtLabel = d.biz_line === 'dv' || d.channel === 'messenger' && d.biz_line === 'dv' ? 'Đã chốt' : (d.biz_line === 'dv' ? 'Đã chốt' : 'Đã mua');
+    const dv = d.biz_line === 'dv';
+    row.appendChild(folderBtn(d, 'hesitant', 'Do dự'));
+    row.appendChild(folderBtn(d, 'declined', 'Từ chối'));
+    row.appendChild(folderBtn(d, 'bought', dv ? 'Đã chốt' : boughtLabel));
+    row.appendChild(folderBtn(d, 'pending', 'Trả về Chờ xử lý'));
+    return row;
+  }
+
+  function folderBtn(d, to, label) {
+    const btn = el('button', { type: 'button', class: 'card-act', text: label });
+    if (d.inbox_status === to) btn.disabled = true;
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      moveFolder(d.id, to);
+    });
+    return btn;
+  }
+
+  async function moveFolder(id, to) {
+    try {
+      await api('/admin/api/drafts/' + id + '/folder', {
+        method: 'POST',
+        body: JSON.stringify({ inbox_status: to, actor_name: actorName() }),
+      });
+      toast('Đã chuyển thư mục.');
+      const s = cardState.get(id);
+      if (s) s.dirty = false;
+      listStamp = '';
+      detailStamp = '';
+      await load();
+    } catch (e) {
+      if (e.message !== 'unauthorized') toast(e.message);
+    }
+  }
+
+  function learnNote(res, sent) {
+    const off = res && res.learn === false;
+    const learned = res && res.learned === true;
+    const tail = off || !learned ? 'không học' : 'AI đã học';
+    if (sent) return 'Đã gửi · ' + tail;
+    return 'Đã duyệt · ' + tail;
+  }
+
+  async function approveCard(d) {
+    const s = ensureCard(d);
+    const text = String(s.reply || '').trim();
+    if (!text) {
+      toast('Nhập câu trả lời trước khi gửi.');
+      return;
+    }
+    const where = d.channel === 'messenger' ? ' trên Facebook Messenger' : '';
+    if (!confirm('Gửi tin này cho khách' + where + '?')) return;
+    if (busy) return;
+    busy = true;
+    try {
+      const res = await api('/admin/api/drafts/' + d.id, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          draft_reply: text,
+          send: true,
+          learn: s.learn !== false,
+          actor_name: actorName(),
+          approval_status: 'APPROVED',
+        }),
+      });
+      s.dirty = false;
+      s.reply = text;
+      dirty = cardsDirty();
+      const sent = res.send && res.send.sent;
+      toast(sent ? learnNote(res, true) : (res.send && res.send.pendingAdapter ? learnNote(res, false) : (res.send ? 'Đã duyệt, chưa gửi được.' : 'Đã lưu.')));
+      listStamp = '';
+      await load();
+    } catch (e) {
+      if (e.message !== 'unauthorized') toast(e.message);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function lineActions(d, className) {
+    const row = el('div', { class: 'msg-actions' + (className ? ' ' + className : '') });
+    const current = d.biz_line === 'sale' || d.biz_line === 'dv' ? d.biz_line : '';
+    if (!current) {
+      row.appendChild(moveBtn(d, 'sale', d.channel === 'zalo' ? 'Gắn Sale' : 'Chuyển qua Sale'));
+      row.appendChild(moveBtn(d, 'dv', d.channel === 'zalo' ? 'Gắn DV' : 'Chuyển qua DV'));
+    } else if (current === 'dv') {
+      row.appendChild(moveBtn(d, 'sale', 'Chuyển qua Sale'));
+    } else {
+      row.appendChild(moveBtn(d, 'dv', 'Chuyển qua DV'));
+    }
+    const del = el('button', { type: 'button', class: 'card-act card-del', text: 'Xóa' });
+    del.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      removeDraft(d.id);
+    });
+    row.appendChild(del);
+    return row;
+  }
+
+  async function moveLine(id, line) {
+    try {
+      await api('/admin/api/drafts/' + id + '/biz-line', {
+        method: 'POST',
+        body: JSON.stringify({ biz_line: line, actor_name: actorName() }),
+      });
+      toast(line === 'dv' ? 'Đã chuyển qua DV.' : 'Đã chuyển qua Sale.');
+      if (!dirty) detailStamp = '';
+      listStamp = '';
+      await load();
+    } catch (e) {
+      if (e.message !== 'unauthorized') toast(e.message);
+    }
+  }
+
+  async function removeDraft(id) {
+    if (!confirm('Xoá tin này khỏi hộp thư? Tin trên Facebook và Zalo không bị xoá, và không gửi gì cho khách.')) return;
+    try {
+      await api('/admin/api/drafts/' + id + '/delete', {
+        method: 'POST',
+        body: JSON.stringify({ actor_name: actorName() }),
+      });
+      if (selectedId === id && !dirty) {
+        selectedId = null;
+        detailStamp = '';
+        document.body.classList.remove('show-detail');
+      }
+      listStamp = '';
+      toast('Đã xoá khỏi hộp thư.', {
+        label: 'Hoàn tác',
+        run: () => restoreDraft(id),
+      });
+      await load();
+    } catch (e) {
+      if (e.message !== 'unauthorized') toast(e.message);
+    }
+  }
+
+  async function restoreDraft(id) {
+    try {
+      await api('/admin/api/drafts/' + id + '/restore', {
+        method: 'POST',
+        body: JSON.stringify({ actor_name: actorName() }),
+      });
+      listStamp = '';
+      toast('Đã hoàn tác.');
+      await load();
+    } catch (e) {
+      if (e.message !== 'unauthorized') toast(e.message);
+    }
+  }
+
+  function showSync(text, bad) {
+    if (!syncResultEl) return;
+    syncResultEl.textContent = text || '';
+    syncResultEl.classList.toggle('bad', !!bad);
+  }
+
+  async function refreshNow() {
+    if (busy) return;
+    if (editingHold()) await load({ apply: true });
+    else await load();
+  }
+
+  async function syncMissed() {
+    if (busy) return;
+    const btn = document.getElementById('sync-missed');
+    busy = true;
+    if (btn) btn.disabled = true;
+    showSync('Đang đồng bộ…', false);
+    try {
+      const data = await api('/admin/api/inbox/sync', { method: 'POST', body: '{}' });
+      if (data && data.error) {
+        showSync(data.error, true);
+        toast(data.error);
+      } else {
+        const n = data && data.added ? data.added : 0;
+        const m = data && data.skipped ? data.skipped : 0;
+        let text = 'Đã thêm ' + n + ' tin, bỏ qua ' + m + ' tin đã có';
+        if (data && data.zalo && data.zalo.synced === false) {
+          text += '. Zalo OA: không kéo hội thoại cũ (chưa có API liệt kê).';
+        }
+        showSync(text, false);
+        toast(text);
+      }
+      listStamp = '';
+      if (editingHold()) await load({ apply: true });
+      else await load();
+    } catch (e) {
+      if (e.message !== 'unauthorized') {
+        showSync(e.message, true);
+        toast(e.message);
+      }
+    } finally {
+      busy = false;
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  const refreshBtn = document.getElementById('refresh-now');
+  if (refreshBtn) refreshBtn.addEventListener('click', () => { refreshNow(); });
+  const syncBtn = document.getElementById('sync-missed');
+  if (syncBtn) syncBtn.addEventListener('click', () => { syncMissed(); });
+  if (newEl) {
+    newEl.addEventListener('click', () => {
+      load({ apply: true });
+    });
+  }
+
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && !dirty && !busy) load();
+    if (!loadedOnce || busy) return;
+    if (document.visibilityState === 'visible') load({ background: true });
   });
-  setInterval(() => {
-    if (document.visibilityState === 'visible' && !dirty && !busy) load();
-  }, 20000);
+
+  function startPolling() {
+    const pollMs = Number(new URLSearchParams(location.search).get('pollms'));
+    const interval = Number.isFinite(pollMs) && pollMs >= 200 && pollMs <= 60000 ? pollMs : 20000;
+    setInterval(() => {
+      if (document.visibilityState === 'visible' && !busy) load({ background: true });
+    }, interval);
+  }
 
   syncTabs();
-  loadChannels().then(load).catch(e => {
+  loadChannels().then(load).then(startPolling).catch(e => {
     if (e.message !== 'unauthorized') {
       listEl.textContent = '';
       listEl.appendChild(el('p', { class: 'empty', text: e.message }));
