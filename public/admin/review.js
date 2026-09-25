@@ -1412,11 +1412,14 @@
     main.appendChild(el('div', { class: 'field-block' }, [reply]));
     main.appendChild(el('p', { id: 'reply-error', class: 'reply-error', hidden: 'hidden' }));
     if (!locked) main.appendChild(learnToggle(cardStateForReply));
-    if (!d.deleted_at) {
+    if (!d.deleted_at || !locked) {
       const quick = el('div', { class: 'detail-quick' });
-      quick.appendChild(lineActions(d, 'detail-actions'));
-      quick.appendChild(statusActions(d));
-      main.appendChild(quick);
+      if (!d.deleted_at) {
+        quick.appendChild(lineActions(d, 'detail-actions'));
+        quick.appendChild(statusActions(d));
+      }
+      if (!locked) quick.appendChild(actionButton('Lưu', 'ghost', () => save()));
+      if (quick.childNodes.length) main.appendChild(quick);
     }
 
     const phoneField = blockField('customer_phone', 'Số điện thoại', d.customer_phone, {
