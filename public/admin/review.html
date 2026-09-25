@@ -33,7 +33,7 @@
 <p id="storage" class="note warn" hidden></p>
 <div class="refresh-row" id="inbox-refresh">
   <span id="updated-at" class="updated-at">Cập nhật lúc --:--</span>
-  <button type="button" id="new-indicator" class="new-pill" hidden>Có 0 tin mới</button>
+  <button type="button" id="new-indicator" class="new-pill" hidden>Có 0 tin mới — bấm để hiện</button>
   <button type="button" id="refresh-now" class="btn btn-sm">Làm mới</button>
   <button type="button" id="sync-missed" class="btn btn-sm">Đồng bộ tin bị sót</button>
   <span id="sync-result" class="sync-result" role="status"></span>
@@ -140,6 +140,7 @@
 <p id="toast" class="toast" role="status" hidden></p>
 <noscript><p class="note warn">Trang này cần JavaScript để duyệt tin.</p></noscript>
 <script>window.OMNI_SALE={{BRAND_JSON}};</script>
+<script src="/admin/inbox-refresh.js"></script>
 <script src="/admin/review.js"></script>
 </body>
 </html>

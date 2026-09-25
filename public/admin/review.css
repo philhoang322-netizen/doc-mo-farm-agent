@@ -689,6 +689,11 @@ body.hitl .refresh-row {
 }
 body.hitl .updated-at { color: var(--muted); font-size: 0.875rem; font-weight: 600; }
 body.hitl .new-pill {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
   background: var(--gold-soft);
   color: var(--gold);
   border: 1px solid #eadfa8;
@@ -697,6 +702,7 @@ body.hitl .new-pill {
   min-height: 36px;
   font-size: 0.875rem;
   font-weight: 700;
+  box-shadow: var(--shadow);
 }
 body.hitl .sync-result { font-size: 0.875rem; color: var(--ink-soft); }
 body.hitl .sync-result.bad { color: var(--red); font-weight: 700; }

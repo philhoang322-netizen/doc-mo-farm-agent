@@ -72,6 +72,7 @@ test('platform filter keeps Zalo OA and Messenger apart from sales channels', as
 test('admin queue exposes inbox groups above Mức', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin', 'review.html'), 'utf8');
   const js = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin', 'review.js'), 'utf8');
+  const refresh = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin', 'inbox-refresh.js'), 'utf8');
   const nhom = html.indexOf('Nhóm hộp thư');
   const muc = html.indexOf('>Mức<');
   assert.ok(nhom > 0 && muc > nhom);
@@ -92,6 +93,10 @@ test('admin queue exposes inbox groups above Mức', () => {
   assert.match(js, /Zalo OA, FB-Sale hoặc FB-DV/);
   assert.match(js, /Chuyển qua Sale/);
   assert.match(js, /Chuyển qua DV/);
-  assert.match(js, /Có ' \+ n \+ ' tin mới/);
+  assert.match(html, /inbox-refresh\.js/);
+  assert.match(refresh, /Có ' \+ n \+ ' tin mới — bấm để hiện/);
+  assert.match(js, /background: true/);
+  assert.match(js, /listMutation\(mode, hold\)/);
+  assert.doesNotMatch(js, /newEl[\s\S]{0,180}scrollIntoView/);
   assert.doesNotMatch(js, /approval_status:\s*'APPROVED'[\s\S]{0,80}send:\s*true[\s\S]{0,40}auto/);
 });

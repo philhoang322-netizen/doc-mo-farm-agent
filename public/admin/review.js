@@ -109,9 +109,8 @@
   let loadedOnce = false;
   let listStamp = '';
   let detailStamp = '';
-  let bootstrapped = false;
-  let ackedIds = new Set();
-  let lastPendingIds = [];
+  let loadSeq = 0;
+  let queuedDrafts = null;
 
   function needsHumanTicket(d) {
     return String(d.ticket_status || '').indexOf('NEEDS_HUMAN') !== -1;
@@ -361,30 +360,10 @@
   }
 
   function paintNew(n) {
-    if (!newEl) return;
-    if (!n) {
-      newEl.hidden = true;
-      return;
-    }
-    newEl.hidden = false;
-    newEl.textContent = 'Có ' + n + ' tin mới';
-  }
-
-  function notePending(ids) {
-    const list = Array.isArray(ids) ? ids : [];
-    lastPendingIds = list;
-    if (!bootstrapped) {
-      list.forEach(id => ackedIds.add(id));
-      bootstrapped = true;
-      paintNew(0);
-      return;
-    }
-    paintNew(list.filter(id => !ackedIds.has(id)).length);
-  }
-
-  function acknowledgePending(ids) {
-    (ids || []).forEach(id => ackedIds.add(id));
-    paintNew(0);
+    if (!newEl || !window.inboxRefresh) return;
+    const count = Number(n) || 0;
+    newEl.textContent = window.inboxRefresh.bannerLabel(count);
+    newEl.hidden = count < 1;
   }
 
   function toast(text, action) {
@@ -540,10 +519,74 @@
     renderChannels();
   }
 
+  function editingHold() {
+    const policy = window.inboxRefresh;
+    if (!policy) return cardsDirty();
+    const active = document.activeElement;
+    const channelPanel = document.getElementById('channel-panel');
+    return policy.editingHold({
+      dirty: cardsDirty(),
+      kiotOpen: !!document.querySelector('details.kiot-fold[open]'),
+      composerOpen: !!document.querySelector('details.composer[open]'),
+      channelFormOpen: !!(channelPanel && !channelPanel.classList.contains('hidden')),
+      detailOpen: document.body.classList.contains('show-detail'),
+      focusedTag: active && active !== document.body ? active.tagName : '',
+    });
+  }
+
+  function renderedIds() {
+    return [...listEl.querySelectorAll('.msg-card')].map(node => node.getAttribute('data-draft-id'));
+  }
+
+  function topCardAnchor() {
+    const cards = listEl.querySelectorAll('.msg-card');
+    for (const card of cards) {
+      const rect = card.getBoundingClientRect();
+      if (rect.bottom <= 1) continue;
+      if (rect.top >= window.innerHeight) break;
+      return { id: card.getAttribute('data-draft-id'), top: rect.top };
+    }
+    return null;
+  }
+
+  function restoreAnchor(anchor) {
+    if (!anchor || !anchor.id || !window.inboxRefresh) return;
+    const safe = window.CSS && CSS.escape ? CSS.escape(anchor.id) : anchor.id;
+    const card = listEl.querySelector('.msg-card[data-draft-id="' + safe + '"]');
+    if (!card) return;
+    const delta = window.inboxRefresh.anchorDelta(anchor.top, card.getBoundingClientRect().top);
+    if (Math.abs(delta) < 1) return;
+    window.scrollBy(0, delta);
+  }
+
+  function insertMissing() {
+    const have = new Set(renderedIds());
+    const fresh = drafts.filter(d => d && d.id && !have.has(d.id));
+    if (!fresh.length) return 0;
+    const empty = listEl.querySelector('.empty-list');
+    if (empty) empty.remove();
+    fresh.forEach(d => {
+      const card = buildCard(d);
+      const idx = drafts.findIndex(item => item.id === d.id);
+      let before = null;
+      for (let i = idx + 1; i < drafts.length; i++) {
+        const id = drafts[i] && drafts[i].id;
+        if (!id) continue;
+        const safe = window.CSS && CSS.escape ? CSS.escape(id) : id;
+        const node = listEl.querySelector('.msg-card[data-draft-id="' + safe + '"]');
+        if (node) { before = node; break; }
+      }
+      if (before) listEl.insertBefore(card, before);
+      else listEl.appendChild(card);
+    });
+    return fresh.length;
+  }
+
   async function load(opts) {
-    const keepY = window.scrollY;
-    const keepList = listEl.scrollTop;
-    if (!loadedOnce) listEl.textContent = 'Đang tải…';
+    opts = opts || {};
+    const mode = opts.background ? 'background' : (opts.apply ? 'apply' : 'replace');
+    const seq = ++loadSeq;
+    if (!loadedOnce && mode === 'replace') listEl.textContent = 'Đang tải…';
     const q = new URLSearchParams();
     q.set('ops', ops);
     q.set('kenh', salesChannel);
@@ -557,29 +600,51 @@
         api('/admin/api/drafts?' + q.toString()),
         api('/admin/api/stats?kenh=' + encodeURIComponent(salesChannel)),
       ]);
-      drafts = data.drafts || [];
+      if (seq !== loadSeq) return;
+      const incoming = data.drafts || [];
       counts = data.counts || {};
       triageCounts = data.triageCounts || triageCounts;
       groupCounts = data.groupCounts || groupCounts;
       folderCounts = data.folderCounts || folderCounts;
       loadedOnce = true;
+      const hold = editingHold();
+      const mutation = window.inboxRefresh
+        ? window.inboxRefresh.listMutation(mode, hold)
+        : (hold && mode !== 'replace' ? 'freeze' : 'replace');
+      const anchor = topCardAnchor();
       syncTabs();
-      renderStats(stats);
       if (updatedEl) updatedEl.textContent = 'Cập nhật lúc ' + ictClock(new Date());
-      if (opts && opts.ack) acknowledgePending(data.pendingIds || []);
-      else notePending(data.pendingIds || []);
+      if (mutation === 'freeze') {
+        queuedDrafts = incoming;
+        const unseen = window.inboxRefresh
+          ? window.inboxRefresh.unseenIds(renderedIds(), incoming).length
+          : 0;
+        paintNew(unseen);
+        restoreAnchor(anchor);
+        return;
+      }
+      drafts = incoming;
+      queuedDrafts = null;
+      if (mutation === 'insert') {
+        renderStats(stats);
+        insertMissing();
+        paintNew(0);
+        restoreAnchor(anchor);
+        return;
+      }
+      renderStats(stats);
       if (data.storage && data.storage !== 'postgres') {
         storageEl.hidden = false;
         storageEl.textContent = 'Bản nháp đang nằm trong bộ nhớ của server. Khởi động lại máy sẽ mất hàng đợi. Trên Railway hãy đặt DATABASE_URL để lưu vào Postgres.';
       } else {
         storageEl.hidden = true;
       }
-      const stamp = JSON.stringify(drafts);
-      if (stamp !== listStamp && !cardsDirty()) {
-        listStamp = stamp;
-        renderList();
-        listEl.scrollTop = keepList;
-      }
+      const keepY = window.scrollY;
+      const keepList = listEl.scrollTop;
+      listStamp = JSON.stringify(drafts);
+      renderList();
+      listEl.scrollTop = keepList;
+      paintNew(0);
       const open = selectedId && drafts.find(d => d.id === selectedId);
       if (open) {
         const nextStamp = JSON.stringify(open);
@@ -593,9 +658,18 @@
         document.body.classList.remove('show-detail');
         showPlaceholder();
       }
-      if (!(opts && opts.scrollTop)) window.scrollTo(window.scrollX, keepY);
+      if (anchor && listEl.querySelector('.msg-card[data-draft-id="' + (window.CSS && CSS.escape ? CSS.escape(anchor.id) : anchor.id) + '"]')) {
+        restoreAnchor(anchor);
+      } else {
+        window.scrollTo(window.scrollX, keepY);
+      }
     } catch (e) {
       if (e.message === 'unauthorized') return;
+      if (seq !== loadSeq) return;
+      if (mode !== 'replace' || loadedOnce) {
+        toast(e.message);
+        return;
+      }
       listEl.textContent = '';
       listEl.appendChild(el('p', { class: 'empty', text: e.message }));
     }
@@ -668,7 +742,11 @@
       if (!selectedId) showPlaceholder();
       return;
     }
-    drafts.forEach(d => {
+    drafts.forEach(d => listEl.appendChild(buildCard(d)));
+    if (!selectedId) showPlaceholder();
+  }
+
+  function buildCard(d) {
       const s = ensureCard(d);
       if (!s.dirty) s.reply = d.draft_reply || d.ai_suggested_draft || '';
       const btn = el('button', {
@@ -767,9 +845,7 @@
       });
       if (fold.open) fold.appendChild(kiotPanel(d, d.id));
       card.appendChild(fold);
-      listEl.appendChild(card);
-    });
-    if (!selectedId) showPlaceholder();
+      return card;
   }
 
   function triageBadge(d) {
@@ -1946,7 +2022,8 @@
 
   async function refreshNow() {
     if (busy) return;
-    await load({ ack: true });
+    if (editingHold()) await load({ apply: true });
+    else await load();
   }
 
   async function syncMissed() {
@@ -1971,7 +2048,8 @@
         toast(text);
       }
       listStamp = '';
-      await load({ ack: true });
+      if (editingHold()) await load({ apply: true });
+      else await load();
     } catch (e) {
       if (e.message !== 'unauthorized') {
         showSync(e.message, true);
@@ -1989,22 +2067,25 @@
   if (syncBtn) syncBtn.addEventListener('click', () => { syncMissed(); });
   if (newEl) {
     newEl.addEventListener('click', () => {
-      load({ ack: true, scrollTop: true }).then(() => {
-        const queue = document.getElementById('queue');
-        if (queue && queue.scrollIntoView) queue.scrollIntoView({ block: 'start' });
-      });
+      load({ apply: true });
     });
   }
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && !busy) load();
+    if (!loadedOnce || busy) return;
+    if (document.visibilityState === 'visible') load({ background: true });
   });
-  setInterval(() => {
-    if (document.visibilityState === 'visible' && !busy) load();
-  }, 20000);
+
+  function startPolling() {
+    const pollMs = Number(new URLSearchParams(location.search).get('pollms'));
+    const interval = Number.isFinite(pollMs) && pollMs >= 200 && pollMs <= 60000 ? pollMs : 20000;
+    setInterval(() => {
+      if (document.visibilityState === 'visible' && !busy) load({ background: true });
+    }, interval);
+  }
 
   syncTabs();
-  loadChannels().then(load).catch(e => {
+  loadChannels().then(load).then(startPolling).catch(e => {
     if (e.message !== 'unauthorized') {
       listEl.textContent = '';
       listEl.appendChild(el('p', { class: 'empty', text: e.message }));
