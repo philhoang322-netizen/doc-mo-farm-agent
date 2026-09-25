@@ -12,12 +12,12 @@ const audit = require('./audit');
 const kiotInbox = require('./kiotInbox');
 const inboxSync = require('./inboxSync');
 const kiotviet = require('./kiotviet');
+const customerLink = require('./customerLink');
 const roster = require('./roster');
 const handover = require('./handover');
 const rosterPage = require('./rosterPage');
 const brand = require('./brand');
 const channelNames = require('./channelNames');
-const customerLink = require('./customerLink');
 
 const PUBLIC = path.join(__dirname, '..', 'public', 'admin');
 
@@ -217,15 +217,6 @@ function sendAsset(name, type) {
   };
 }
 
-async function attachChannelNames(payload) {
-  const rows = payload && payload.drafts;
-  if (!Array.isArray(rows)) return payload;
-  await Promise.all(rows.map(async (draft) => {
-    draft.channel_names = await channelNames.forDraft(draft);
-  }));
-  return payload;
-}
-
 async function withProfiles(payload) {
   const rows = payload && Array.isArray(payload.drafts) ? payload.drafts : [];
   payload.drafts = await Promise.all(rows.map(async (draft) => {
@@ -236,6 +227,15 @@ async function withProfiles(payload) {
       console.error('Customer profile skipped:', err.message);
       return draft;
     }
+  }));
+  return payload;
+}
+
+async function attachChannelNames(payload) {
+  const rows = payload && payload.drafts;
+  if (!Array.isArray(rows)) return payload;
+  await Promise.all(rows.map(async (draft) => {
+    draft.channel_names = await channelNames.forDraft(draft);
   }));
   return payload;
 }
@@ -535,29 +535,6 @@ async function kiotCreate(req, res) {
   }
 }
 
-async function resumeCustomer(req, res) {
-  const raw = req.body && req.body.external_key;
-  const key = typeof raw === 'string' ? raw.trim() : '';
-  if (!key) return res.status(400).json({ error: 'Thiếu external_key' });
-  if (key.length > 200) return res.status(400).json({ error: 'external_key quá dài' });
-  try {
-    const customer = await db.getCustomerByExternalId(key);
-    if (!customer) return res.status(404).json({ error: 'Không tìm thấy khách' });
-    const resumed = await db.resumeBot(customer.id);
-    if (!resumed) return res.status(503).json({ error: 'Chưa có database để mở lại bot' });
-    res.json({
-      ok: true,
-      external_key: key,
-      customer_id: customer.id,
-      display_name: customer.display_name || null,
-      bot_paused: false,
-    });
-  } catch (e) {
-    console.error('Resume customer failed:', e.message);
-    res.status(500).json({ error: 'Không mở lại được bot' });
-  }
-}
-
 async function customerCard(req, res) {
   try {
     const draft = await drafts.getDraft(req.params.id);
@@ -625,6 +602,29 @@ async function customerUnlink(req, res) {
   } catch (e) {
     const status = e.status || 500;
     res.status(status).json({ error: e.status ? e.message : 'Không gỡ được hồ sơ' });
+  }
+}
+
+async function resumeCustomer(req, res) {
+  const raw = req.body && req.body.external_key;
+  const key = typeof raw === 'string' ? raw.trim() : '';
+  if (!key) return res.status(400).json({ error: 'Thiếu external_key' });
+  if (key.length > 200) return res.status(400).json({ error: 'external_key quá dài' });
+  try {
+    const customer = await db.getCustomerByExternalId(key);
+    if (!customer) return res.status(404).json({ error: 'Không tìm thấy khách' });
+    const resumed = await db.resumeBot(customer.id);
+    if (!resumed) return res.status(503).json({ error: 'Chưa có database để mở lại bot' });
+    res.json({
+      ok: true,
+      external_key: key,
+      customer_id: customer.id,
+      display_name: customer.display_name || null,
+      bot_paused: false,
+    });
+  } catch (e) {
+    console.error('Resume customer failed:', e.message);
+    res.status(500).json({ error: 'Không mở lại được bot' });
   }
 }
 
