@@ -1404,6 +1404,49 @@ body.hitl .addr-block {
 }
 body.hitl .addr-grid3 { display: grid; grid-template-columns: 1fr; gap: var(--space-3); margin-bottom: var(--space-3); }
 body.hitl .addr-ids { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: var(--space-2); font-size: 13px; font-weight: 600; color: #3f4841; }
+body.hitl .addr-head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; margin-bottom: 8px; }
+body.hitl .addr-head h4 { margin: 0; font-size: 16px; }
+body.hitl .addr-hint, body.hitl .addr-prefill { color: var(--muted); font-size: 13px; margin: 0 0 6px; }
+body.hitl .addr-req { color: var(--red); font-size: 12px; font-weight: 650; }
+body.hitl .addr-error { color: var(--red); font-weight: 700; margin: 0 0 6px; }
+body.hitl .addr-line { margin: 2px 0 8px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.hitl .addr-combo { position: relative; }
+body.hitl .addr-hits {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  top: calc(100% - 4px);
+  max-height: 220px;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+}
+body.hitl .addr-hit {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 44px;
+  height: 44px;
+  margin: 0;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: none;
+  font-size: 15px;
+  font-weight: 650;
+  text-align: left;
+}
+body.inbox .addr-block input[type="text"],
+body.inbox .addr-block input[type="search"] {
+  min-height: 44px;
+  height: 44px;
+  font-size: 16px;
+}
 body.hitl .sticky-actions {
   position: sticky;
   bottom: 0;

@@ -83,6 +83,12 @@
     meta.appendChild(badge);
     open.appendChild(rowEl);
     open.appendChild(meta);
+    if (row.delivery_address) {
+      const place = document.createElement('p');
+      place.className = 'addr-line';
+      place.textContent = row.delivery_address;
+      open.appendChild(place);
+    }
     const items = Array.isArray(row.items) ? row.items : [];
     if (items.length) {
       const lines = document.createElement('ul');

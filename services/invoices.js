@@ -39,6 +39,7 @@ const SCHEMA = [
     paid_at         TIMESTAMPTZ,
     amount_paid     INTEGER NOT NULL DEFAULT 0
   )`,
+  `ALTER TABLE kiot_invoices ADD COLUMN IF NOT EXISTS delivery_address TEXT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS kiot_invoices_code_uidx ON kiot_invoices (code)`,
   `CREATE INDEX IF NOT EXISTS kiot_invoices_order_code_idx ON kiot_invoices (order_code)`,
   `CREATE INDEX IF NOT EXISTS kiot_invoices_phone_idx ON kiot_invoices (customer_phone)`,
@@ -113,6 +114,7 @@ function fromRow(row) {
     payment_status: row.payment_status || 'chua_tt',
     paid_at: row.paid_at ? new Date(row.paid_at).toISOString() : null,
     amount_paid: Math.round(Number(row.amount_paid) || 0),
+    delivery_address: row.delivery_address ? String(row.delivery_address).slice(0, 300) : null,
   };
 }
 
@@ -199,9 +201,9 @@ async function save(row) {
     `INSERT INTO kiot_invoices (
        id, kiot_id, code, order_code, order_kiot_id, draft_id, document_type,
        customer_code, customer_name, customer_phone, channel, items, total,
-       created_at, sent_at, payment_status, paid_at, amount_paid
+       created_at, sent_at, payment_status, paid_at, amount_paid, delivery_address
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18,$19
      )
      ON CONFLICT (id) DO UPDATE SET
        kiot_id = EXCLUDED.kiot_id,
@@ -219,12 +221,13 @@ async function save(row) {
        sent_at = EXCLUDED.sent_at,
        payment_status = EXCLUDED.payment_status,
        paid_at = EXCLUDED.paid_at,
-       amount_paid = EXCLUDED.amount_paid`,
+       amount_paid = EXCLUDED.amount_paid,
+       delivery_address = EXCLUDED.delivery_address`,
     [
       next.id, next.kiot_id, next.code, next.order_code, next.order_kiot_id, next.draft_id,
       next.document_type, next.customer_code, next.customer_name, next.customer_phone,
       next.channel, JSON.stringify(next.items), next.total, next.created_at, next.sent_at,
-      next.payment_status, next.paid_at, next.amount_paid,
+      next.payment_status, next.paid_at, next.amount_paid, next.delivery_address,
     ]
   );
   images.delete(next.code);
@@ -255,6 +258,7 @@ function blankSale(input) {
     payment_status: 'chua_tt',
     paid_at: null,
     amount_paid: 0,
+    delivery_address: input.deliveryAddress ? String(input.deliveryAddress).slice(0, 300) : null,
   };
 }
 
@@ -460,7 +464,7 @@ async function pngFor(code) {
   if (!row || row.document_type !== 'invoice') return null;
   row = await backfillCustomerCode(row);
   const cached = images.get(row.code);
-  const stamp = `${row.amount_paid}|${row.total}|${row.customer_name}|${row.customer_code || ''}|${JSON.stringify(row.items || [])}`;
+  const stamp = `${row.amount_paid}|${row.total}|${row.customer_name}|${row.customer_code || ''}|${row.delivery_address || ''}|${JSON.stringify(row.items || [])}`;
   if (cached && cached.stamp === stamp) return cached.buffer;
   const buffer = await invoiceImage.render({
     ...row,

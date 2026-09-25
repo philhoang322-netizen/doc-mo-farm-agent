@@ -102,6 +102,13 @@ input {
   margin: 4px 0 0;
   color: var(--soft);
 }
+.addr-line {
+  margin: 4px 0 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 14px;
+}
 .lines { list-style: none; margin: 8px 0 0; padding: 0; }
 .lines li {
   display: flex;

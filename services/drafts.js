@@ -460,11 +460,14 @@ function emptyReviewForm() {
     kiot_ref: null,
     province_id: null,
     province_name: null,
+    province_code: null,
     district_id: null,
     district_name: null,
+    district_code: null,
     ward_id: null,
     ward_name: null,
     address_detail: null,
+    address_line: null,
     delivery_slot: null,
     kiot_code: null,
     kiot_total: null,
@@ -504,12 +507,15 @@ function cleanReviewForm(value) {
   out.internal_note = cleanShort('internal_note', src.internal_note, 500);
   out.kiot_ref = cleanShort('kiot_ref', src.kiot_ref, 80);
   out.province_id = cleanShort('province_id', src.province_id, 32);
-  out.province_name = cleanShort('province_name', src.province_name, 80);
+  out.province_name = cleanShort('province_name', src.province_name, 120);
+  out.province_code = cleanShort('province_code', src.province_code, 16);
   out.district_id = cleanShort('district_id', src.district_id, 32);
-  out.district_name = cleanShort('district_name', src.district_name, 80);
+  out.district_name = cleanShort('district_name', src.district_name, 120);
+  out.district_code = cleanShort('district_code', src.district_code, 16);
   out.ward_id = cleanShort('ward_id', src.ward_id, 32);
-  out.ward_name = cleanShort('ward_name', src.ward_name, 80);
+  out.ward_name = cleanShort('ward_name', src.ward_name, 160);
   out.address_detail = cleanShort('address_detail', src.address_detail, 200);
+  out.address_line = cleanShort('address_line', src.address_line, 300);
   const kiotCode = cleanShort('kiot_code', src.kiot_code, 40);
   if (kiotCode && !/^[A-Za-z0-9._-]+$/.test(kiotCode)) {
     throw new DraftError(400, 'Mã KiotViet không hợp lệ');

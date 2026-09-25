@@ -194,6 +194,7 @@ function pageHtml(row, imgSrc) {
   }).format(new Date(row.created_at)) : '';
   const code = escHtml(row && row.code);
   const meta = [phone, stamp, `Tổng ${total}đ`, 'VCB 1058437590', `nội dung CK: ${code}`].filter(Boolean).join(' · ');
+  const address = row && row.delivery_address ? escHtml(row.delivery_address) : '';
   return `<!doctype html>
 <html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -205,6 +206,7 @@ function pageHtml(row, imgSrc) {
   .id-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 22px; font-weight: 700; }
   .id-code { flex: 0 0 auto; white-space: nowrap; font-size: 15px; font-weight: 600; color: #0f5a35; }
   .meta { margin: 6px 0 10px; color: #5c564e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .addr-line { margin: 0 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .inv-lines { list-style: none; margin: 0 0 8px; padding: 0; }
   .inv-lines li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid #e7e1d8; }
   .inv-total { margin: 8px 0 12px; font-size: 20px; font-weight: 700; }
@@ -212,6 +214,7 @@ function pageHtml(row, imgSrc) {
 </style></head><body><main>
 ${headerHtml(row)}
 <p class="meta">${meta}</p>
+${address ? `<p class="addr-line">${address}</p>` : ''}
 ${linesHtml(row)}
 <img src="${escHtml(imgSrc || '')}" alt="Hoá đơn ${code}">
 </main></body></html>`;
@@ -265,7 +268,8 @@ async function render(invoice) {
   const nameLines = items.map(item => wrap(measure, item.name || item.product_name || 'Sản phẩm', 300));
   const rowHeights = nameLines.map(lines => Math.max(32, lines.length * 22 + 10));
   const tableH = 36 + rowHeights.reduce((s, h) => s + h, 0);
-  const height = 168 + 96 + tableH + 210 + 340 + (invoice.link ? 72 : 36);
+  const addressLine = invoice.delivery_address ? String(invoice.delivery_address) : '';
+  const height = 168 + 96 + tableH + 210 + 340 + (invoice.link ? 72 : 36) + (addressLine ? 28 : 0);
   const img = PImage.make(WIDTH, height);
   const ctx = img.getContext('2d');
   ctx.fillStyle = '#ffffff';
@@ -292,6 +296,12 @@ async function render(invoice) {
   ctx.font = '16px Noto';
   ctx.fillText(ellipsize(ctx, metaBits.filter(Boolean).join(' · '), WIDTH - 64), 32, y);
   y += 28;
+  if (addressLine) {
+    ctx.fillStyle = '#1c1712';
+    ctx.font = '16px Noto';
+    ctx.fillText(ellipsize(ctx, addressLine, WIDTH - 64), 32, y);
+    y += 24;
+  }
 
   ctx.fillStyle = '#e7efe9';
   ctx.fillRect(24, y, WIDTH - 48, 32);
