@@ -20,6 +20,7 @@ delete process.env.HITL_ACK_MESSAGE;
 delete process.env.FB_APP_SECRET_ALT;
 delete process.env.FB_CLIENT_TOKEN;
 delete process.env.MESSENGER_SKIP_VERIFY;
+delete process.env.MESSENGER_SIG_CAPTURE;
 
 const { describe, test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -38,7 +39,12 @@ const PAGE = 'page-111';
 
 const app = express();
 app.use(express.json({
-  verify: (req, _res, buf) => { req.rawBody = buf; },
+  verify: (req, _res, buf) => {
+    if (!Buffer.isBuffer(req.rawBody)) {
+      req.rawBody = buf;
+      req.messengerRawSource = 'verify_hook';
+    }
+  },
 }));
 messenger.mount(app, { pipeline, log() {} });
 
@@ -96,6 +102,7 @@ function clearSignatureDiagEnv() {
   delete process.env.FB_APP_SECRET_ALT;
   delete process.env.FB_CLIENT_TOKEN;
   delete process.env.MESSENGER_SKIP_VERIFY;
+  delete process.env.MESSENGER_SIG_CAPTURE;
 }
 
 function assertLogsOmit(errors, parts) {
@@ -103,7 +110,7 @@ function assertLogsOmit(errors, parts) {
   for (const part of parts) assert.equal(dumped.includes(part), false);
 }
 
-function postSigned(raw, signature) {
+function postSigned(raw, signature, extraHeaders) {
   const body = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
   return httpCall('POST', '/messenger/webhook', {
     raw: body,
@@ -111,6 +118,7 @@ function postSigned(raw, signature) {
       'content-type': 'application/json',
       'content-length': body.length,
       'x-hub-signature-256': signature == null ? messenger.signBody(body) : signature,
+      ...(extraHeaders || {}),
     },
   });
 }
@@ -568,13 +576,206 @@ describe('Messenger channel', { concurrency: 1 }, () => {
     }
   });
 
+  test('MESSENGER_SIG_CAPTURE is off by default and does not log keys or the body', async () => {
+    clearSignatureDiagEnv();
+    const secrets = ['app-secret-test', 'alt-secret-wrong', 'client-token-test', 'page-token-test', 'verify-test-token'];
+    const originalError = console.error;
+    const errors = [];
+    console.error = (...args) => { errors.push(args); };
+    try {
+      for (const value of [undefined, '0', 'yes', 'on']) {
+        if (value == null) delete process.env.MESSENGER_SIG_CAPTURE;
+        else process.env.MESSENGER_SIG_CAPTURE = value;
+        const psid = `capoff_${value || 'unset'}_${Date.now()}`;
+        const text = `capture off ${value || 'unset'}`;
+        const raw = JSON.stringify(pageEvent(psid, { mid: `m-${psid}`, text }));
+        const res = await postSigned(raw);
+        assert.equal(res.status, 200);
+        assert.equal(errors.some((args) => args[0] === 'messenger_sig_capture'), false);
+        assertLogsOmit(errors, secrets.concat(text));
+      }
+    } finally {
+      console.error = originalError;
+      clearSignatureDiagEnv();
+    }
+  });
+
+  test('MESSENGER_SIG_CAPTURE logs the signed bytes and match booleans without key material', async () => {
+    clearSignatureDiagEnv();
+    process.env.MESSENGER_SIG_CAPTURE = '1';
+    process.env.FB_APP_SECRET_ALT = 'alt-secret-wrong';
+    mockAi();
+    const calls = [];
+    const originalPost = messenger.graphHttp.post;
+    messenger.graphHttp.post = async () => {
+      calls.push(1);
+      return { status: 200, data: { message_id: 'should-not-send' } };
+    };
+    const errors = [];
+    const originalError = console.error;
+    console.error = (...args) => { errors.push(args); };
+    const psid = `cap_${Date.now()}`;
+    const text = 'capture on pipeline text';
+    const raw = JSON.stringify(pageEvent(psid, { mid: `m-${psid}`, text }));
+    const signature = messenger.signBody(raw);
+    const metaObj = { link: 'https://x.test/a', text: 'Dầu' };
+    const metaRaw = '{"link":"https:\\/\\/x.test\\/a","text":"D\\u1ea7u"}';
+    try {
+      assert.equal(messenger.metaEscapedJson(JSON.stringify(metaObj)), metaRaw);
+      const rebuilt = messenger.buildSigCapture({
+        rawBody: '{"a":1}',
+        body: { a: 1 },
+        get() { return null; },
+      });
+      assert.equal(rebuilt.rawBodySource, 'reconstructed');
+      assert.equal(Buffer.from(rebuilt.rawBodyBase64, 'base64').toString('utf8'), '{"a":1}');
+      assert.equal(JSON.stringify(rebuilt).includes('app-secret-test'), false);
+      const res = await postSigned(raw, signature, { 'user-agent': 'sig-capture-test' });
+      assert.equal(res.status, 200);
+      assert.equal(calls.length, 0);
+      const draft = await draftFor(`fb_${psid}`);
+      assert.ok(draft);
+      assert.equal(draft.approval_status, 'PENDING_REVIEW');
+      assert.equal(draft.channel, 'messenger');
+      const lines = errors.filter((args) => args[0] === 'messenger_sig_capture');
+      assert.equal(lines.length, 1);
+      const cap = lines[0][1];
+      assert.equal(cap.xHubSignature256, signature);
+      assert.equal(cap.xHubSignature, null);
+      assert.equal(Buffer.from(cap.rawBodyBase64, 'base64').toString('utf8'), raw);
+      assert.equal(cap.rawBodyLength, Buffer.byteLength(raw));
+      assert.equal(cap.contentType, 'application/json');
+      assert.equal(cap.contentLength, String(Buffer.byteLength(raw)));
+      assert.equal(cap.contentEncoding, null);
+      assert.equal(cap.transferEncoding, null);
+      assert.equal(cap.userAgent, 'sig-capture-test');
+      assert.equal(cap.rawBodySource, 'verify_hook');
+      assert.equal(cap.sha1Raw.FB_APP_SECRET, false);
+      assert.equal(cap.sha1Raw.FB_APP_SECRET_ALT, false);
+      assert.equal(cap.sha1Raw.FB_CLIENT_TOKEN, undefined);
+      assert.equal(cap.sha256JsonStringify.FB_APP_SECRET, true);
+      assert.equal(cap.sha256JsonStringify.FB_APP_SECRET_ALT, false);
+      assert.equal(cap.sha256JsonStringify.FB_CLIENT_TOKEN, undefined);
+      assert.equal(cap.sha256MetaEscaped.FB_APP_SECRET, true);
+      assert.equal(cap.sha256MetaEscaped.FB_CLIENT_TOKEN, undefined);
+      assertLogsOmit(errors, [
+        'app-secret-test',
+        'alt-secret-wrong',
+        'client-token-test',
+        'page-token-test',
+        'verify-test-token',
+      ]);
+
+      process.env.MESSENGER_SIG_CAPTURE = 'true';
+      process.env.FB_CLIENT_TOKEN = 'client-token-test';
+      const sha1 = 'sha1=' + crypto.createHmac('sha1', 'app-secret-test').update(metaRaw).digest('hex');
+      const metaSig = messenger.signBody(metaRaw);
+      const resMeta = await postSigned(metaRaw, metaSig, { 'x-hub-signature': sha1 });
+      assert.equal(resMeta.status, 200);
+      assert.equal(calls.length, 0);
+      const metaLine = errors.filter((args) => args[0] === 'messenger_sig_capture').at(-1);
+      assert.ok(metaLine);
+      assert.equal(metaLine[1].xHubSignature, sha1);
+      assert.equal(metaLine[1].xHubSignature256, metaSig);
+      assert.equal(Buffer.from(metaLine[1].rawBodyBase64, 'base64').toString('utf8'), metaRaw);
+      assert.equal(metaLine[1].sha1Raw.FB_APP_SECRET, true);
+      assert.equal(metaLine[1].sha1Raw.FB_APP_SECRET_ALT, false);
+      assert.equal(metaLine[1].sha1Raw.FB_CLIENT_TOKEN, false);
+      assert.equal(metaLine[1].sha256JsonStringify.FB_APP_SECRET, false);
+      assert.equal(metaLine[1].sha256MetaEscaped.FB_APP_SECRET, true);
+      assert.equal(metaLine[1].sha256MetaEscaped.FB_APP_SECRET_ALT, false);
+      assert.equal(metaLine[1].sha256MetaEscaped.FB_CLIENT_TOKEN, false);
+      assert.equal(metaLine[1].sha256JsonStringify.FB_CLIENT_TOKEN, false);
+      assertLogsOmit(errors, [
+        'app-secret-test',
+        'alt-secret-wrong',
+        'client-token-test',
+        'page-token-test',
+        'verify-test-token',
+      ]);
+    } finally {
+      console.error = originalError;
+      messenger.graphHttp.post = originalPost;
+      clearSignatureDiagEnv();
+    }
+  });
+
+  test('capture_raw records the express.raw buffer, not a reconstructed body', async () => {
+    clearSignatureDiagEnv();
+    process.env.MESSENGER_SIG_CAPTURE = '1';
+    const rawApp = express();
+    rawApp.use('/messenger/webhook', messenger.captureRawBody);
+    rawApp.use(express.json({
+      verify: (req, _res, buf) => {
+        if (!Buffer.isBuffer(req.rawBody)) {
+          req.rawBody = buf;
+          req.messengerRawSource = 'verify_hook';
+        }
+      },
+    }));
+    messenger.mount(rawApp, { pipeline, log() {} });
+    const rawServer = http.createServer(rawApp);
+    await new Promise((resolve) => rawServer.listen(0, '127.0.0.1', resolve));
+    const rawPort = rawServer.address().port;
+    const raw = Buffer.from('{"object":"page","text":"D\\u1ea7u g\\u1ed9i"}');
+    const errors = [];
+    const originalError = console.error;
+    console.error = (...args) => { errors.push(args); };
+    try {
+      const res = await new Promise((resolve, reject) => {
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port: rawPort,
+          path: '/messenger/webhook',
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json; charset=UTF-8',
+            'content-encoding': 'identity',
+            'content-length': raw.length,
+            'user-agent': 'meta-capture-test',
+            'x-hub-signature-256': messenger.signBody(raw),
+          },
+        }, (response) => {
+          const chunks = [];
+          response.on('data', (c) => chunks.push(c));
+          response.on('end', () => resolve({
+            status: response.statusCode,
+            body: Buffer.concat(chunks).toString('utf8'),
+          }));
+        });
+        req.on('error', reject);
+        req.write(raw);
+        req.end();
+      });
+      assert.equal(res.status, 200);
+      const line = errors.find((args) => args[0] === 'messenger_sig_capture');
+      assert.ok(line, 'expected messenger_sig_capture');
+      assert.equal(line[1].rawBodySource, 'capture_raw');
+      assert.equal(line[1].rawBodySource === 'reconstructed', false);
+      assert.deepEqual(Buffer.from(line[1].rawBodyBase64, 'base64'), raw);
+      assert.equal(line[1].contentType, 'application/json; charset=UTF-8');
+      assert.equal(line[1].contentEncoding, 'identity');
+      assert.equal(line[1].contentLength, String(raw.length));
+      assert.equal(line[1].userAgent, 'meta-capture-test');
+      assert.equal(line[1].sha256JsonStringify.FB_APP_SECRET, false);
+      assertLogsOmit(errors, ['app-secret-test', 'page-token-test', 'verify-test-token']);
+    } finally {
+      console.error = originalError;
+      clearSignatureDiagEnv();
+      await new Promise((resolve) => rawServer.close(resolve));
+    }
+  });
+
   test('bytes survive a non-json content type when capture runs before express.json', async () => {
     mockAi();
     const rawApp = express();
     rawApp.use('/messenger/webhook', messenger.captureRawBody);
     rawApp.use(express.json({
       verify: (req, _res, buf) => {
-        if (!Buffer.isBuffer(req.rawBody)) req.rawBody = buf;
+        if (!Buffer.isBuffer(req.rawBody)) {
+          req.rawBody = buf;
+          req.messengerRawSource = 'verify_hook';
+        }
       },
     }));
     messenger.mount(rawApp, { pipeline, log() {} });
@@ -624,7 +825,10 @@ describe('Messenger channel', { concurrency: 1 }, () => {
     rawApp.use('/messenger/webhook', messenger.captureRawBody);
     rawApp.use(express.json({
       verify: (req, _res, buf) => {
-        if (!Buffer.isBuffer(req.rawBody)) req.rawBody = buf;
+        if (!Buffer.isBuffer(req.rawBody)) {
+          req.rawBody = buf;
+          req.messengerRawSource = 'verify_hook';
+        }
       },
     }));
     messenger.mount(rawApp, { pipeline, log() {} });

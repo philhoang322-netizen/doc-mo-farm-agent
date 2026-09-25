@@ -10,8 +10,10 @@
  *
  * HMAC uses FB_APP_SECRET. FB_APP_SECRET_ALT and FB_CLIENT_TOKEN are optional
  * diagnostics tried only after the primary secret fails. MESSENGER_SKIP_VERIFY
- * (1 or true) is a temporary bypass for a short pipeline proof. None of these
- * auto-send a customer reply.
+ * (1 or true) is a temporary bypass for a short pipeline proof.
+ * MESSENGER_SIG_CAPTURE (1 or true) logs one messenger_sig_capture line with
+ * the signature headers and the exact HMAC bytes (base64) so they can be
+ * recomputed offline. Default off. None of these auto-send a customer reply.
  */
 const crypto = require('crypto');
 const express = require('express');
@@ -65,6 +67,11 @@ function attemptFlags(secrets) {
 /** Emergency only: `1` or `true`. Accepts a POST that failed HMAC. Default off. */
 function skipVerifyEnabled() {
   return /^(1|true)$/i.test(String(process.env.MESSENGER_SKIP_VERIFY || '').trim());
+}
+
+/** Temporary: `1` or `true`. Logs the signed bytes. Default off. */
+function sigCaptureEnabled() {
+  return /^(1|true)$/i.test(String(process.env.MESSENGER_SIG_CAPTURE || '').trim());
 }
 
 const SKIP_VERIFY_WARNING = 'TEMPORARY for Phil\'s 10-minute pipeline proof only. MESSENGER_SKIP_VERIFY accepted this POST without a matching HMAC. Unset it immediately. Customer replies stay PENDING_REVIEW and are not auto-sent.';
@@ -275,6 +282,7 @@ function captureRawBody(req, res, next) {
     // block express.json from keeping the real bytes on req.rawBody.
     if (!raw) return next();
     req.rawBody = raw;
+    req.messengerRawSource = 'capture_raw';
     req._body = true;
     if (!raw.length) {
       req.body = {};
@@ -317,6 +325,119 @@ function signatureDetail(req, result) {
     }
   }
   return detail;
+}
+
+const KEY_LABELS = [
+  ['primary', 'FB_APP_SECRET'],
+  ['alt', 'FB_APP_SECRET_ALT'],
+  ['clientToken', 'FB_CLIENT_TOKEN'],
+];
+
+/**
+ * Meta's webhook JSON escapes non-ASCII as lowercase `\uXXXX` (UTF-16 code
+ * units) and escapes `/` as `\/`. JSON.stringify does neither for ordinary
+ * text. `jsonText` is already the output of JSON.stringify.
+ */
+function metaEscapedJson(jsonText) {
+  const text = String(jsonText);
+  let out = '';
+  for (const ch of text) {
+    if (ch === '/') {
+      out += '\\/';
+      continue;
+    }
+    const cp = ch.codePointAt(0);
+    if (cp > 0x7f) {
+      for (let i = 0; i < ch.length; i += 1) {
+        out += '\\u' + ch.charCodeAt(i).toString(16).padStart(4, '0');
+      }
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function hmacHeaderMatches(algorithm, secret, payload, headerValue, scheme) {
+  if (!secret || headerValue == null || headerValue === '') return false;
+  const digest = crypto.createHmac(algorithm, secret).update(payload).digest('hex');
+  for (const token of headerTokens(headerValue)) {
+    const parsed = splitScheme(token);
+    if (parsed.scheme !== scheme) continue;
+    const hex = parsed.value.trim().toLowerCase();
+    if (hex.length === digest.length && safeEqual(hex, digest)) return true;
+  }
+  return false;
+}
+
+function keyMatches(algorithm, secrets, payload, headerValue, scheme) {
+  const out = {};
+  for (const [slot, label] of KEY_LABELS) {
+    if (!secrets[slot]) continue;
+    out[label] = hmacHeaderMatches(algorithm, secrets[slot], payload, headerValue, scheme);
+  }
+  return out;
+}
+
+function headerValue(req, name) {
+  if (!req || typeof req.get !== 'function') return null;
+  const value = req.get(name);
+  if (value == null || value === '') return null;
+  return String(value);
+}
+
+/** Bytes actually passed to HMAC, plus where they came from. */
+function bytesForHmac(req) {
+  const tagged = req && req.messengerRawSource;
+  if (Buffer.isBuffer(req && req.rawBody) || (req && req.rawBody instanceof Uint8Array)) {
+    return {
+      raw: rawBuffer(req.rawBody),
+      rawBodySource: tagged || 'verify_hook',
+    };
+  }
+  return { raw: rawBuffer(req && req.rawBody), rawBodySource: 'reconstructed' };
+}
+
+/**
+ * One opt-in diagnostic line. Includes the signature headers and the raw
+ * body so the HMAC can be recomputed offline. Never includes a secret.
+ */
+function buildSigCapture(req) {
+  const secrets = candidateSecrets();
+  const { raw, rawBodySource } = bytesForHmac(req);
+  const sha256Header = headerValue(req, 'x-hub-signature-256');
+  const sha1Header = headerValue(req, 'x-hub-signature');
+  let plain = null;
+  let meta = null;
+  try {
+    const text = JSON.stringify(req && req.body);
+    if (typeof text === 'string') {
+      plain = Buffer.from(text, 'utf8');
+      meta = Buffer.from(metaEscapedJson(text), 'utf8');
+    }
+  } catch {
+    plain = null;
+    meta = null;
+  }
+  return {
+    xHubSignature256: sha256Header,
+    xHubSignature: sha1Header,
+    rawBodyBase64: raw.toString('base64'),
+    rawBodyLength: raw.length,
+    contentType: headerValue(req, 'content-type'),
+    contentEncoding: headerValue(req, 'content-encoding'),
+    contentLength: headerValue(req, 'content-length'),
+    transferEncoding: headerValue(req, 'transfer-encoding'),
+    userAgent: headerValue(req, 'user-agent'),
+    rawBodySource,
+    sha1Raw: keyMatches('sha1', secrets, raw, sha1Header, 'sha1'),
+    sha256JsonStringify: plain
+      ? keyMatches('sha256', secrets, plain, sha256Header, 'sha256')
+      : keyMatches('sha256', secrets, Buffer.alloc(0), null, 'sha256'),
+    sha256MetaEscaped: meta
+      ? keyMatches('sha256', secrets, meta, sha256Header, 'sha256')
+      : keyMatches('sha256', secrets, Buffer.alloc(0), null, 'sha256'),
+  };
 }
 
 function signBody(rawBody, secret = appSecret()) {
@@ -517,6 +638,13 @@ function mount(app, deps) {
   });
 
   app.post('/messenger/webhook', async (req, res) => {
+    if (sigCaptureEnabled()) {
+      try {
+        console.error('messenger_sig_capture', buildSigCapture(req));
+      } catch {
+        console.error('messenger_sig_capture_error', { message: 'capture failed' });
+      }
+    }
     if (!enabled()) {
       log({ type: 'messenger_ignored', reason: 'disabled' });
       return res.status(200).json({ ok: true, ignored: 'disabled' });
@@ -580,6 +708,8 @@ module.exports = {
   verifySignature,
   captureRawBody,
   signBody,
+  metaEscapedJson,
+  buildSigCapture,
   mount,
   processBody,
   sendText,
