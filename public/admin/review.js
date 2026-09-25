@@ -920,8 +920,11 @@
     const body = el('div', { class: 'detail-body' });
     const code = d.customer_code || f.kiot_ref || '';
     const nameRow = el('div', { class: 'name-row' });
-    channelNameNodes(d).forEach(node => nameRow.appendChild(node));
-    if (code) {
+    const nameBox = el('div', { class: 'msg-names' });
+    channelNameNodes(d).forEach(node => nameBox.appendChild(node));
+    nameRow.appendChild(nameBox);
+    const kiotShown = Array.isArray(d.channel_names) && d.channel_names.some(item => item && item.code);
+    if (code && !kiotShown) {
       nameRow.appendChild(el('span', { class: 'cust-code', title: 'Mã khách hàng', text: code }));
     }
     const meta = el('div', { class: 'detail-meta' }, [nameRow]);
@@ -1380,6 +1383,8 @@
       touched: {},
       existing: kiotMark(d),
       acknowledge: false,
+      kiotCustomer: null,
+      lookupTimer: null,
     };
     const panel = el('section', { class: 'kiot-panel', id: 'kiot-panel-' + pid });
     panel.appendChild(el('h4', { text: 'Tạo đơn KiotViet' }));
@@ -1448,7 +1453,12 @@
       nameHint.textContent = '';
       nameHint.hidden = true;
     });
-    phoneInput.input.addEventListener('input', () => { state.touched.phone = true; dirty = true; state.quote = null; });
+    phoneInput.input.addEventListener('input', () => {
+      state.touched.phone = true;
+      dirty = true;
+      state.quote = null;
+      scheduleKiotLookup();
+    });
     addrInput.input.addEventListener('input', () => { state.touched.address = true; dirty = true; });
     grid.appendChild(nameInput.wrap);
     grid.appendChild(phoneInput.wrap);
@@ -1768,6 +1778,11 @@
         acknowledge_existing: state.acknowledge === true,
       };
       if (confirm && state.quote && state.quote.total != null) body.expected_total = state.quote.total;
+      const matched = state.kiotCustomer;
+      if (matched && matched.id && phoneKey(matched.phone) === phoneKey(body.phone)) {
+        body.kiot_customer_id = matched.id;
+        if (matched.code) body.kiot_customer_code = matched.code;
+      }
       try {
         const data = await api('/admin/api/drafts/' + d.id + '/kiotviet', {
           method: 'POST',
@@ -1814,6 +1829,48 @@
       }
     }
 
+    const savedNames = Array.isArray(d.channel_names) ? d.channel_names.map(item => ({ ...item })) : [];
+
+    function applyKiotMatch(data, phone) {
+      if (data && (data.name || data.code)) {
+        state.kiotCustomer = {
+          id: data.id || null,
+          code: data.code || '',
+          name: data.name || '',
+          phone: phone,
+        };
+        if (!state.touched.name && data.name) {
+          nameInput.input.value = data.name;
+          nameHint.textContent = '';
+          nameHint.hidden = true;
+        }
+      } else {
+        state.kiotCustomer = null;
+      }
+      if (data && Array.isArray(data.channel_names)) {
+        d.channel_names = data.channel_names;
+        paintDraftNames(d);
+      }
+    }
+
+    function scheduleKiotLookup() {
+      clearTimeout(state.lookupTimer);
+      const phone = phoneInput.input.value.trim();
+      state.lookupTimer = setTimeout(async () => {
+        if (phoneKey(phone).length < 9) {
+          state.kiotCustomer = null;
+          d.channel_names = savedNames.map(item => ({ ...item }));
+          paintDraftNames(d);
+          return;
+        }
+        try {
+          const data = await api('/admin/api/kiotviet/customer?phone=' + encodeURIComponent(phone) + '&draft_id=' + encodeURIComponent(d.id));
+          if (!panel.isConnected || phoneInput.input.value.trim() !== phone) return;
+          applyKiotMatch(data, phone);
+        } catch (_) { /* a missed lookup leaves the header as it was */ }
+      }, 400);
+    }
+
     paintLines();
     api('/admin/api/drafts/' + d.id + '/kiotviet').then(data => {
       if (!panel.isConnected) return;
@@ -1823,12 +1880,39 @@
         nameHint.hidden = !data.name_hint;
       }
       if (!state.touched.phone && data.phone) phoneInput.input.value = data.phone;
+      if (data.kiot_customer_id || data.kiot_customer_code) {
+        state.kiotCustomer = {
+          id: data.kiot_customer_id || null,
+          code: data.kiot_customer_code || '',
+          name: data.customer_name || '',
+          phone: data.phone || phoneInput.input.value.trim(),
+        };
+      }
       if (!state.touched.address && data.address) addrInput.input.value = data.address;
       if (!state.touched.quick && data.quick_text) quick.value = data.quick_text;
       if (!state.touched.ship && data.shipping_fee != null) shipInput.input.value = String(data.shipping_fee);
       if (data.existing) showExisting(data.existing);
     }).catch(() => {});
     return panel;
+  }
+
+  function phoneKey(value) {
+    let p = String(value || '').replace(/[^\d+]/g, '');
+    if (p.startsWith('+84')) p = '0' + p.slice(3);
+    else if (p.startsWith('84') && p.length >= 10) p = '0' + p.slice(2);
+    if (p && !p.startsWith('0')) p = '0' + p;
+    return p;
+  }
+
+  function paintDraftNames(d) {
+    const id = String(d && d.id || '');
+    if (!/^[A-Za-z0-9-]+$/.test(id)) return;
+    const fill = (box) => {
+      box.textContent = '';
+      channelNameNodes(d).forEach(node => box.appendChild(node));
+    };
+    document.querySelectorAll('[data-draft-id="' + id + '"] .msg-names').forEach(fill);
+    if (selectedId === d.id && detailEl) detailEl.querySelectorAll('.msg-names').forEach(fill);
   }
 
   function blankKiotLine() {
@@ -1848,23 +1932,32 @@
   }
 
   function channelNameNodes(d) {
-    const names = Array.isArray(d.channel_names) ? d.channel_names.filter(item => item && item.name) : [];
+    const names = Array.isArray(d.channel_names)
+      ? d.channel_names.filter(item => item && (item.text || item.name))
+      : [];
     if (!names.length) {
-      return [el('span', { class: 'msg-name', text: d.customer_name || 'Khách chưa có tên' })];
+      const phone = String(d.customer_phone || '').trim();
+      const id = String(d.customer_user_id || '').trim();
+      return [el('span', { class: 'msg-name', text: phone || id || d.customer_name || 'Khách chưa có tên' })];
     }
     return names.map(item => {
-      const bit = el('span', { class: 'msg-channel-name' });
+      const bit = el('span', {
+        class: 'msg-channel-name' + (item.source === 'kiot' ? ' msg-kiot-name' : ''),
+      });
       if (item.avatar && /^https:\/\//.test(item.avatar)) {
         bit.appendChild(el('img', { class: 'msg-avatar', alt: '', src: item.avatar }));
       }
-      bit.appendChild(el('span', { text: (item.label || 'Tên') + ': ' + item.name }));
+      bit.appendChild(el('span', { text: item.text || ((item.label || 'Tên') + ': ' + item.name) }));
       return bit;
     });
   }
 
   function seededKiotName(d) {
     const names = Array.isArray(d.channel_names) ? d.channel_names : [];
-    const own = names.find(item => item && item.own && item.name) || names.find(item => item && item.name);
+    const kiot = names.find(item => item && item.source === 'kiot' && item.name);
+    if (kiot) return { name: kiot.name, hint: '' };
+    const own = names.find(item => item && item.own && item.name)
+      || names.find(item => item && (item.source === 'zalo' || item.source === 'fb') && item.name);
     if (!own) return { name: d.customer_name || '', hint: '' };
     return {
       name: own.name,

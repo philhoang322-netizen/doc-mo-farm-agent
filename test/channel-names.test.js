@@ -49,10 +49,11 @@ test('Messenger and Zalo names are cached, and a Graph error does not block', as
     customer_user_id: 'fb_1001',
     customer_name: 'Khách cũ',
   });
-  assert.deepEqual(missed, []);
+  assert.equal(missed[0].source, 'id');
+  assert.equal(missed[0].text, 'fb_1001');
   assert.equal(graphCalls, 1);
   const again = await names.forDraft({ channel: 'messenger', customer_user_id: 'fb_1001' });
-  assert.deepEqual(again, []);
+  assert.equal(again[0].text, 'fb_1001');
   assert.equal(graphCalls, 1);
 
   messenger.graphHttp.get = async () => ({
@@ -96,7 +97,7 @@ test('Messenger and Zalo names are cached, and a Graph error does not block', as
     customer_user_id: 'zalo-miss',
     customer_name: 'Tên cũ',
   });
-  assert.deepEqual(quiet, []);
+  assert.equal(quiet[0].text, 'zalo-miss');
 
   await names.remember('linked-1', {
     zalo: { name: 'Chị Hoa', avatar: 'https://example.com/hoa.jpg', fetched_at: new Date().toISOString() },
@@ -130,6 +131,41 @@ test('Messenger and Zalo names are cached, and a Graph error does not block', as
   restore();
 });
 
+test('header priority is Kiot name and code, then channel, then phone, then id', () => {
+  const full = names.headerLines({
+    kiot: { name: 'Mai Kiot', code: 'KH000123', id: 7 },
+    channels: [
+      { source: 'zalo', label: 'Tên Zalo', name: 'Mai Zalo' },
+      { source: 'fb', label: 'Tên FB', name: 'Mai FB' },
+    ],
+    phone: '0901234567',
+    channelId: 'fb_1',
+  });
+  assert.equal(full[0].text, 'Tên Kiot: Mai Kiot · Mã KH: KH000123');
+  assert.deepEqual(full.map(item => item.source), ['kiot', 'zalo', 'fb']);
+
+  const codeOnly = names.headerLines({
+    kiot: { code: 'KH000123' },
+    channels: [{ source: 'fb', label: 'Tên FB', name: 'Mai FB' }],
+    phone: '0901234567',
+    channelId: 'fb_1',
+  });
+  assert.equal(codeOnly[0].text, 'Mã KH: KH000123');
+  assert.equal(codeOnly[1].text, 'Tên FB: Mai FB');
+  assert.equal(names.kiotComment(codeOnly), 'FB: Mai FB');
+
+  const phone = names.headerLines({ phone: '0901234567', channelId: 'fb_1' });
+  assert.equal(phone[0].text, '0901234567');
+  assert.equal(phone[0].source, 'phone');
+
+  const idOnly = names.headerLines({ channelId: 'fb_9' });
+  assert.equal(idOnly[0].text, 'fb_9');
+  assert.equal(idOnly[0].source, 'id');
+
+  const empty = names.headerLines({});
+  assert.equal(empty[0].text, 'Khách chưa có tên');
+});
+
 test('the inbox list attaches names and the Kiot form prefers a matched customer', async () => {
   messenger.graphHttp.get = async () => ({ data: { name: 'Mai FB', profile_pic: 'https://example.com/mai.jpg' } });
   const draft = await drafts.createDraft({
@@ -141,7 +177,12 @@ test('the inbox list attaches names and the Kiot form prefers a matched customer
     draft_reply: 'Dạ',
   });
   const realFind = kiotviet.findCustomerByPhone;
-  kiotviet.findCustomerByPhone = async () => ({ id: 7, name: 'Mai Kiot' });
+  let lookups = 0;
+  kiotviet.findCustomerByPhone = async (phone) => {
+    lookups += 1;
+    assert.equal(phone, '0901234567');
+    return { id: 7, code: 'KH000123', name: 'Mai Kiot' };
+  };
   const app = express();
   app.use(express.json());
   hitlAdmin.mount(app);
@@ -155,23 +196,86 @@ test('the inbox list attaches names and the Kiot form prefers a matched customer
     const body = await list.json();
     const row = body.drafts.find(item => item.id === draft.id);
     assert.ok(row);
-    assert.equal(row.channel_names[0].label, 'Tên FB');
-    assert.equal(row.channel_names[0].name, 'Mai FB');
+    assert.equal(row.channel_names[0].text, 'Tên Kiot: Mai Kiot · Mã KH: KH000123');
+    assert.equal(row.channel_names[1].label, 'Tên FB');
+    assert.equal(row.channel_names[1].name, 'Mai FB');
     assert.equal(row.approval_status, 'PENDING_REVIEW');
 
     const pre = await fetch(base + '/admin/api/drafts/' + draft.id + '/kiotviet', { headers });
     const form = await pre.json();
     assert.equal(form.customer_name, 'Mai Kiot');
     assert.equal(form.name_hint, '');
+    assert.equal(form.kiot_customer_id, '7');
+    assert.equal(form.kiot_customer_code, 'KH000123');
+    assert.equal(lookups, 1);
 
-    kiotviet.findCustomerByPhone = async () => null;
-    const channelForm = await (await fetch(base + '/admin/api/drafts/' + draft.id + '/kiotviet', { headers })).json();
+    const looked = await fetch(base + '/admin/api/kiotviet/customer?phone=0901234567&draft_id=' + draft.id, { headers });
+    const match = await looked.json();
+    assert.equal(match.name, 'Mai Kiot');
+    assert.equal(match.code, 'KH000123');
+    assert.equal(match.channel_names[0].text, 'Tên Kiot: Mai Kiot · Mã KH: KH000123');
+    assert.equal(match.channel_names[1].text, 'Tên FB: Mai FB');
+    assert.equal(lookups, 1);
+
+    kiotviet.findCustomerByPhone = async () => {
+      lookups += 1;
+      return null;
+    };
+    const other = await drafts.createDraft({
+      channel: 'messenger',
+      customer_user_id: 'fb_2003',
+      customer_name: 'Mai nháp',
+      customer_phone: '0902223344',
+      customer_query: 'Đặt rau',
+      draft_reply: 'Dạ',
+    });
+    const channelForm = await (await fetch(base + '/admin/api/drafts/' + other.id + '/kiotviet', { headers })).json();
     assert.equal(channelForm.customer_name, 'Mai FB');
     assert.equal(channelForm.name_hint, 'lấy từ Tên FB');
+    assert.equal(channelForm.kiot_customer_code, '');
     assert.equal(JSON.stringify(channelForm).includes('page-token-test'), false);
+    assert.equal(lookups, 2);
   } finally {
     kiotviet.findCustomerByPhone = realFind;
     restore();
     await new Promise((resolve, reject) => server.close(err => (err ? reject(err) : resolve())));
+  }
+});
+
+test('a created Kiot customer code stays on the conversation without another lookup', async () => {
+  const realFind = kiotviet.findCustomerByPhone;
+  messenger.graphHttp.get = async () => ({ data: { name: 'FB đã lưu' } });
+  let lookups = 0;
+  kiotviet.findCustomerByPhone = async () => {
+    lookups += 1;
+    return null;
+  };
+  try {
+    await names.rememberKiot('fb_3003', {
+      id: '99',
+      code: 'KH000099',
+      name: 'Mới tạo',
+      phone: '0908888777',
+    });
+    const lines = await names.forDraft({
+      channel: 'messenger',
+      customer_user_id: 'fb_3003',
+      customer_phone: '0908888777',
+    });
+    assert.equal(lines[0].text, 'Tên Kiot: Mới tạo · Mã KH: KH000099');
+    assert.equal(lookups, 0);
+    const reused = await kiotviet.findOrCreateCustomer({
+      name: 'Mới tạo',
+      phone: '0908888777',
+      customerId: 99,
+      customerCode: 'KH000099',
+    });
+    assert.equal(reused.id, 99);
+    assert.equal(reused.code, 'KH000099');
+    assert.equal(lookups, 0);
+    assert.equal(lines[1].text, 'Tên FB: FB đã lưu');
+  } finally {
+    kiotviet.findCustomerByPhone = realFind;
+    restore();
   }
 });

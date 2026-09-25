@@ -166,7 +166,15 @@ async function findCustomerByPhone(phone) {
   return found?.data?.[0] || null;
 }
 
-async function findOrCreateCustomer({ name, phone, comments }) {
+async function findOrCreateCustomer({ name, phone, comments, customerId, customerCode }) {
+  const existingId = Number(customerId);
+  if (Number.isFinite(existingId) && existingId > 0) {
+    return {
+      id: existingId,
+      code: customerCode ? String(customerCode).trim().slice(0, 40) : null,
+      name: name ? String(name).trim().slice(0, 200) : null,
+    };
+  }
   if (!phone) return null;
   try {
     const found = await call('get', '/customers', { params: { contactNumber: phone, pageSize: 1 } });
@@ -568,6 +576,8 @@ async function createSaleDocument({
   lines = [],
   description,
   customerComment,
+  customerId,
+  customerCode,
 } = {}) {
   if (!enabled()) return { ok: false, error: 'KiotViet chưa cấu hình' };
   const kind = documentType === 'order' ? 'order' : 'invoice';
@@ -606,6 +616,8 @@ async function createSaleDocument({
       name: customerName,
       phone,
       comments: customerComment,
+      customerId,
+      customerCode,
     });
     if (!customer || !customer.id) {
       return { ok: false, error: 'Không tạo được khách KiotViet theo số điện thoại' };
@@ -641,7 +653,16 @@ async function createSaleDocument({
     }
     const charged = documentTotal(created, total);
     console.log('🧾 KiotViet', kind, 'created:', code);
-    return { ok: true, code, total: charged, documentType: kind, branchId: branch };
+    return {
+      ok: true,
+      code,
+      total: charged,
+      documentType: kind,
+      branchId: branch,
+      customerId: customer.id,
+      customerCode: customer.code || customerCode || null,
+      customerName: customer.name || customerName || null,
+    };
   } catch (e) {
     console.error('KiotViet createSaleDocument failed:', e.message);
     return { ok: false, error: e.message };
@@ -671,5 +692,5 @@ module.exports = {
   enabled, pushOrder, findProduct, loadProducts, ping, getToken,
   getOnHand, sellableFromInventories,
   searchProducts, aliasFor, saleBranchId, salePayload, createSaleDocument,
-  listProductsForMatch, findCustomerByPhone, DEFAULT_SALE_BRANCH_ID,
+  listProductsForMatch, findCustomerByPhone, findOrCreateCustomer, DEFAULT_SALE_BRANCH_ID,
 };

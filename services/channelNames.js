@@ -10,6 +10,7 @@ const path = require('path');
 const db = require('./database');
 const messenger = require('./messenger');
 const zaloService = require('./zaloService');
+const kiotviet = require('./kiotviet');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const FETCH_MS = 2500;
@@ -62,7 +63,25 @@ function asNames(value) {
       fetched_at: row.fetched_at || null,
     };
   }
+  if (obj.kiot && typeof obj.kiot === 'object') {
+    out.kiot = kiotShape(obj.kiot);
+  }
   return out;
+}
+
+function clip(value, max) {
+  const text = String(value || '').trim();
+  return text ? text.slice(0, max) : null;
+}
+
+function kiotShape(row) {
+  return {
+    name: clip(row && row.name, 120),
+    code: clip(row && row.code, 40),
+    id: row && row.id != null && String(row.id).trim() ? String(row.id).trim().slice(0, 40) : null,
+    phone: row && row.phone ? db.normalizePhone(row.phone) : null,
+    fetched_at: row && row.fetched_at || null,
+  };
 }
 
 function fresh(entry, now) {
@@ -86,6 +105,21 @@ function writeJson(data) {
   fs.writeFileSync(filePath(), JSON.stringify(data));
 }
 
+function readPhone(phone) {
+  const data = readJson();
+  const phones = data.__phones;
+  if (!phones || typeof phones !== 'object') return null;
+  return phones[phone] || null;
+}
+
+function writePhone(phone, entry) {
+  const data = readJson();
+  const phones = data.__phones && typeof data.__phones === 'object' ? data.__phones : {};
+  phones[phone] = entry;
+  data.__phones = phones;
+  writeJson(data);
+}
+
 async function ensureColumn() {
   if (!db.DB_ENABLED) return;
   if (columnReady) return columnReady;
@@ -99,17 +133,17 @@ async function ensureColumn() {
 async function loadRecord(externalId) {
   const key = String(externalId || '').trim();
   const file = asNames(readJson()[key]);
-  if (!key || !db.DB_ENABLED) return { id: null, names: file };
+  if (!key || !db.DB_ENABLED) return { id: null, names: file, phone: null };
   try {
     await ensureColumn();
     const customer = await db.getCustomerByExternalId(key);
-    if (!customer) return { id: null, names: file };
+    if (!customer) return { id: null, names: file, phone: null };
     const stored = asNames(customer.channel_names);
     const names = Object.keys(stored).length ? stored : file;
-    return { id: customer.id, names };
+    return { id: customer.id, names, phone: db.normalizePhone(customer.phone) };
   } catch (err) {
     console.error('Channel name read skipped:', err.message);
-    return { id: null, names: file };
+    return { id: null, names: file, phone: null };
   }
 }
 
@@ -246,13 +280,109 @@ function present(names, ownSource) {
   return out;
 }
 
+function channelList(list) {
+  return (Array.isArray(list) ? list : []).filter(item => item && (item.source === 'zalo' || item.source === 'fb') && item.name);
+}
+
+/**
+ * Card header lines. KiotViet name and Mã KH come first when a phone
+ * matches. Then the channel name. A card with neither still shows the
+ * phone, then the channel id.
+ */
+function headerLines({ kiot, channels, phone, channelId } = {}) {
+  const lines = [];
+  const kiotName = clip(kiot && kiot.name, 120);
+  const code = clip(kiot && kiot.code, 40);
+  if (kiotName || code) {
+    const parts = [];
+    if (kiotName) parts.push(`Tên Kiot: ${kiotName}`);
+    if (code) parts.push(`Mã KH: ${code}`);
+    lines.push({
+      source: 'kiot',
+      label: 'Tên Kiot',
+      name: kiotName || '',
+      code: code || '',
+      id: kiot && kiot.id != null && String(kiot.id).trim() ? String(kiot.id).trim().slice(0, 40) : '',
+      text: parts.join(' · '),
+    });
+  }
+  for (const item of channelList(channels)) {
+    lines.push({
+      source: item.source,
+      label: item.label,
+      name: item.name,
+      avatar: item.avatar || null,
+      own: !!item.own,
+      text: `${item.label}: ${item.name}`,
+    });
+  }
+  if (!lines.some(line => line.name)) {
+    const fallbackPhone = db.normalizePhone(phone) || clip(phone, 20);
+    const fallbackId = clip(channelId, 120);
+    if (fallbackPhone) {
+      lines.push({ source: 'phone', label: '', name: fallbackPhone, text: fallbackPhone });
+    } else if (fallbackId) {
+      lines.push({ source: 'id', label: '', name: fallbackId, text: fallbackId });
+    } else {
+      lines.push({ source: 'fallback', label: '', name: '', text: 'Khách chưa có tên' });
+    }
+  }
+  return lines;
+}
+
+async function kiotForPhone(phone, now) {
+  const key = db.normalizePhone(phone);
+  if (!key) return null;
+  const cached = readPhone(key);
+  if (cached && fresh(cached, now)) return cached.found ? cached.customer : null;
+  let customer = null;
+  try {
+    const found = await withTimeout(kiotviet.findCustomerByPhone(key));
+    if (found && (found.name || found.code || found.id != null)) {
+      customer = {
+        name: clip(found.name, 120),
+        code: clip(found.code, 40),
+        id: found.id != null && String(found.id).trim() ? String(found.id).trim().slice(0, 40) : null,
+        phone: key,
+      };
+    }
+  } catch (err) {
+    console.error('Kiot customer lookup skipped:', err.message);
+  }
+  const at = new Date(now || Date.now()).toISOString();
+  writePhone(key, {
+    found: !!(customer && (customer.name || customer.code || customer.id)),
+    customer,
+    fetched_at: at,
+  });
+  return customer;
+}
+
+async function rememberKiot(externalId, kiot) {
+  const phone = db.normalizePhone(kiot && kiot.phone);
+  const entry = {
+    ...kiotShape({ ...(kiot || {}), phone }),
+    fetched_at: new Date().toISOString(),
+  };
+  if (!entry.name && !entry.code && !entry.id) return null;
+  if (phone) {
+    writePhone(phone, { found: true, customer: { ...entry, phone }, fetched_at: entry.fetched_at });
+  }
+  const key = String(externalId || '').trim();
+  if (!key) return entry;
+  const record = await loadRecord(key);
+  record.names.kiot = entry;
+  await saveRecord(key, record);
+  return entry;
+}
+
 async function forDraft(draft, now) {
   try {
-    const id = draft && draft.customer_user_id;
-    if (!id) return [];
+    if (!draft) return [];
+    const id = String(draft.customer_user_id || '').trim();
     const source = sourceOf(draft);
-    const record = await loadRecord(id);
-    if (source && !fresh(record.names[source], now)) {
+    const record = id ? await loadRecord(id) : { id: null, names: {}, phone: null };
+    if (id && source && !fresh(record.names[source], now)) {
       const got = await withTimeout(fetchSource(source, id));
       const previous = record.names[source] || {};
       record.names[source] = {
@@ -262,11 +392,59 @@ async function forDraft(draft, now) {
       };
       await saveRecord(id, record);
     }
-    return present(record.names, source);
+    const phone = db.normalizePhone(draft.customer_phone) || record.phone || null;
+    let kiot = record.names.kiot || null;
+    if (phone && !(kiot && kiot.phone === phone && fresh(kiot, now))) {
+      const found = await kiotForPhone(phone, now);
+      const at = new Date(now || Date.now()).toISOString();
+      if (found) kiot = { ...found, phone, fetched_at: at };
+      else if (kiot && kiot.phone === phone && (kiot.code || kiot.name || kiot.id)) kiot = { ...kiot, fetched_at: at };
+      else kiot = { name: null, code: null, id: null, phone, fetched_at: at };
+      if (id) {
+        record.names.kiot = kiot;
+        await saveRecord(id, record);
+      }
+    }
+    const draftCode = clip(draft.customer_code, 40);
+    if (draftCode && (!kiot || !kiot.code)) {
+      kiot = {
+        name: (kiot && kiot.name) || null,
+        code: draftCode,
+        id: (kiot && kiot.id) || null,
+        phone: (kiot && kiot.phone) || phone || null,
+      };
+    }
+    return headerLines({
+      kiot,
+      channels: present(record.names, source),
+      phone,
+      channelId: id,
+    });
   } catch (err) {
     console.error('Channel name skipped:', err.message);
-    return [];
+    return headerLines({
+      phone: draft && draft.customer_phone,
+      channelId: draft && draft.customer_user_id,
+    });
   }
+}
+
+async function previewPhone(draft, phone, now) {
+  const shown = draft ? await forDraft(draft, now) : [];
+  const channels = shown.filter(item => item && (item.source === 'zalo' || item.source === 'fb'));
+  const match = await kiotForPhone(phone, now);
+  const key = db.normalizePhone(phone);
+  return {
+    name: match && match.name || '',
+    code: match && match.code || '',
+    id: match && match.id || null,
+    channel_names: headerLines({
+      kiot: match,
+      channels,
+      phone: key || '',
+      channelId: draft && draft.customer_user_id,
+    }),
+  };
 }
 
 async function remember(externalId, patch) {
@@ -292,8 +470,10 @@ function formName({ managerName, kiotName, channelNames, draftName } = {}) {
   if (typed) return { name: typed.slice(0, 200), hint: '' };
   const kiot = String(kiotName || '').trim();
   if (kiot) return { name: kiot.slice(0, 200), hint: '' };
-  const list = Array.isArray(channelNames) ? channelNames : [];
-  const own = list.find(item => item && item.own && item.name) || list.find(item => item && item.name);
+  const list = channelList(channelNames);
+  const kiotLine = (Array.isArray(channelNames) ? channelNames : []).find(item => item && item.source === 'kiot' && item.name);
+  if (kiotLine) return { name: String(kiotLine.name).slice(0, 200), hint: '' };
+  const own = list.find(item => item.own) || list[0];
   if (own) {
     const hint = own.source === 'fb' ? 'lấy từ Tên FB' : 'lấy từ Tên Zalo';
     return { name: String(own.name).slice(0, 200), hint };
@@ -304,8 +484,8 @@ function formName({ managerName, kiotName, channelNames, draftName } = {}) {
 }
 
 function kiotComment(channelNames) {
-  const list = Array.isArray(channelNames) ? channelNames : [];
-  const own = list.find(item => item && item.own && item.name) || list.find(item => item && item.name);
+  const list = channelList(channelNames);
+  const own = list.find(item => item.own) || list[0];
   if (!own) return '';
   const prefix = own.source === 'fb' ? 'FB' : 'Zalo';
   return `${prefix}: ${own.name}`.slice(0, 200);
@@ -313,7 +493,10 @@ function kiotComment(channelNames) {
 
 module.exports = {
   forDraft,
+  previewPhone,
   remember,
+  rememberKiot,
+  headerLines,
   formName,
   kiotComment,
   sourceOf,

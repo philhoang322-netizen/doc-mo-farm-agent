@@ -497,6 +497,19 @@ async function kiotQuick(req, res) {
   }
 }
 
+async function kiotCustomer(req, res) {
+  const phone = typeof req.query.phone === 'string' ? req.query.phone : '';
+  const draftId = typeof req.query.draft_id === 'string' ? req.query.draft_id : '';
+  try {
+    const draft = draftId ? await drafts.getDraft(draftId) : null;
+    const preview = await channelNames.previewPhone(draft, phone);
+    res.json(preview);
+  } catch (e) {
+    console.error('Kiot customer lookup failed:', e.message);
+    res.json({ name: '', code: '', id: null, channel_names: [] });
+  }
+}
+
 async function kiotCreate(req, res) {
   try {
     const result = await kiotInbox.prepareOrCreate(req.params.id, req.body, actorNameFrom(req));
@@ -553,6 +566,7 @@ function mount(app) {
   app.post('/admin/api/inbox/sync', requireApi, syncInbox);
   app.post('/admin/api/drafts/:id/folder', requireApi, setFolder);
   app.get('/admin/api/kiotviet/products', requireApi, kiotSearch);
+  app.get('/admin/api/kiotviet/customer', requireApi, kiotCustomer);
   app.post('/admin/api/kiotviet/quick-entry', requireApi, kiotQuick);
   app.get('/admin/api/drafts/:id/kiotviet', requireApi, kiotPrefill);
   app.post('/admin/api/drafts/:id/kiotviet', requireApi, kiotCreate);
