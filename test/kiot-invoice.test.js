@@ -30,6 +30,7 @@ const drafts = require('../services/drafts');
 const audit = require('../services/audit');
 const kiotviet = require('../services/kiotviet');
 const invoices = require('../services/invoices');
+const invoiceImage = require('../services/invoiceImage');
 const emvco = require('../services/emvco');
 const hitlAdmin = require('../services/hitlAdmin');
 const messenger = require('../services/messenger');
@@ -43,6 +44,9 @@ const real = {
   issueInvoiceFromOrder: kiotviet.issueInvoiceFromOrder,
   readInvoicePayment: kiotviet.readInvoicePayment,
   findCustomerByPhone: kiotviet.findCustomerByPhone,
+  findOrCreateCustomer: kiotviet.findOrCreateCustomer,
+  getCustomer: kiotviet.getCustomer,
+  call: kiotviet.call,
   listInvoicesByCustomer: kiotviet.listInvoicesByCustomer,
   sendText: messenger.sendText,
   sendImage: messenger.sendImage,
@@ -170,6 +174,9 @@ after(() => {
     issueInvoiceFromOrder: real.issueInvoiceFromOrder,
     readInvoicePayment: real.readInvoicePayment,
     findCustomerByPhone: real.findCustomerByPhone,
+    findOrCreateCustomer: real.findOrCreateCustomer,
+    getCustomer: real.getCustomer,
+    call: real.call,
     listInvoicesByCustomer: real.listInvoicesByCustomer,
   });
   messenger.sendText = real.sendText;
@@ -285,6 +292,8 @@ test('confirm creates an invoice, keeps the draft pending, and does not send', a
     assert.equal(row.kiot_id, '77');
     assert.equal(row.channel, 'fb');
     assert.equal(row.customer_phone, '0901234567');
+    assert.equal(row.customer_code, 'KH0009');
+    assert.equal(body.customer_code, 'KH0009');
     assert.equal(row.payment_status, 'chua_tt');
     assert.equal(row.total, 85000);
     assert.equal(row.items[0].name, 'Xúc xích');
@@ -297,7 +306,9 @@ test('confirm creates an invoice, keeps the draft pending, and does not send', a
     assert.ok(bytes.length > 2000);
     const page = await fetch(`${base}/hd/HD011637?t=${token}`);
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /HD011637/);
+    const html = await page.text();
+    assert.match(html, /HD011637/);
+    assert.match(html, /Mã KH: KH0009/);
     const hidden = await fetch(`${base}/hd/HD011637?t=nope`);
     assert.equal(hidden.status, 404);
 
@@ -527,12 +538,122 @@ test('Hóa đơn list, manual payment, Kiot sync, and CSV', async () => {
     const csv = await fetch(`${base}/admin/api/invoices.csv?q=HD011637`, { headers: authHeaders() });
     assert.equal(csv.status, 200);
     const text = await csv.text();
+    assert.match(text, /ma_kh/);
     assert.match(text, /HD011637/);
+    assert.match(text, /KH0009/);
     assert.match(text, /da_tt/);
+    const byCode = await fetch(`${base}/admin/api/invoices?q=KH0009`, { headers: authHeaders() });
+    assert.equal(byCode.status, 200);
+    const byCodeBody = await byCode.json();
+    assert.ok(byCodeBody.invoices.some(row => row.code === 'HD011637' && row.customer_code === 'KH0009'));
     const page = await fetch(`${base}/admin/invoices`, { headers: authHeaders() });
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /Hóa đơn/);
+    const adminHtml = await page.text();
+    assert.match(adminHtml, /Hóa đơn/);
+    assert.match(adminHtml, /Mã KH/);
   } finally {
+    await stop(server);
+  }
+});
+
+const LOCKED_VIETQR = '00020101021238540010A00000072701240006970436011010584375900208QRIBFTTA530370454061000005802VN62120808HD0116376304C4B0';
+
+test('invoice PNG draws Mã KH and leaves the VietQR payload unchanged', async () => {
+  assert.equal(emvco.buildPayload({ amount: 100000, addInfo: 'HD011637' }), LOCKED_VIETQR);
+  assert.equal(invoiceImage.customerLabel({ customer_code: 'KH000123' }), 'Mã KH: KH000123');
+  assert.match(String(invoiceImage.render), /customerLabel/);
+  const due = emvco.buildPayload({ amount: 265000, addInfo: 'HD011637' });
+  const png = await invoiceImage.render({
+    code: 'HD011637',
+    created_at: '2026-09-25T03:00:00.000Z',
+    customer_name: 'Chị Lan',
+    customer_phone: '0901234567',
+    customer_code: 'KH000123',
+    items: [{ name: 'Xúc xích heo', quantity: 1, price: 265000, amount: 265000 }],
+    total: 265000,
+    amount_paid: 0,
+  });
+  assert.equal(png.readUInt32BE(0), 0x89504e47);
+  assert.ok(png.length > 2000);
+  assert.equal(emvco.buildPayload({ amount: 265000, addInfo: 'HD011637' }), due);
+  assert.equal(emvco.buildPayload({ amount: 100000, addInfo: 'HD011637' }), LOCKED_VIETQR);
+});
+
+test('rendering backfills Mã KH from the Kiot customer', async () => {
+  kiotviet.findCustomerByPhone = async (phone) => (
+    phone === '0909999888' ? { id: 3, code: 'KH000123', name: 'Mai' } : null
+  );
+  try {
+    await invoices.recordSale({
+      code: 'HD099001',
+      customerPhone: '0909999888',
+      customerName: 'Mai',
+      documentType: 'invoice',
+      total: 10000,
+      items: [{ name: 'Xúc xích', quantity: 1, price: 10000, amount: 10000 }],
+    });
+    const png = await invoices.pngFor('HD099001');
+    assert.equal(png.readUInt32BE(0), 0x89504e47);
+    const row = await invoices.getByCode('HD099001');
+    assert.equal(row.customer_code, 'KH000123');
+    const csv = invoices.toCsv([row]);
+    assert.match(csv, /ma_kh/);
+    assert.match(csv, /KH000123/);
+  } finally {
+    kiotviet.findCustomerByPhone = async () => null;
+  }
+});
+
+test('confirm is blocked when KiotViet returns no Mã KH', async () => {
+  const posts = [];
+  kiotviet.findOrCreateCustomer = async () => ({ id: 9, name: 'Chị Lan' });
+  kiotviet.getCustomer = async () => ({ id: 9, name: 'Chị Lan' });
+  kiotviet.call = async (method, path) => {
+    posts.push({ method, path });
+    throw new Error('should not post');
+  };
+  kiotviet.createSaleDocument = real.createSaleDocument;
+  const before = (await invoices.search({})).map(row => row.code);
+  const server = await appServer();
+  try {
+    const port = server.address().port;
+    const base = `http://127.0.0.1:${port}`;
+    const draft = await seedDraft({ customer_user_id: 'fb_no_makh' });
+    const res = await fetch(`${base}/admin/api/drafts/${draft.id}/kiotviet`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({
+        confirm: true,
+        document: 'invoice',
+        customer_name: 'Chị Lan',
+        phone: '0907777666',
+        lines: [{ sku: 'SP-XX', product_name: 'Xúc xích', quantity: 1 }],
+        actor_name: 'Phước',
+      }),
+    });
+    assert.equal(res.status, 502);
+    const body = await res.json();
+    assert.equal(body.created, false);
+    assert.equal(body.error, kiotviet.MISSING_CUSTOMER_CODE);
+    assert.match(body.error, /chọn hoặc tạo khách/i);
+    const order = await kiotviet.createSaleDocument({
+      documentType: 'order',
+      customerName: 'Chị Lan',
+      phone: '0907777666',
+      lines: [{ sku: 'SP-XX', product_name: 'Xúc xích', quantity: 1 }],
+    });
+    assert.equal(order.ok, false);
+    assert.equal(order.error, kiotviet.MISSING_CUSTOMER_CODE);
+    assert.equal(posts.length, 0);
+    assert.deepEqual((await invoices.search({})).map(row => row.code), before);
+    const still = await drafts.getDraft(draft.id);
+    assert.equal(still.approval_status, 'PENDING_REVIEW');
+    assert.equal(still.invoice_code || null, null);
+  } finally {
+    kiotviet.call = real.call;
+    kiotviet.findOrCreateCustomer = real.findOrCreateCustomer;
+    kiotviet.getCustomer = real.getCustomer;
+    installMocks();
     await stop(server);
   }
 });

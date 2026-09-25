@@ -191,12 +191,57 @@ async function listInvoicesByCustomer(customerId, pageSize = 10) {
   return found?.data || [];
 }
 
+function cleanCustomerCode(value) {
+  const code = String(value || '').trim();
+  return code ? code.slice(0, 40) : '';
+}
+
+const MISSING_CUSTOMER_CODE = 'Chưa có mã khách KiotViet (Mã KH). Hãy chọn hoặc tạo khách trên KiotViet rồi xác nhận lại.';
+
+async function getCustomer(id) {
+  if (!id || !enabled()) return null;
+  const raw = await call('get', `/customers/${encodeURIComponent(id)}`);
+  return unwrapDoc(raw);
+}
+
+/**
+ * Mã KH must come from the Kiot customer. A code already on the object wins.
+ * Otherwise we read GET /customers/{id}. A hinted code is only a fallback when
+ * that read fails (network), not when Kiot returns a customer with no code.
+ */
+async function ensureSaleCustomerCode(customer, hintedCode) {
+  const hinted = cleanCustomerCode(hintedCode);
+  const onHand = cleanCustomerCode(customer && customer.code);
+  if (onHand) return onHand;
+  const id = customer && customer.id;
+  if (id) {
+    try {
+      const fresh = await module.exports.getCustomer(id);
+      const fetched = cleanCustomerCode(fresh && fresh.code);
+      if (fetched) return fetched;
+      if (fresh) return '';
+    } catch (e) {
+      console.warn('KiotViet customer code lookup failed:', e.message);
+    }
+  }
+  return hinted;
+}
+
 async function findOrCreateCustomer({ name, phone, comments, customerId, customerCode }) {
   const existingId = Number(customerId);
   if (Number.isFinite(existingId) && existingId > 0) {
+    const hinted = cleanCustomerCode(customerCode);
+    if (!hinted) {
+      try {
+        const fresh = await module.exports.getCustomer(existingId);
+        if (fresh) return fresh;
+      } catch (e) {
+        console.warn('KiotViet customer lookup failed:', e.message);
+      }
+    }
     return {
       id: existingId,
-      code: customerCode ? String(customerCode).trim().slice(0, 40) : null,
+      code: hinted || null,
       name: name ? String(name).trim().slice(0, 200) : null,
     };
   }
@@ -685,12 +730,13 @@ async function createSaleDocument({
     const branch = saleBranchId();
     const details = [];
     const missing = [];
+    const find = module.exports.findProduct;
     for (const item of lines || []) {
       const alias = aliasFor(item.product_name || item.name);
       const sku = item.sku || (alias && alias.sku) || '';
       const p = sku
-        ? await findProduct({ sku })
-        : await findProduct({ name: item.product_name || item.name || (alias && alias.name) });
+        ? await find({ sku })
+        : await find({ name: item.product_name || item.name || (alias && alias.name) });
       if (!p) {
         missing.push(item.product_name || item.sku || 'sản phẩm');
         continue;
@@ -712,7 +758,7 @@ async function createSaleDocument({
     }
     if (!details.length) return { ok: false, error: 'Đơn không có dòng hàng hợp lệ' };
 
-    const customer = await findOrCreateCustomer({
+    const customer = await module.exports.findOrCreateCustomer({
       name: customerName,
       phone,
       comments: customerComment,
@@ -721,6 +767,10 @@ async function createSaleDocument({
     });
     if (!customer || !customer.id) {
       return { ok: false, error: 'Không tạo được khách KiotViet theo số điện thoại' };
+    }
+    const saleCustomerCode = await module.exports.ensureSaleCustomerCode(customer, customerCode);
+    if (!saleCustomerCode) {
+      return { ok: false, error: MISSING_CUSTOMER_CODE };
     }
 
     const subtotal = details.reduce((s, d) => s + d.quantity * d.price, 0);
@@ -746,7 +796,7 @@ async function createSaleDocument({
       details,
     });
     const path = kind === 'order' ? '/orders' : '/invoices';
-    const created = await call('post', path, { data: payload });
+    const created = await module.exports.call('post', path, { data: payload });
     const code = documentCode(created);
     if (!code) {
       return { ok: false, error: 'KiotViet không trả mã chứng từ. Kiểm tra trên KiotViet trước khi tạo lại.' };
@@ -761,7 +811,7 @@ async function createSaleDocument({
       documentType: kind,
       branchId: branch,
       customerId: customer.id,
-      customerCode: customer.code || customerCode || null,
+      customerCode: saleCustomerCode,
       customerName: customer.name || customerName || null,
     };
   } catch (e) {
@@ -841,6 +891,18 @@ async function issueInvoiceFromOrder({ orderId, orderCode } = {}) {
     if (!details.length) {
       return { ok: false, error: 'Đơn đặt hàng không có dòng hàng để xuất hoá đơn' };
     }
+    let customerCode = cleanCustomerCode(order.customerCode);
+    if (!customerCode && order.customerId) {
+      try {
+        const fresh = await module.exports.getCustomer(order.customerId);
+        customerCode = cleanCustomerCode(fresh && fresh.code);
+      } catch (e) {
+        console.warn('KiotViet customer code lookup failed:', e.message);
+      }
+    }
+    if (!customerCode) {
+      return { ok: false, error: MISSING_CUSTOMER_CODE };
+    }
     const payload = {
       branchId: order.branchId || saleBranchId(),
       orderId: id,
@@ -852,7 +914,7 @@ async function issueInvoiceFromOrder({ orderId, orderCode } = {}) {
       description: order.description || '',
       invoiceDetails: details,
     };
-    const created = await call('post', '/invoices', { data: payload });
+    const created = await module.exports.call('post', '/invoices', { data: payload });
     const code = documentCode(created);
     if (!code) {
       return { ok: false, error: 'KiotViet không trả mã hoá đơn. Kiểm tra trên KiotViet trước khi xuất lại.' };
@@ -866,7 +928,7 @@ async function issueInvoiceFromOrder({ orderId, orderCode } = {}) {
       orderId: String(id),
       orderCode: order.code || orderCode || null,
       customerId: order.customerId || null,
-      customerCode: order.customerCode || null,
+      customerCode,
       customerName: order.customerName || null,
     };
   } catch (e) {
@@ -898,7 +960,9 @@ module.exports = {
   enabled, pushOrder, findProduct, loadProducts, ping, getToken,
   getOnHand, sellableFromInventories,
   searchProducts, rankProducts, aliasFor, saleBranchId, salePayload, createSaleDocument,
-  listProductsForMatch, findCustomerByPhone, findOrCreateCustomer, listInvoicesByCustomer,
+  listProductsForMatch, findCustomerByPhone, findOrCreateCustomer, getCustomer,
+  ensureSaleCustomerCode, listInvoicesByCustomer,
   explainKiotError, paymentFromInvoice, readInvoicePayment, issueInvoiceFromOrder,
+  cleanCustomerCode, MISSING_CUSTOMER_CODE, call,
   DEFAULT_SALE_BRANCH_ID,
 };

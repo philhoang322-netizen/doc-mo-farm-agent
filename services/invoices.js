@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const db = require('./database');
 const audit = require('./audit');
 const invoiceImage = require('./invoiceImage');
+const kiotviet = require('./kiotviet');
 
 const memory = new Map();
 const images = new Map();
@@ -303,6 +304,7 @@ async function markIssued(orderCode, issued, actor) {
   row.document_type = 'invoice';
   if (issued.total != null) row.total = Math.round(Number(issued.total) || 0);
   if (issued.items) row.items = itemsOf(issued.items);
+  if (issued.customerCode) row.customer_code = String(issued.customerCode).slice(0, 40);
   const saved = await save(row);
   try {
     await audit.record({
@@ -410,12 +412,13 @@ function csvCell(value) {
 }
 
 function toCsv(rows) {
-  const header = ['code', 'loai', 'khach', 'sdt', 'kenh', 'tong', 'da_thu', 'trang_thai', 'tao_luc', 'gui_luc'];
+  const header = ['code', 'loai', 'ma_kh', 'khach', 'sdt', 'kenh', 'tong', 'da_thu', 'trang_thai', 'tao_luc', 'gui_luc'];
   const lines = [header.join(',')];
   for (const row of rows) {
     lines.push([
       row.code,
       row.document_type,
+      row.customer_code,
       row.customer_name,
       row.customer_phone,
       row.channel,
@@ -429,11 +432,35 @@ function toCsv(rows) {
   return `\uFEFF${lines.join('\n')}\n`;
 }
 
+/** Older rows stored before Mã KH was required. Read the Kiot customer by phone and keep the code. */
+async function backfillCustomerCode(row) {
+  if (!row || row.customer_code) return row;
+  const phone = String(row.customer_phone || '').trim();
+  if (!phone) return row;
+  let customer = null;
+  try {
+    customer = await kiotviet.findCustomerByPhone(phone);
+  } catch (err) {
+    console.warn('Invoice Mã KH backfill skipped:', err.message);
+    return row;
+  }
+  const code = customer && customer.code ? String(customer.code).trim().slice(0, 40) : '';
+  if (!code) return row;
+  return save({ ...row, customer_code: code, items: itemsOf(row.items) });
+}
+
+async function hydrateCustomerCodes(rows) {
+  const out = [];
+  for (const row of rows || []) out.push(await backfillCustomerCode(row));
+  return out;
+}
+
 async function pngFor(code) {
-  const row = await getByCode(code);
+  let row = await getByCode(code);
   if (!row || row.document_type !== 'invoice') return null;
+  row = await backfillCustomerCode(row);
   const cached = images.get(row.code);
-  const stamp = `${row.amount_paid}|${row.total}|${row.customer_name}`;
+  const stamp = `${row.amount_paid}|${row.total}|${row.customer_name}|${row.customer_code || ''}`;
   if (cached && cached.stamp === stamp) return cached.buffer;
   const buffer = await invoiceImage.render({
     ...row,
@@ -471,6 +498,8 @@ module.exports = {
   setPayment,
   search,
   toCsv,
+  backfillCustomerCode,
+  hydrateCustomerCodes,
   pngFor,
   present,
   resetForTests,

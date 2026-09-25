@@ -89,6 +89,12 @@ function wrap(ctx, text, max) {
   return lines.length ? lines : [''];
 }
 
+/** Line drawn under the customer name. Empty when the invoice has no Mã KH yet. */
+function customerLabel(invoice) {
+  const code = String((invoice && invoice.customer_code) || '').trim();
+  return code ? `Mã KH: ${code}` : '';
+}
+
 function pngBuffer(bitmap) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -127,7 +133,8 @@ async function render(invoice) {
   const nameLines = items.map(item => wrap(measure, item.name || item.product_name || 'Sản phẩm', 300));
   const rowHeights = nameLines.map(lines => Math.max(32, lines.length * 22 + 10));
   const tableH = 36 + rowHeights.reduce((s, h) => s + h, 0);
-  const height = 168 + 210 + tableH + 210 + 340 + (invoice.link ? 72 : 36);
+  const maKh = customerLabel(invoice);
+  const height = 168 + 210 + (maKh ? 36 : 0) + tableH + 210 + 340 + (invoice.link ? 72 : 36);
   const img = PImage.make(WIDTH, height);
   const ctx = img.getContext('2d');
   ctx.fillStyle = '#ffffff';
@@ -161,6 +168,12 @@ async function render(invoice) {
   ctx.font = '18px Noto';
   ctx.fillText(who, 32, y);
   y += 28;
+  if (maKh) {
+    ctx.fillStyle = '#0f5a35';
+    ctx.font = '22px NotoBold';
+    ctx.fillText(maKh, 32, y);
+    y += 36;
+  }
 
   ctx.fillStyle = '#e7efe9';
   ctx.fillRect(24, y, WIDTH - 48, 32);
@@ -230,4 +243,4 @@ async function render(invoice) {
   return pngBuffer(img);
 }
 
-module.exports = { render, FARM, WIDTH };
+module.exports = { render, customerLabel, FARM, WIDTH };

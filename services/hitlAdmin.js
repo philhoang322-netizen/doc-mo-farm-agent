@@ -608,12 +608,14 @@ async function publicInvoice(req, res) {
     return res.status(404).type('html').send('Không thấy hoá đơn');
   }
   try {
-    const row = await invoices.getByCode(code);
+    let row = await invoices.getByCode(code);
     if (!row || row.document_type !== 'invoice') {
       return res.status(404).type('html').send('Không thấy hoá đơn');
     }
+    row = await invoices.backfillCustomerCode(row);
     const img = `/hd/${encodeURIComponent(row.code)}/anh?t=${encodeURIComponent(invoices.sign(row.code))}`;
     const total = Math.round(row.total).toLocaleString('vi-VN');
+    const maKh = row.customer_code ? escapeHtml(row.customer_code) : '—';
     res.type('html').send(`<!doctype html>
 <html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -622,11 +624,13 @@ async function publicInvoice(req, res) {
   body { margin: 0; background: #f6f3ee; color: #1c1712; font: 17px/1.45 "Be Vietnam Pro", sans-serif; }
   main { max-width: 720px; margin: 0 auto; padding: 16px; }
   h1 { color: #0f5a35; font-size: 28px; margin: 0 0 8px; }
+  .makh { font-size: 20px; font-weight: 700; color: #0f5a35; }
   img { width: 100%; height: auto; background: #fff; border-radius: 12px; }
   p { margin: 8px 0; }
 </style></head><body><main>
 <h1>${escapeHtml(row.code)}</h1>
 <p>${escapeHtml(row.customer_name || 'Khách')} · Tổng ${total}đ</p>
+<p class="makh">Mã KH: ${maKh}</p>
 <p>VCB 1058437590 · HTX NONG TRAI DOC MO</p>
 <p>nội dung CK: ${escapeHtml(row.code)}</p>
 <img src="${img}" alt="Hoá đơn ${escapeHtml(row.code)}">
@@ -664,21 +668,21 @@ async function invoicesPage(req, res) {
 
 async function invoicesList(req, res) {
   if (!access.canKiot(await who(req))) return deny(res);
-  const rows = await invoices.search({
+  const rows = await invoices.hydrateCustomerCodes(await invoices.search({
     q: req.query.q,
     from: req.query.from,
     to: req.query.to,
-  });
+  }));
   res.json({ invoices: rows.map(row => invoices.present(row)) });
 }
 
 async function invoicesCsv(req, res) {
   if (!access.canKiot(await who(req))) return deny(res);
-  const rows = await invoices.search({
+  const rows = await invoices.hydrateCustomerCodes(await invoices.search({
     q: req.query.q,
     from: req.query.from,
     to: req.query.to,
-  });
+  }));
   res.set('Content-Type', 'text/csv; charset=utf-8');
   res.set('Content-Disposition', 'attachment; filename="hoa-don.csv"');
   res.send(invoices.toCsv(rows));
@@ -698,8 +702,9 @@ async function invoicesPaid(req, res) {
 
 async function invoicesSync(req, res) {
   if (!access.canKiot(await who(req))) return deny(res);
-  const row = await invoices.getByCode(req.params.code);
+  let row = await invoices.getByCode(req.params.code);
   if (!row) return res.status(404).json({ error: 'Không thấy hoá đơn' });
+  row = await invoices.backfillCustomerCode(row);
   if (row.document_type !== 'invoice') {
     return res.status(400).json({ error: 'Đơn đặt hàng chưa xuất hoá đơn, chưa đồng bộ được thanh toán.' });
   }

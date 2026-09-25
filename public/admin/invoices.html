@@ -17,8 +17,8 @@
   <h1>Hóa đơn</h1>
 </header>
 <form id="filters" class="filters">
-  <label>Tìm mã, khách, số điện thoại
-    <input id="q" name="q" type="search" placeholder="HD011637 hoặc 090…" autocomplete="off">
+  <label>Tìm mã HĐ, mã KH, khách, số điện thoại
+    <input id="q" name="q" type="search" placeholder="HD011637, KH000123 hoặc 090…" autocomplete="off">
   </label>
   <div class="dates">
     <label>Từ <input id="from" name="from" type="date"></label>
@@ -30,6 +30,12 @@
   </div>
 </form>
 <p id="note" class="note" role="status"></p>
+<div class="cols head" aria-hidden="true">
+  <span>Mã HĐ</span>
+  <span>Mã KH</span>
+  <span>Khách</span>
+  <span>Thanh toán</span>
+</div>
 <div id="list" class="list"></div>
 <script src="/admin/invoices.js"></script>
 </body>

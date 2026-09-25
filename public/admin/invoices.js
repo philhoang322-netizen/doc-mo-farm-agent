@@ -47,8 +47,16 @@
     const el = document.createElement('article');
     el.className = 'card';
     const open = document.createElement('div');
+    open.className = 'cols';
     const title = document.createElement('h2');
     title.textContent = row.code;
+    const ma = document.createElement('p');
+    ma.className = 'makh';
+    const maLabel = document.createElement('span');
+    maLabel.className = 'lbl';
+    maLabel.textContent = 'Mã KH';
+    ma.appendChild(maLabel);
+    ma.appendChild(document.createTextNode(row.customer_code || '—'));
     const meta = document.createElement('p');
     meta.className = 'meta';
     const who = [row.customer_name || 'Khách', row.customer_phone || '', channels[row.channel] || ''].filter(Boolean).join(' · ');
@@ -57,6 +65,7 @@
     badge.className = 'badge ' + (row.payment_status || 'chua_tt');
     badge.textContent = labels[row.payment_status] || row.payment_status;
     open.appendChild(title);
+    open.appendChild(ma);
     open.appendChild(meta);
     open.appendChild(badge);
     el.appendChild(open);

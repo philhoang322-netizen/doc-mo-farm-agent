@@ -1788,7 +1788,13 @@
     const code = String(f.kiot_code || d.invoice_code || '').trim();
     if (!/^(HD|DH)/i.test(code)) return null;
     const kind = f.kiot_kind || (/^DH/i.test(code) ? 'order' : 'invoice');
-    return { code, total: f.kiot_total, kind, image: d.qr_image_url || '' };
+    return {
+      code,
+      total: f.kiot_total,
+      kind,
+      image: d.qr_image_url || '',
+      customerCode: d.customer_code || '',
+    };
   }
 
   function openDraft(id, opts) {
@@ -1997,6 +2003,9 @@
         text: invoice ? 'Hoá đơn đã tạo' : 'Đơn đặt hàng đã tạo',
       }));
       box.appendChild(el('p', { class: 'kiot-created-code', text: mark.code }));
+      if (mark.customerCode) {
+        box.appendChild(el('p', { class: 'kiot-created-makh', text: 'Mã KH: ' + mark.customerCode }));
+      }
       if (mark.total != null && mark.total !== '') box.appendChild(el('p', { text: 'Tổng ' + vnd(mark.total) }));
       if (invoice && mark.image) {
         box.appendChild(el('img', { class: 'kiot-invoice-img', src: mark.image, alt: 'Hoá đơn ' + mark.code }));

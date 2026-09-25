@@ -84,7 +84,7 @@ function installMocks(stock) {
       documentType: input.documentType || 'invoice',
       branchId: 26947,
       customerId: input.customerId || null,
-      customerCode: input.customerCode || null,
+      customerCode: input.customerCode || 'KH000123',
       customerName: input.customerName || null,
     };
   };

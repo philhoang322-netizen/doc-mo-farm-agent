@@ -1300,6 +1300,7 @@ body.hitl .kiot-created-code {
   letter-spacing: 0.02em;
   color: var(--green-deep);
 }
+body.hitl .kiot-created-makh { margin: 4px 0 0; font-size: 18px; font-weight: 750; color: var(--green-deep); }
 body.hitl .kiot-created-note { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
 body.hitl .kiot-invoice-img { width: 100%; height: auto; margin-top: 8px; border-radius: 8px; background: #fff; }
 body.hitl .kiot-lead { margin: 0 0 var(--space-3); color: var(--muted); font-size: 15px; }

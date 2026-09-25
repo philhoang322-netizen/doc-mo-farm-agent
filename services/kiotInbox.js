@@ -740,7 +740,7 @@ async function issueInvoice(id, actorName) {
         draftId: draft.id,
         customerName: (row && row.customer_name) || draft.customer_name,
         customerPhone: (row && row.customer_phone) || draft.customer_phone,
-        customerCode: (row && row.customer_code) || draft.customer_code,
+        customerCode: issued.customerCode || (row && row.customer_code) || draft.customer_code,
         channel: draft.channel,
         items: row && row.items,
       }, audit.managerActor(actorName));
