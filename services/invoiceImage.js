@@ -89,10 +89,94 @@ function wrap(ctx, text, max) {
   return lines.length ? lines : [''];
 }
 
-/** Line drawn under the customer name. Empty when the invoice has no Mã KH yet. */
-function customerLabel(invoice) {
-  const code = String((invoice && invoice.customer_code) || '').trim();
-  return code ? `Mã KH: ${code}` : '';
+function escHtml(value) {
+  return String(value || '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[ch]));
+}
+
+function ellipsize(ctx, text, maxWidth) {
+  const raw = String(text || '');
+  if (maxWidth <= 0) return '…';
+  if (ctx.measureText(raw).width <= maxWidth) return raw;
+  const ell = '…';
+  let out = '';
+  for (const ch of raw) {
+    if (ctx.measureText(out + ch + ell).width > maxWidth) break;
+    out += ch;
+  }
+  return `${out || raw.slice(0, 1)}…`;
+}
+
+/**
+ * One header row: name, then Mã KH, then Mã HĐ, then the date when it fits.
+ * The name is the only field that may be shortened.
+ */
+function layoutHeader(ctx, invoice, width) {
+  const name = String((invoice && invoice.customer_name) || 'Khách').trim() || 'Khách';
+  const kh = String((invoice && invoice.customer_code) || '').trim();
+  const hd = String((invoice && invoice.code) || '').trim();
+  let date = when(invoice && invoice.created_at);
+  const gap = 12;
+  const left = 32;
+  const inner = Math.max(0, (width || WIDTH) - 64);
+  const measureFixed = (includeDate) => {
+    ctx.font = '16px Noto';
+    const khW = kh ? ctx.measureText(kh).width : 0;
+    const hdW = hd ? ctx.measureText(hd).width : 0;
+    const dateW = includeDate && date ? ctx.measureText(date).width : 0;
+    const pieces = [khW, hdW, dateW].filter(w => w > 0);
+    const used = pieces.reduce((sum, w) => sum + w, 0) + gap * Math.max(0, pieces.length);
+    return { khW, hdW, dateW, used };
+  };
+  let fixed = measureFixed(true);
+  if (inner - fixed.used < 72 && date) {
+    date = '';
+    fixed = measureFixed(false);
+  }
+  ctx.font = '22px NotoBold';
+  const shown = ellipsize(ctx, name, Math.max(24, inner - fixed.used));
+  const nameW = ctx.measureText(shown).width;
+  const y = 0;
+  let x = left;
+  const slots = {
+    y,
+    name: { text: shown, x, y, font: '22px NotoBold', fill: '#1c1712' },
+  };
+  x += nameW + gap;
+  if (kh) {
+    slots.kh = { text: kh, x, y, font: '16px Noto', fill: '#0f5a35' };
+    x += fixed.khW + gap;
+  }
+  if (hd) {
+    slots.hd = { text: hd, x, y, font: '16px Noto', fill: '#0f5a35' };
+    x += fixed.hdW + gap;
+  }
+  if (date) slots.date = { text: date, x, y, font: '16px Noto', fill: '#5c564e' };
+  return slots;
+}
+
+/** The same row as one element, for the public page and the render test. */
+function headerHtml(invoice) {
+  const name = escHtml((invoice && invoice.customer_name) || 'Khách');
+  const kh = escHtml(invoice && invoice.customer_code);
+  const hd = escHtml(invoice && invoice.code);
+  const bits = [
+    `<span class="id-name">${name}</span>`,
+    kh ? `<span class="id-code" title="Mã KH">${kh}</span>` : '',
+    hd ? `<span class="id-code" title="Mã HĐ">${hd}</span>` : '',
+  ].filter(Boolean);
+  return `<div class="id-row">${bits.join('')}</div>`;
+}
+
+function drawHeader(ctx, slots, y) {
+  for (const key of ['name', 'kh', 'hd', 'date']) {
+    const slot = slots[key];
+    if (!slot) continue;
+    ctx.fillStyle = slot.fill;
+    ctx.font = slot.font;
+    ctx.fillText(slot.text, slot.x, y);
+  }
 }
 
 function pngBuffer(bitmap) {
@@ -133,8 +217,7 @@ async function render(invoice) {
   const nameLines = items.map(item => wrap(measure, item.name || item.product_name || 'Sản phẩm', 300));
   const rowHeights = nameLines.map(lines => Math.max(32, lines.length * 22 + 10));
   const tableH = 36 + rowHeights.reduce((s, h) => s + h, 0);
-  const maKh = customerLabel(invoice);
-  const height = 168 + 210 + (maKh ? 36 : 0) + tableH + 210 + 340 + (invoice.link ? 72 : 36);
+  const height = 168 + 96 + tableH + 210 + 340 + (invoice.link ? 72 : 36);
   const img = PImage.make(WIDTH, height);
   const ctx = img.getContext('2d');
   ctx.fillStyle = '#ffffff';
@@ -150,30 +233,17 @@ async function render(invoice) {
   ctx.fillText(FARM.address, 32, 106);
   ctx.fillText(`Hotline ${FARM.hotline}`, 32, 130);
 
-  let y = 184;
+  let y = 188;
+  const slots = layoutHeader(ctx, invoice, WIDTH);
+  drawHeader(ctx, slots, y);
+  y += 30;
+  const metaBits = [invoice.customer_phone || '', money(total)];
+  if (paid > 0) metaBits.push(`Đã thu ${money(paid)}`, `Còn ${money(due)}`);
+  if (!slots.date && when(invoice.created_at)) metaBits.push(when(invoice.created_at));
   ctx.fillStyle = '#5c564e';
   ctx.font = '16px Noto';
-  ctx.fillText('HOÁ ĐƠN', 32, y);
-  y += 40;
-  ctx.fillStyle = '#0f5a35';
-  ctx.font = '40px NotoBold';
-  ctx.fillText(String(invoice.code || ''), 32, y);
-  y += 32;
-  ctx.fillStyle = '#5c564e';
-  ctx.font = '16px Noto';
-  ctx.fillText(when(invoice.created_at), 32, y);
+  ctx.fillText(ellipsize(ctx, metaBits.filter(Boolean).join(' · '), WIDTH - 64), 32, y);
   y += 28;
-  const who = [invoice.customer_name || 'Khách', invoice.customer_phone || ''].filter(Boolean).join(' · ');
-  ctx.fillStyle = '#1c1712';
-  ctx.font = '18px Noto';
-  ctx.fillText(who, 32, y);
-  y += 28;
-  if (maKh) {
-    ctx.fillStyle = '#0f5a35';
-    ctx.font = '22px NotoBold';
-    ctx.fillText(maKh, 32, y);
-    y += 36;
-  }
 
   ctx.fillStyle = '#e7efe9';
   ctx.fillRect(24, y, WIDTH - 48, 32);
@@ -243,4 +313,4 @@ async function render(invoice) {
   return pngBuffer(img);
 }
 
-module.exports = { render, customerLabel, FARM, WIDTH };
+module.exports = { render, headerHtml, layoutHeader, FARM, WIDTH };

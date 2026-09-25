@@ -888,8 +888,42 @@ body.hitl .msg {
   min-height: 0;
   font-weight: 400;
 }
-body.hitl .msg-top { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-2); }
-body.hitl .msg-names { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+body.hitl .msg-top { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-2); min-width: 0; }
+body.hitl .msg-names { display: flex; flex: 1 1 auto; flex-direction: row; flex-wrap: nowrap; align-items: baseline; gap: 8px; min-width: 0; overflow: hidden; width: 100%; }
+body.hitl .id-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+body.hitl .id-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 18px;
+  font-weight: 750;
+  line-height: 1.2;
+}
+body.hitl .id-code {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--green-deep);
+}
+body.hitl .id-when {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
 body.hitl .msg-name,
 body.hitl .msg-channel-name,
 body.hitl .msg-kiot-name { font-weight: 700; font-size: 16px; }
@@ -1164,9 +1198,9 @@ body.hitl .detail-empty {
 }
 body.hitl .detail-empty strong { display: block; color: var(--ink); margin-bottom: var(--space-2); }
 body.hitl .back { display: inline-flex; margin: 0 0 var(--space-2); background: transparent; border: 0; box-shadow: none; color: var(--green-deep); min-height: var(--tap); padding: 0; font-weight: 650; }
-body.hitl .detail-meta { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-bottom: var(--space-3); }
-body.hitl .name-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); margin-right: var(--space-2); }
-body.hitl .name-row .msg-names { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+body.hitl .detail-meta { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin-bottom: var(--space-3); min-width: 0; }
+body.hitl .name-row { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 8px; margin-right: 0; min-width: 0; flex: 1 1 100%; overflow: hidden; }
+body.hitl .name-row .msg-names { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: baseline; gap: 8px; min-width: 0; overflow: hidden; }
 body.hitl .detail-meta h3 { margin: 0; font-size: 20px; font-weight: 700; }
 body.hitl .cust-code { font-size: 15px; font-weight: 650; color: var(--muted); }
 body.hitl .want-box {
@@ -1292,16 +1326,8 @@ body.hitl .kiot-created {
   padding: var(--space-3);
   margin: 0 0 var(--space-3);
 }
-body.hitl .kiot-created-kicker { margin: 0; color: var(--muted); font-size: 13px; font-weight: 650; }
-body.hitl .kiot-created-code {
-  margin: 2px 0;
-  font-size: 28px;
-  font-weight: 750;
-  letter-spacing: 0.02em;
-  color: var(--green-deep);
-}
-body.hitl .kiot-created-makh { margin: 4px 0 0; font-size: 18px; font-weight: 750; color: var(--green-deep); }
-body.hitl .kiot-created-note { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
+body.hitl .kiot-created .id-row { width: 100%; }
+body.hitl .kiot-created-note { margin: 4px 0 0; color: var(--muted); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 body.hitl .kiot-invoice-img { width: 100%; height: auto; margin-top: 8px; border-radius: 8px; background: #fff; }
 body.hitl .kiot-lead { margin: 0 0 var(--space-3); color: var(--muted); font-size: 15px; }
 body.hitl .kiot-quick-row { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-2); }

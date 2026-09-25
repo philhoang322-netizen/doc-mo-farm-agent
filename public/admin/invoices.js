@@ -47,27 +47,42 @@
     const el = document.createElement('article');
     el.className = 'card';
     const open = document.createElement('div');
-    open.className = 'cols';
-    const title = document.createElement('h2');
-    title.textContent = row.code;
-    const ma = document.createElement('p');
-    ma.className = 'makh';
-    const maLabel = document.createElement('span');
-    maLabel.className = 'lbl';
-    maLabel.textContent = 'Mã KH';
-    ma.appendChild(maLabel);
-    ma.appendChild(document.createTextNode(row.customer_code || '—'));
+    const rowEl = document.createElement('div');
+    rowEl.className = 'id-row';
+    const name = document.createElement('span');
+    name.className = 'id-name';
+    name.textContent = row.customer_name || 'Khách';
+    rowEl.appendChild(name);
+    if (row.customer_code) {
+      const kh = document.createElement('span');
+      kh.className = 'id-code';
+      kh.title = 'Mã KH';
+      kh.textContent = row.customer_code;
+      rowEl.appendChild(kh);
+    }
+    const hd = document.createElement('span');
+    hd.className = 'id-code';
+    hd.title = 'Mã HĐ';
+    hd.textContent = row.code;
+    rowEl.appendChild(hd);
     const meta = document.createElement('p');
     meta.className = 'meta';
-    const who = [row.customer_name || 'Khách', row.customer_phone || '', channels[row.channel] || ''].filter(Boolean).join(' · ');
-    meta.textContent = who + ' · ' + vnd(row.total) + ' · Gửi ' + when(row.sent_at);
+    const line = document.createElement('span');
+    line.className = 'meta-line';
+    const bits = [
+      row.customer_phone || '',
+      channels[row.channel] || '',
+      vnd(row.total),
+      when(row.sent_at || row.created_at),
+    ].filter(Boolean);
+    line.textContent = bits.join(' · ');
     const badge = document.createElement('span');
     badge.className = 'badge ' + (row.payment_status || 'chua_tt');
     badge.textContent = labels[row.payment_status] || row.payment_status;
-    open.appendChild(title);
-    open.appendChild(ma);
+    meta.appendChild(line);
+    meta.appendChild(badge);
+    open.appendChild(rowEl);
     open.appendChild(meta);
-    open.appendChild(badge);
     el.appendChild(open);
 
     const extra = document.createElement('div');

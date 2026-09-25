@@ -308,7 +308,14 @@ test('confirm creates an invoice, keeps the draft pending, and does not send', a
     assert.equal(page.status, 200);
     const html = await page.text();
     assert.match(html, /HD011637/);
-    assert.match(html, /Mã KH: KH0009/);
+    assert.match(html, /class="id-row"/);
+    const idRow = html.slice(html.indexOf('<div class="id-row">'), html.indexOf('</div>'));
+    assert.match(idRow, /Chị Lan/);
+    assert.match(idRow, /KH0009/);
+    assert.match(idRow, /HD011637/);
+    assert.ok(idRow.indexOf('Chị Lan') < idRow.indexOf('KH0009'));
+    assert.ok(idRow.indexOf('KH0009') < idRow.indexOf('HD011637'));
+    assert.equal((html.match(/class="id-row"/g) || []).length, 1);
     const hidden = await fetch(`${base}/hd/HD011637?t=nope`);
     assert.equal(hidden.status, 404);
 
@@ -550,7 +557,7 @@ test('Hóa đơn list, manual payment, Kiot sync, and CSV', async () => {
     assert.equal(page.status, 200);
     const adminHtml = await page.text();
     assert.match(adminHtml, /Hóa đơn/);
-    assert.match(adminHtml, /Mã KH/);
+    assert.match(adminHtml, /mã KH/);
   } finally {
     await stop(server);
   }
@@ -558,12 +565,9 @@ test('Hóa đơn list, manual payment, Kiot sync, and CSV', async () => {
 
 const LOCKED_VIETQR = '00020101021238540010A00000072701240006970436011010584375900208QRIBFTTA530370454061000005802VN62120808HD0116376304C4B0';
 
-test('invoice PNG draws Mã KH and leaves the VietQR payload unchanged', async () => {
+test('invoice PNG draws name, Mã KH and Mã HĐ on one row and leaves the VietQR payload unchanged', async () => {
   assert.equal(emvco.buildPayload({ amount: 100000, addInfo: 'HD011637' }), LOCKED_VIETQR);
-  assert.equal(invoiceImage.customerLabel({ customer_code: 'KH000123' }), 'Mã KH: KH000123');
-  assert.match(String(invoiceImage.render), /customerLabel/);
-  const due = emvco.buildPayload({ amount: 265000, addInfo: 'HD011637' });
-  const png = await invoiceImage.render({
+  const sample = {
     code: 'HD011637',
     created_at: '2026-09-25T03:00:00.000Z',
     customer_name: 'Chị Lan',
@@ -572,7 +576,27 @@ test('invoice PNG draws Mã KH and leaves the VietQR payload unchanged', async (
     items: [{ name: 'Xúc xích heo', quantity: 1, price: 265000, amount: 265000 }],
     total: 265000,
     amount_paid: 0,
-  });
+  };
+  const html = invoiceImage.headerHtml(sample);
+  const idRow = html.slice(html.indexOf('<div class="id-row">'), html.indexOf('</div>'));
+  assert.equal((html.match(/class="id-row"/g) || []).length, 1);
+  assert.match(idRow, /<span class="id-name">Chị Lan<\/span>/);
+  assert.match(idRow, /title="Mã KH">KH000123</);
+  assert.match(idRow, /title="Mã HĐ">HD011637</);
+  assert.ok(idRow.indexOf('Chị Lan') < idRow.indexOf('KH000123'));
+  assert.ok(idRow.indexOf('KH000123') < idRow.indexOf('HD011637'));
+  const due = emvco.buildPayload({ amount: 265000, addInfo: 'HD011637' });
+  const png = await invoiceImage.render(sample);
+  const slots = invoiceImage.layoutHeader(
+    require('pureimage').make(invoiceImage.WIDTH, 10).getContext('2d'),
+    sample,
+    invoiceImage.WIDTH,
+  );
+  assert.equal(slots.name.y, slots.kh.y);
+  assert.equal(slots.kh.y, slots.hd.y);
+  assert.ok(slots.name.x < slots.kh.x && slots.kh.x < slots.hd.x);
+  assert.equal(slots.kh.text, 'KH000123');
+  assert.equal(slots.hd.text, 'HD011637');
   assert.equal(png.readUInt32BE(0), 0x89504e47);
   assert.ok(png.length > 2000);
   assert.equal(emvco.buildPayload({ amount: 265000, addInfo: 'HD011637' }), due);

@@ -21,6 +21,7 @@ const channelNames = require('./channelNames');
 const access = require('./access');
 const adminUsers = require('./adminUsers');
 const invoices = require('./invoices');
+const invoiceImage = require('./invoiceImage');
 
 const PUBLIC = path.join(__dirname, '..', 'public', 'admin');
 
@@ -615,7 +616,11 @@ async function publicInvoice(req, res) {
     row = await invoices.backfillCustomerCode(row);
     const img = `/hd/${encodeURIComponent(row.code)}/anh?t=${encodeURIComponent(invoices.sign(row.code))}`;
     const total = Math.round(row.total).toLocaleString('vi-VN');
-    const maKh = row.customer_code ? escapeHtml(row.customer_code) : '—';
+    const phone = row.customer_phone ? escapeHtml(row.customer_phone) : '';
+    const stamp = row.created_at ? new Intl.DateTimeFormat('vi-VN', {
+      timeZone: 'Asia/Ho_Chi_Minh', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+    }).format(new Date(row.created_at)) : '';
+    const meta = [phone, stamp, `Tổng ${total}đ`, 'VCB 1058437590', `nội dung CK: ${escapeHtml(row.code)}`].filter(Boolean).join(' · ');
     res.type('html').send(`<!doctype html>
 <html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -623,16 +628,15 @@ async function publicInvoice(req, res) {
 <style>
   body { margin: 0; background: #f6f3ee; color: #1c1712; font: 17px/1.45 "Be Vietnam Pro", sans-serif; }
   main { max-width: 720px; margin: 0 auto; padding: 16px; }
-  h1 { color: #0f5a35; font-size: 28px; margin: 0 0 8px; }
-  .makh { font-size: 20px; font-weight: 700; color: #0f5a35; }
+  .id-row { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 8px; min-width: 0; }
+  .id-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 22px; font-weight: 700; }
+  .id-code { flex: 0 0 auto; white-space: nowrap; font-size: 15px; font-weight: 600; color: #0f5a35; }
+  .id-when { flex: 0 0 auto; white-space: nowrap; font-size: 13px; font-weight: 600; color: #5c564e; }
+  .meta { margin: 6px 0 10px; color: #5c564e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   img { width: 100%; height: auto; background: #fff; border-radius: 12px; }
-  p { margin: 8px 0; }
 </style></head><body><main>
-<h1>${escapeHtml(row.code)}</h1>
-<p>${escapeHtml(row.customer_name || 'Khách')} · Tổng ${total}đ</p>
-<p class="makh">Mã KH: ${maKh}</p>
-<p>VCB 1058437590 · HTX NONG TRAI DOC MO</p>
-<p>nội dung CK: ${escapeHtml(row.code)}</p>
+${invoiceImage.headerHtml(row)}
+<p class="meta">${meta}</p>
 <img src="${img}" alt="Hoá đơn ${escapeHtml(row.code)}">
 </main></body></html>`);
   } catch (e) {

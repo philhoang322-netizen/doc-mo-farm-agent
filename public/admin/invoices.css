@@ -53,22 +53,50 @@ input {
 .btn.primary { background: var(--green); color: #fff; border-color: var(--green); }
 .note { min-height: 1.2em; color: var(--soft); }
 .card { cursor: pointer; }
-.card h2 { margin: 0; font-size: 22px; letter-spacing: 0.01em; }
-.meta { margin: 6px 0 0; color: var(--soft); }
-.makh { margin: 6px 0 0; font-size: 18px; font-weight: 700; color: var(--ink); }
-.makh .lbl {
-  display: inline-block;
-  min-width: 4.2em;
-  margin-right: 6px;
-  color: var(--green);
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+.id-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
 }
-.cols.head { display: none; }
+.id-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 20px;
+  font-weight: 750;
+  line-height: 1.2;
+}
+.id-code {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--green);
+}
+.meta {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 4px 0 0;
+  color: var(--soft);
+}
+.meta-line {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .badge {
   display: inline-block;
-  margin-top: 8px;
+  flex: 0 0 auto;
+  margin: 0;
   padding: 2px 8px;
   border-radius: 999px;
   font-size: 13px;
@@ -84,21 +112,7 @@ input {
 .empty { color: var(--soft); padding: 24px 8px; }
 @media (min-width: 900px) {
   body { max-width: 1100px; margin: 0 auto; padding: 28px; }
-  .cols {
-    display: grid;
-    grid-template-columns: minmax(120px, 0.7fr) minmax(140px, 0.8fr) minmax(0, 1.6fr) auto;
-    gap: 8px 16px;
-    align-items: center;
-  }
-  .cols.head {
-    display: grid;
-    margin: 0 12px 6px;
-    color: var(--soft);
-    font-size: 13px;
-    font-weight: 700;
-  }
-  .cols .meta, .cols .makh { margin: 0; }
-  .badge { margin-top: 0; justify-self: end; }
+  .id-name { font-size: 22px; }
   .list { display: flex; flex-direction: column; gap: 12px; }
   .card { margin: 0; }
 }
