@@ -857,11 +857,10 @@
         return;
       }
       renderStats(stats);
-      if (data.storage && data.storage !== 'postgres') {
-        storageEl.hidden = false;
-        storageEl.textContent = 'Bộ nhớ tạm — khởi động lại sẽ mất tin.';
-      } else {
-        storageEl.hidden = true;
+      if (storageEl) {
+        // Postgres never shows this. Memory mode (local, or a production
+        // process with no DATABASE_URL) is a muted line in the overflow menu.
+        storageEl.hidden = !(data.storage && data.storage !== 'postgres');
       }
       const keepY = window.scrollY;
       const keepList = listEl.scrollTop;
@@ -1171,13 +1170,17 @@
       const nameBox = el('div', { class: 'msg-names' });
       channelNameNodes(d).forEach(node => nameBox.appendChild(node));
       top.appendChild(nameBox);
-      top.appendChild(el('span', { class: 'msg-time', text: when(d.created_at) }));
       btn.appendChild(top);
-      btn.appendChild(el('div', { class: 'msg-kicker', text: 'Khách nhắn' }));
       const customer = el('div', { class: 'msg-customer is-clamped' });
       customer.appendChild(richFragment(snippet(d) || '—'));
       btn.appendChild(customer);
-      btn.appendChild(tags);
+      const foot = el('div', { class: 'msg-foot' });
+      foot.appendChild(el('span', { class: 'msg-time', text: when(d.created_at) }));
+      foot.appendChild(tags);
+      const sent = el('span', { class: 'msg-sent', text: d.sent_at ? ('Đã gửi ' + when(d.sent_at)) : '' });
+      if (!d.sent_at) sent.hidden = true;
+      foot.appendChild(sent);
+      btn.appendChild(foot);
       btn.addEventListener('click', () => openDraft(d.id));
       const card = el('div', {
         class: 'msg-card' + (d.id === selectedId ? ' selected' : ''),
@@ -1185,28 +1188,15 @@
       });
       if (window.inboxOrder) card.dataset.sortKey = window.inboxOrder.stamp(d);
       card.appendChild(btn);
-      const more = el('button', { type: 'button', class: 'more-toggle', text: 'Xem thêm' });
-      more.hidden = true;
-      more.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        customer.classList.toggle('is-clamped');
-        more.textContent = customer.classList.contains('is-clamped') ? 'Xem thêm' : 'Thu gọn';
-      });
-      card.appendChild(more);
-      card.appendChild(customerPanel(d));
 
       const openReply = d.approval_status !== 'SENT' && d.approval_status !== 'REJECTED' && !d.deleted_at;
       const replyId = 'card-reply-' + d.id;
-      const replyLabel = el('div', { class: 'draft-label' }, [
-        el('label', { for: replyId, text: 'Gợi ý trả lời' }),
-        el('span', { text: 'Sửa được. Chỉ gửi khi bấm Duyệt & Gửi.' }),
-      ]);
       const reply = el('textarea', {
         id: replyId,
         class: 'card-reply',
-        rows: '4',
-        placeholder: 'Chưa có bản AI. Gõ câu trả lời cho khách.',
+        rows: '2',
+        tabindex: '-1',
+        'aria-hidden': 'true',
       });
       reply.value = s.reply || '';
       if (!openReply) reply.disabled = true;
@@ -1216,15 +1206,13 @@
         dirty = true;
         persistReplies();
       });
-      reply.addEventListener('click', (ev) => ev.stopPropagation());
       const replyError = el('p', { class: 'reply-error', hidden: 'hidden' });
-      card.appendChild(replyLabel);
       card.appendChild(reply);
       card.appendChild(replyError);
 
       const actions = el('div', { class: 'card-actions' });
       if (openReply && me.canSend) {
-        const sendBtn = el('button', { type: 'button', class: 'btn btn-primary', text: 'Duyệt & Gửi' });
+        const sendBtn = el('button', { type: 'button', class: 'btn btn-primary', text: 'Duyệt & Gửi', tabindex: '-1' });
         sendBtn.addEventListener('click', (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
@@ -1233,31 +1221,6 @@
         actions.appendChild(sendBtn);
       }
       card.appendChild(actions);
-      if (openReply && me.canSend) {
-        card.appendChild(el('p', { class: 'send-hint', text: 'Tin chỉ gửi khi bấm Duyệt & Gửi.' }));
-      }
-
-      if (openReply) card.appendChild(learnToggle(s));
-
-      if (!d.deleted_at) {
-        const secondary = el('div', { class: 'card-secondary' });
-        secondary.appendChild(lineActions(d));
-        card.appendChild(secondary);
-        card.appendChild(statusActions(d));
-        const danger = el('div', { class: 'card-danger' });
-        danger.appendChild(deleteButton(d));
-        card.appendChild(danger);
-      }
-
-      const fold = el('details', { class: 'kiot-fold' });
-      if (s.kiotOpen) fold.open = true;
-      fold.appendChild(el('summary', { text: 'Tạo đơn KiotViet' }));
-      fold.addEventListener('toggle', () => {
-        s.kiotOpen = fold.open;
-        if (fold.open && !fold.querySelector('.kiot-panel')) fold.appendChild(kiotPanel(d, d.id));
-      });
-      if (fold.open) fold.appendChild(kiotPanel(d, d.id));
-      if (me.canKiot) card.appendChild(fold);
       return card;
   }
 
@@ -1326,6 +1289,50 @@
     return opt.textContent || '';
   }
 
+  function moreMenu(d, locked) {
+    const wrap = el('div', { class: 'more-menu' });
+    const toggle = el('button', {
+      type: 'button',
+      class: 'icon-btn more-btn',
+      'aria-label': 'Thao tác khác',
+      'aria-expanded': 'false',
+      'aria-haspopup': 'menu',
+    });
+    toggle.textContent = '⋯';
+    const panel = el('div', { class: 'more-panel', role: 'menu', hidden: 'hidden' });
+    function addItem(node) {
+      if (!node || node.disabled) return;
+      node.setAttribute('role', 'menuitem');
+      panel.appendChild(node);
+    }
+    if (!locked) addItem(actionButton('Lưu', 'ghost', () => save()));
+    if (!d.deleted_at) {
+      lineActions(d, 'detail-actions').querySelectorAll('button').forEach(addItem);
+      statusActions(d).querySelectorAll('button').forEach(addItem);
+    }
+    if (!locked && d.approval_status !== 'REJECTED') {
+      addItem(actionButton('Từ chối bản nháp', 'ghost', () => reject()));
+    }
+    if (!locked && d.approval_status !== 'PENDING_REVIEW') {
+      addItem(actionButton('Đưa về chờ xử lý', 'ghost', () => reopen()));
+    }
+    if (!d.deleted_at && me.canDelete) {
+      const del = deleteButton(d);
+      del.classList.add('menu-delete');
+      addItem(del);
+    }
+    toggle.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const open = panel.hidden;
+      panel.hidden = !open;
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    wrap.appendChild(toggle);
+    wrap.appendChild(panel);
+    return wrap;
+  }
+
   function renderDetail() {
     const d = currentDraft();
     detailEl.textContent = '';
@@ -1361,33 +1368,34 @@
     if (lineTag) meta.appendChild(lineTag);
     const kind = kindTag(d);
     if (kind) meta.appendChild(el('span', { class: 'tag ' + kind.cls, text: kind.text }));
+    const split = el('div', { class: 'detail-split' });
+    const main = el('div', { class: 'detail-main' });
+    const side = el('div', { class: 'detail-side' });
     body.appendChild(meta);
     const want = el('div', { class: 'want-box' });
     want.appendChild(el('span', { text: 'Khách đang muốn' }));
     const wantText = el('div', { class: 'msg-customer' });
     wantText.appendChild(richFragment(snippet(d) || '—'));
     want.appendChild(wantText);
-    body.appendChild(want);
+    main.appendChild(want);
 
     if (needsHumanTicket(d) && !refund) {
-      body.appendChild(el('p', {
+      main.appendChild(el('p', {
         class: 'banner warn',
         text: 'Cần người xem trước khi gửi. Bản nháp này chưa được gửi.',
       }));
     }
     if (d.send_error) {
-      body.appendChild(el('p', {
+      main.appendChild(el('p', {
         class: 'banner ' + (d.approval_status === 'SENT' ? 'warn' : 'bad'),
         text: d.send_error,
       }));
     }
-    if (d.pii_note) body.appendChild(el('p', { class: 'hint', text: d.pii_note }));
+    if (d.pii_note) main.appendChild(el('p', { class: 'hint', text: d.pii_note }));
 
-    const labelRow = el('div', { class: 'draft-label' }, [
+    main.appendChild(el('div', { class: 'draft-label' }, [
       el('label', { for: 'draft-reply', text: 'Bản nháp trả lời' }),
-      el('span', { text: 'Sửa trước khi duyệt' }),
-    ]);
-    body.appendChild(labelRow);
+    ]));
     const cardStateForReply = ensureCard(d);
     const reply = el('textarea', { id: 'draft-reply', name: 'draft_reply', rows: '8' });
     reply.value = cardStateForReply.dirty ? (cardStateForReply.reply || '') : (d.draft_reply || '');
@@ -1399,26 +1407,27 @@
       s.dirty = true;
       persistReplies();
     });
-    body.appendChild(el('div', { class: 'field-block' }, [reply]));
-    body.appendChild(el('p', { id: 'reply-error', class: 'reply-error', hidden: 'hidden' }));
-    if (!locked) body.appendChild(learnToggle(cardStateForReply));
-    if (me.canKiot) {
-      const fold = el('details', { class: 'kiot-fold' });
-      fold.appendChild(el('summary', { text: 'Tạo đơn KiotViet' }));
-      fold.addEventListener('toggle', () => {
-        if (fold.open && !fold.querySelector('.kiot-panel')) fold.appendChild(kiotPanel(d));
-      });
-      body.appendChild(fold);
-    }
+    main.appendChild(el('div', { class: 'field-block' }, [reply]));
+    main.appendChild(el('p', { id: 'reply-error', class: 'reply-error', hidden: 'hidden' }));
+    if (!locked) main.appendChild(learnToggle(cardStateForReply));
 
     const grid = el('div', { class: 'grid2' });
     grid.appendChild(blockField('customer_phone', 'Số điện thoại', d.customer_phone, {
       disabled: locked, placeholder: 'Nếu có', type: 'tel', inputmode: 'tel', autocomplete: 'tel',
     }));
     grid.appendChild(blockField('invoice_code', 'Mã hoá đơn', d.invoice_code, { disabled: locked, placeholder: 'Ví dụ: HD011637' }));
-    body.appendChild(grid);
-    if (refund) body.appendChild(refundPanel(d, f, locked));
-    if (addrOn) body.appendChild(addressPanel(f, locked));
+    side.appendChild(grid);
+    if (me.canKiot) {
+      const fold = el('details', { class: 'kiot-fold' });
+      fold.open = false;
+      fold.appendChild(el('summary', { text: 'Tạo đơn KiotViet' }));
+      fold.addEventListener('toggle', () => {
+        if (fold.open && !fold.querySelector('.kiot-panel')) fold.appendChild(kiotPanel(d));
+      });
+      side.appendChild(fold);
+    }
+    if (refund) side.appendChild(refundPanel(d, f, locked));
+    if (addrOn) side.appendChild(addressPanel(f, locked));
 
     const extra = el('details', { class: 'extra-detail' });
     extra.appendChild(el('summary', { text: 'Thêm chi tiết gửi' }));
@@ -1460,28 +1469,14 @@
     if (d.qr_image_url && /^https?:\/\//i.test(d.qr_image_url)) {
       extra.appendChild(el('img', { class: 'qr', alt: 'Mã QR', src: d.qr_image_url }));
     }
-    body.appendChild(extra);
-    const tools = el('div', { class: 'card-secondary' });
-    tools.appendChild(lineActions(d, 'detail-actions'));
-    body.appendChild(tools);
-    if (!d.deleted_at) body.appendChild(statusActions(d));
-    const danger = el('div', { class: 'card-danger' });
-    danger.appendChild(deleteButton(d));
-    body.appendChild(danger);
+    side.appendChild(extra);
+    split.appendChild(main);
+    split.appendChild(side);
+    body.appendChild(split);
     form.appendChild(body);
 
     const actions = el('div', { class: 'sticky-actions' });
-    const secondary = el('div', { class: 'sticky-secondary' });
-    if (!locked) {
-      secondary.appendChild(actionButton('Lưu', 'ghost', () => save()));
-      if (d.approval_status !== 'REJECTED') {
-        secondary.appendChild(actionButton('Từ chối bản nháp', 'danger', () => reject()));
-      }
-      if (d.approval_status !== 'PENDING_REVIEW') {
-        secondary.appendChild(actionButton('Đưa về chờ xử lý', 'ghost', () => reopen()));
-      }
-    }
-    if (secondary.childNodes.length) actions.appendChild(secondary);
+    actions.appendChild(moreMenu(d, locked));
     if (!locked && me.canSend) {
       const sendBtn = actionButton('Duyệt & Gửi', refund ? 'send refund-mode' : 'send', () => send());
       sendBtn.id = 'btn-approve';
@@ -2867,6 +2862,13 @@
     });
   }
   document.addEventListener('click', (ev) => {
+    document.querySelectorAll('.more-panel').forEach(panel => {
+      if (panel.hidden) return;
+      if (ev.target.closest('.more-menu')) return;
+      panel.hidden = true;
+      const moreBtn = panel.parentElement && panel.parentElement.querySelector('.more-btn');
+      if (moreBtn) moreBtn.setAttribute('aria-expanded', 'false');
+    });
     if (!appMenu || appMenu.hidden) return;
     if (ev.target.closest('#app-menu') || ev.target.closest('#menu-toggle')) return;
     setMenu(false);
@@ -2923,6 +2925,13 @@
       || (document.activeElement && document.activeElement.isContentEditable);
     if (typing) return;
     if (ev.key === 'Escape') {
+      const morePanel = document.querySelector('.more-panel:not([hidden])');
+      if (morePanel) {
+        morePanel.hidden = true;
+        const moreBtn = morePanel.parentElement && morePanel.parentElement.querySelector('.more-btn');
+        if (moreBtn) moreBtn.setAttribute('aria-expanded', 'false');
+        return;
+      }
       if (appMenu && !appMenu.hidden) { setMenu(false); return; }
       if (filterPanel && !filterPanel.hidden) {
         filterPanel.hidden = true;

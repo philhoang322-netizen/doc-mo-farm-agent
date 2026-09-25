@@ -54,13 +54,43 @@
     <button type="button" class="menu-link" id="sync-missed">Đồng bộ tin bị sót</button>
     <span id="sync-result" class="sync-result" role="status"></span>
     <span id="updated-at" class="updated-at">Cập nhật lúc --:--</span>
+    <p id="storage" class="storage-note" hidden>Bộ nhớ tạm — khởi động lại sẽ mất tin.</p>
+    <details class="queue-stats">
+      <summary>Thống kê</summary>
+      <section class="stats" aria-label="Thống kê tin gửi">
+        <article>
+          <h2>Tin gửi theo ngày</h2>
+          <div id="stats-day"></div>
+        </article>
+        <article>
+          <h2>Tin gửi theo mẫu</h2>
+          <div id="stats-template"></div>
+        </article>
+      </section>
+    </details>
+    <details class="composer">
+      <summary>Tạo tin</summary>
+      <form id="create-form">
+        <label>Tên khách <input name="customer_name" maxlength="200"></label>
+        <label>Loại tin
+          <select name="message_type">
+            <option value="follower">Follower</option>
+            <option value="zns">ZNS</option>
+            <option value="broadcast">Broadcast</option>
+          </select>
+        </label>
+        <label>Mẫu <input name="template_name" maxlength="120" placeholder="Tên mẫu, nếu có"></label>
+        <label class="span-2">Câu khách hỏi <input name="customer_query" maxlength="1000" placeholder="Câu khách gửi, nếu có"></label>
+        <label class="span-2">Nội dung <textarea name="draft_reply" required rows="4" maxlength="8000"></textarea></label>
+        <button type="submit" class="btn btn-primary">Đưa vào chờ xử lý</button>
+      </form>
+    </details>
     <form method="post" action="/admin/logout">
       <button class="menu-link menu-logout" type="submit">Đăng xuất</button>
     </form>
   </div>
 </header>
 <section id="health-banner" class="health-banner" hidden aria-live="polite"></section>
-<p id="storage" class="note warn" hidden></p>
 <button type="button" id="new-indicator" class="new-pill" hidden>Có 0 tin mới — bấm để hiện</button>
 
 <section class="queue-shell" aria-label="Hàng chờ duyệt">
@@ -121,36 +151,6 @@
         <div id="active-filters" class="active-filters" hidden></div>
       </div>
       <div id="list" class="list-scroll" aria-live="polite"></div>
-      <details class="queue-stats">
-        <summary>Thống kê</summary>
-        <section class="stats" aria-label="Thống kê tin gửi">
-          <article>
-            <h2>Tin gửi theo ngày</h2>
-            <div id="stats-day"></div>
-          </article>
-          <article>
-            <h2>Tin gửi theo mẫu</h2>
-            <div id="stats-template"></div>
-          </article>
-        </section>
-      </details>
-      <details class="composer">
-        <summary>Tạo tin</summary>
-        <form id="create-form">
-          <label>Tên khách <input name="customer_name" maxlength="200"></label>
-          <label>Loại tin
-            <select name="message_type">
-              <option value="follower">Follower</option>
-              <option value="zns">ZNS</option>
-              <option value="broadcast">Broadcast</option>
-            </select>
-          </label>
-          <label>Mẫu <input name="template_name" maxlength="120" placeholder="Tên mẫu, nếu có"></label>
-          <label class="span-2">Câu khách hỏi <input name="customer_query" maxlength="1000" placeholder="Câu khách gửi, nếu có"></label>
-          <label class="span-2">Nội dung <textarea name="draft_reply" required rows="4" maxlength="8000"></textarea></label>
-          <button type="submit" class="btn btn-primary">Đưa vào chờ xử lý</button>
-        </form>
-      </details>
     </aside>
     <main id="detail" class="detail"></main>
   </div>

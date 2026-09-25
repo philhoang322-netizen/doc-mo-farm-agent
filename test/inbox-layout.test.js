@@ -51,6 +51,7 @@ test('PR #23 inbox hooks stay in the markup', () => {
   assert.match(js, /data-draft-id/);
   assert.match(css, /button\.linkish \{[^}]*min-height:\s*var\(--tap\)/s);
   assert.match(css, /\.msg-card \{[^}]*overflow:\s*visible/);
+  assert.match(css, /body\.inbox button\.btn\.back \{\s*display:\s*none/);
 });
 
 function loadPlaywright() {
@@ -91,6 +92,18 @@ test('390px inbox fits, keeps 44px targets, and starts the first card high', {
     draft_reply: 'Dạ còn ạ',
     triage_level: 'normal',
   });
+  for (const name of ['Lê An', 'Phạm Bình', 'Đỗ Chi', 'Vũ Dũng', 'Ngô Em']) {
+    await drafts.createDraft({
+      channel: 'zalo',
+      sales_channel: 'farm',
+      customer_name: name,
+      customer_user_id: 'z_' + name,
+      customer_query: 'Còn hàng không ' + name + '?',
+      draft_reply: 'Dạ còn ạ',
+      triage_level: 'normal',
+      biz_line: 'sale',
+    });
+  }
 
   const app = express();
   app.use(express.json());
@@ -159,7 +172,13 @@ test('390px inbox fits, keeps 44px targets, and starts the first card high', {
         primaryColor: primaryStyle && primaryStyle.color,
         replyFont: reply ? getComputedStyle(reply).fontSize : '',
         bold: !!document.querySelector('.msg-customer strong'),
-        fallback: (document.querySelector('.msg-card') || {}).innerText || '',
+        fallback: [...document.querySelectorAll('.msg-card')].map(node => node.innerText).join('\n'),
+        rows: [...document.querySelectorAll('.msg-card')].filter(node => {
+          const box = node.getBoundingClientRect();
+          return box.height > 20 && box.top >= 0 && box.bottom <= window.innerHeight - 40;
+        }).length,
+        kiotInList: !!document.querySelector('.msg-card details.kiot-fold'),
+        replyShown: [...document.querySelectorAll('.msg-card .card-reply')].some(node => getComputedStyle(node).display !== 'none'),
       };
     });
     assert.equal(metrics.overflow, false, 'horizontal overflow ' + metrics.scrollWidth);
@@ -176,6 +195,10 @@ test('390px inbox fits, keeps 44px targets, and starts the first card high', {
     assert.equal(metrics.primaryColor, 'rgb(255, 255, 255)');
     assert.equal(metrics.bold, true);
     assert.match(metrics.fallback, /Khách chưa có tên/);
+    assert.equal(metrics.fallback.includes('8490123456789012'), false);
+    assert.ok(metrics.rows >= 5, 'rows on first screen ' + metrics.rows);
+    assert.equal(metrics.kiotInList, false);
+    assert.equal(metrics.replyShown, false);
   } finally {
     await browser.close();
     server.close();
