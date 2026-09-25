@@ -28,25 +28,6 @@
     { value: 'chieu', label: 'Chiều (13h–18h)' },
     { value: 'toi', label: 'Tối (18h–21h)' },
   ];
-  const VTP_PROVINCES = [
-    { id: '1', name: 'Hà Nội' },
-    { id: '2', name: 'TP. Hồ Chí Minh' },
-    { id: '8', name: 'Đà Nẵng' },
-  ];
-  const VTP_DISTRICTS = {
-    '2': [
-      { id: '76', name: 'Quận Bình Thạnh' },
-      { id: '73', name: 'Quận 1' },
-      { id: '74', name: 'Quận 3' },
-    ],
-  };
-  const VTP_WARDS = {
-    '76': [
-      { id: '9121', name: 'Phường 26' },
-      { id: '9118', name: 'Phường 17' },
-      { id: '9115', name: 'Phường 12' },
-    ],
-  };
 
   const listEl = document.getElementById('list');
   const detailEl = document.getElementById('detail');
@@ -112,6 +93,8 @@
   let detailStamp = '';
   let loadSeq = 0;
   let queuedDrafts = null;
+  const pendingDeletes = new Map();
+  const settledDeletes = new Set();
   let me = { role: 'manager', canSend: true, canDelete: true, canKiot: true, canManageUsers: true };
   let listScrollY = 0;
   let detailPushed = false;
@@ -210,14 +193,9 @@
     const bar = document.getElementById('app-bar');
     if (bar) document.body.style.setProperty('--app-bar-h', bar.offsetHeight + 'px');
     let chrome = 0;
-    if (!isDesktop()) {
-      if (document.body.classList.contains('show-detail')) {
-        const sticky = document.querySelector('#detail .sticky-actions');
-        chrome = sticky ? sticky.offsetHeight : 0;
-      } else {
-        const tabs = document.getElementById('group-tabs');
-        chrome = tabs ? tabs.offsetHeight : 0;
-      }
+    if (!isDesktop() && document.body.classList.contains('show-detail')) {
+      const sticky = document.querySelector('#detail .sticky-actions');
+      chrome = sticky ? sticky.offsetHeight : 0;
     }
     document.body.style.setProperty('--bottom-chrome', chrome + 'px');
   }
@@ -351,6 +329,13 @@
     });
   });
 
+  const hotListBtn = document.getElementById('hot-list');
+  if (hotListBtn) {
+    hotListBtn.addEventListener('click', () => {
+      guardSwitch(() => { triage = triage === 'hot' ? '' : 'hot'; });
+    });
+  }
+
   const filterPanel = document.getElementById('filter-panel');
   const filterToggle = document.getElementById('filter-toggle');
   if (filterToggle && filterPanel) {
@@ -376,6 +361,16 @@
       if (key === 'kenh' || key === 'all') {
         salesChannel = 'farm';
         renderChannels();
+      }
+      if (key === 'search' || key === 'all') {
+        const input = document.getElementById('inbox-search');
+        if (input) input.value = '';
+        document.body.classList.remove('search-open');
+        const toggle = document.getElementById('search-toggle');
+        if (toggle) {
+          toggle.classList.remove('is-active');
+          toggle.setAttribute('aria-expanded', 'false');
+        }
       }
     });
   }
@@ -482,6 +477,16 @@
     });
     const hotChip = document.getElementById('hot-chip');
     if (hotChip) hotChip.hidden = false;
+    const hotList = document.getElementById('hot-list');
+    if (hotList) {
+      const n = triageCounts.hot || 0;
+      hotList.hidden = n < 1;
+      const count = hotList.querySelector('.count');
+      if (count) count.textContent = String(n);
+      hotList.setAttribute('aria-label', 'Nóng ' + n);
+      hotList.classList.toggle('active', triage === 'hot');
+      hotList.setAttribute('aria-pressed', triage === 'hot' ? 'true' : 'false');
+    }
     const typeRow = document.getElementById('types');
     if (typeRow) typeRow.hidden = nhom !== 'zalo';
     const zaloLine = document.getElementById('zalo-line');
@@ -516,6 +521,11 @@
       const ch = channels.find(c => c.id === salesChannel);
       items.push({ key: 'kenh', label: ch ? ch.name : salesChannel });
     }
+    const searchEl = document.getElementById('inbox-search');
+    const searchQuery = searchEl ? searchEl.value.trim() : '';
+    if (searchQuery) items.push({ key: 'search', label: 'Tìm: ' + searchQuery });
+    const searchToggle = document.getElementById('search-toggle');
+    if (searchToggle) searchToggle.classList.toggle('is-active', !!searchQuery);
     if (filterToggle) filterToggle.classList.toggle('has-filters', items.length > 0);
     if (!items.length) {
       box.hidden = true;
@@ -813,7 +823,10 @@
         api('/admin/api/stats?kenh=' + encodeURIComponent(salesChannel)),
       ]);
       if (seq !== loadSeq) return;
-      const incoming = window.inboxOrder ? window.inboxOrder.sort(data.drafts || []) : (data.drafts || []);
+      const rawIncoming = window.inboxOrder ? window.inboxOrder.sort(data.drafts || []) : (data.drafts || []);
+      const hiddenIds = [...pendingDeletes.keys(), ...settledDeletes];
+      const incoming = (window.undoDelete ? window.undoDelete.omitPending(rawIncoming, hiddenIds) : rawIncoming)
+        .filter(row => row && !hiddenIds.includes(row.id));
       counts = data.counts || {};
       triageCounts = data.triageCounts || triageCounts;
       groupCounts = data.pendingGroupCounts || data.groupCounts || groupCounts;
@@ -918,7 +931,6 @@
     detailEl.replaceChildren(el('div', { class: 'detail-empty' }, [
       el('div', null, [
         el('strong', { text: 'Chọn một tin bên trái' }),
-        el('p', { text: 'Đọc, sửa bản nháp, rồi bấm Duyệt và gửi. Hệ thống không tự gửi.' }),
       ]),
     ]));
   }
@@ -959,7 +971,7 @@
   function ensureCard(d) {
     let s = cardState.get(d.id);
     if (!s) {
-      s = { reply: d.draft_reply || d.ai_suggested_draft || '', learn: true, learnTouched: false, kiotOpen: false, dirty: false };
+      s = { reply: d.draft_reply || d.ai_suggested_draft || '', learn: true, learnTouched: false, kiotOpen: wantsOrder(d), dirty: false };
       const saved = savedReplyMap()[d.id];
       if (saved && typeof saved.reply === 'string' && saved.reply !== (d.draft_reply || '')) {
         s.reply = saved.reply;
@@ -970,6 +982,12 @@
       cardState.set(d.id, s);
     }
     return s;
+  }
+
+  function wantsOrder(d) {
+    const raw = (d.customer_query || '') + ' ' + (d.customer_intent || '');
+    const t = raw.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/gi, 'd').toLowerCase();
+    return d.triage_level === 'hot' || /dat hang|dat mua|\bmua\b|\border\b|chot don/.test(t);
   }
 
   function renderList() {
@@ -1037,6 +1055,7 @@
       history: d.customer_history || { available: false, reason: 'no_phone' },
     }, () => reloadCustomer(d, box)));
     fold.appendChild(box);
+    reloadCustomer(d, box);
     return fold;
   }
 
@@ -1078,11 +1097,11 @@
     });
     wrap.appendChild(chips);
     wrap.appendChild(historyLine(history));
-    const form = el('form', { class: 'cust-link' });
+    const form = el('div', { class: 'cust-link' });
     const input = el('input', {
       type: 'tel',
       inputmode: 'tel',
-      name: 'phone',
+      name: 'link_phone',
       placeholder: 'Gắn số điện thoại',
       maxlength: '20',
       autocomplete: 'tel',
@@ -1091,17 +1110,21 @@
     });
     input.value = phone;
     input.addEventListener('click', (ev) => ev.stopPropagation());
-    const go = el('button', { type: 'submit', class: 'btn btn-sm', text: 'Gắn' });
-    form.appendChild(input);
-    form.appendChild(go);
-    form.addEventListener('submit', (ev) => {
+    const go = el('button', { type: 'button', class: 'btn btn-sm', text: 'Gắn' });
+    const linkPhone = (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
       api('/admin/api/customers/link', {
         method: 'POST',
         body: JSON.stringify({ draft_id: d.id, phone: input.value, name: d.customer_name || '' }),
       }).then(reload).catch(err => { statusNote(wrap, err.message); });
+    };
+    go.addEventListener('click', linkPhone);
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') linkPhone(ev);
     });
+    form.appendChild(input);
+    form.appendChild(go);
     wrap.appendChild(form);
     return wrap;
   }
@@ -1185,10 +1208,12 @@
       const reviewNote = faqReviewNode(d);
       if (reviewNote) btn.appendChild(reviewNote);
       const foot = el('div', { class: 'msg-foot' });
-      foot.appendChild(el('span', { class: 'msg-time', text: when(d.created_at) }));
+      const received = receivedStamp(d);
+      foot.appendChild(el('span', { class: 'msg-time', text: received.text, title: received.title }));
       foot.appendChild(tags);
-      const sent = el('span', { class: 'msg-sent', text: d.sent_at ? ('Đã gửi ' + when(d.sent_at)) : '' });
-      if (!d.sent_at) sent.hidden = true;
+      const sentStamp = sentStampOf(d);
+      const sent = el('span', { class: 'msg-sent', text: sentStamp });
+      if (!sentStamp) sent.hidden = true;
       foot.appendChild(sent);
       btn.appendChild(foot);
       btn.addEventListener('click', () => openDraft(d.id));
@@ -1222,16 +1247,38 @@
 
       const actions = el('div', { class: 'card-actions' });
       if (openReply && me.canSend) {
-        const sendBtn = el('button', { type: 'button', class: 'btn btn-primary', text: 'Duyệt & Gửi', tabindex: '-1' });
-        sendBtn.addEventListener('click', (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          approveCard(d);
-        });
-        actions.appendChild(sendBtn);
+        actions.appendChild(el('button', {
+          type: 'button',
+          class: 'btn btn-primary',
+          text: 'Duyệt & Gửi',
+          tabindex: '-1',
+          'aria-hidden': 'true',
+        }));
       }
       card.appendChild(actions);
+      if (!d.deleted_at) card.appendChild(cardChips(d));
       return card;
+  }
+
+  function cardChips(d) {
+    const row = el('div', { class: 'card-chips' });
+    fillActionChips(row, d);
+    if (!row.childNodes.length) row.hidden = true;
+    return row;
+  }
+
+  function receivedStamp(d) {
+    const api = window.cardTime;
+    const label = api ? api.receivedLabel(d) : null;
+    if (label && label.text) return { text: label.text, title: label.title || '' };
+    return { text: when(d.created_at), title: '' };
+  }
+
+  function sentStampOf(d) {
+    const api = window.cardTime;
+    const label = api ? api.sentLabel(d) : null;
+    if (label && label.text) return label.who ? (label.text + ' · ' + label.who) : label.text;
+    return d.sent_at ? ('Đã gửi ' + when(d.sent_at)) : '';
   }
 
   function learnToggle(s) {
@@ -1328,26 +1375,14 @@
     });
     toggle.textContent = '⋯';
     const panel = el('div', { class: 'more-panel', role: 'menu', hidden: 'hidden' });
-    function addItem(node) {
+    rareMenuItems(d, locked).forEach(node => {
       if (!node || node.disabled) return;
       node.setAttribute('role', 'menuitem');
       panel.appendChild(node);
-    }
-    if (!locked) addItem(actionButton('Lưu', 'ghost', () => save()));
-    if (!d.deleted_at) {
-      lineActions(d, 'detail-actions').querySelectorAll('button').forEach(addItem);
-      statusActions(d).querySelectorAll('button').forEach(addItem);
-    }
-    if (!locked && d.approval_status !== 'REJECTED') {
-      addItem(actionButton('Từ chối bản nháp', 'ghost', () => reject()));
-    }
-    if (!locked && d.approval_status !== 'PENDING_REVIEW') {
-      addItem(actionButton('Đưa về chờ xử lý', 'ghost', () => reopen()));
-    }
-    if (!d.deleted_at && me.canDelete) {
-      const del = deleteButton(d);
-      del.classList.add('menu-delete');
-      addItem(del);
+    });
+    if (!panel.childNodes.length) {
+      wrap.hidden = true;
+      return wrap;
     }
     toggle.addEventListener('click', (ev) => {
       ev.preventDefault();
@@ -1369,18 +1404,15 @@
     const refund = isRefund(d);
     const addrOn = showAddress(d);
     const f = formOf(d);
-    const back = el('button', { type: 'button', class: 'btn btn-sm back', text: '← Danh sách' });
-    back.addEventListener('click', () => closeDetail(false));
 
     const form = el('form', { class: 'draft-form' });
     form.addEventListener('submit', e => e.preventDefault());
-    form.appendChild(back);
 
     const body = el('div', { class: 'detail-body' });
     const code = d.customer_code || f.kiot_ref || '';
     const nameRow = el('div', { class: 'name-row' });
     const nameBox = el('div', { class: 'msg-names' });
-    const nameNodes = channelNameNodes(d, { when: when(d.created_at) });
+    const nameNodes = channelNameNodes(d, { when: receivedStamp(d).text });
     nameNodes.forEach(node => nameBox.appendChild(node));
     nameRow.appendChild(nameBox);
     const kiotShown = nameNodes.some(node => node.querySelector && node.querySelector('.id-code'));
@@ -1402,7 +1434,13 @@
     const split = el('div', { class: 'detail-split' });
     const main = el('div', { class: 'detail-main' });
     const side = el('div', { class: 'detail-side' });
+    const s = ensureCard(d);
     body.appendChild(meta);
+    const quick = el('div', { class: 'detail-quick' });
+    quick.classList.add('card-chips');
+    fillActionChips(quick, d);
+    if (quick.childNodes.length) body.appendChild(quick);
+    side.appendChild(customerPanel(d));
     const thread = mountThreadContext(d, false);
     if (thread) main.appendChild(thread);
     const want = el('div', { class: 'want-box' });
@@ -1431,39 +1469,47 @@
     main.appendChild(el('div', { class: 'draft-label' }, [
       el('label', { for: 'draft-reply', text: 'Bản nháp trả lời' }),
     ]));
-    const cardStateForReply = ensureCard(d);
-    const reply = el('textarea', { id: 'draft-reply', name: 'draft_reply', rows: '8' });
-    reply.value = cardStateForReply.dirty ? (cardStateForReply.reply || '') : (d.draft_reply || '');
+    const reply = el('textarea', { id: 'draft-reply', name: 'draft_reply', rows: '4' });
+    reply.value = s.dirty ? (s.reply || '') : (d.draft_reply || '');
     if (locked) reply.disabled = true;
     reply.addEventListener('input', () => {
       dirty = true;
-      const s = ensureCard(d);
       s.reply = reply.value;
       s.dirty = true;
       persistReplies();
     });
+    autoGrow(reply, 4);
     main.appendChild(el('div', { class: 'field-block' }, [reply]));
     main.appendChild(el('p', { id: 'reply-error', class: 'reply-error', hidden: 'hidden' }));
-    if (!locked) main.appendChild(learnToggle(cardStateForReply));
+    if (!locked) main.appendChild(learnToggle(s));
 
-    const grid = el('div', { class: 'grid2' });
-    grid.appendChild(blockField('customer_phone', 'Số điện thoại', d.customer_phone, {
+    const phoneField = blockField('customer_phone', 'SĐT lưu vào tin', d.customer_phone, {
       disabled: locked, placeholder: 'Nếu có', type: 'tel', inputmode: 'tel', autocomplete: 'tel',
-    }));
-    grid.appendChild(blockField('invoice_code', 'Mã hoá đơn', d.invoice_code, { disabled: locked, placeholder: 'Ví dụ: HD011637' }));
-    side.appendChild(grid);
+    });
+    const invoiceField = blockField('invoice_code', 'Mã hoá đơn', d.invoice_code, { disabled: locked, placeholder: 'Ví dụ: HD011637' });
+    let fold = null;
     if (me.canKiot) {
-      const fold = el('details', { class: 'kiot-fold' });
-      fold.open = false;
+      fold = el('details', { class: 'kiot-fold' });
+      if (s.kiotOpen || wantsOrder(d)) fold.open = true;
       const kiotExisting = kiotMark(d);
-      fold.appendChild(el('summary', { text: kiotExisting ? ('KiotViet · ' + kiotExisting.code) : 'Tạo đơn KiotViet' }));
+      const summary = el('summary', { text: 'Tạo đơn KiotViet' });
+      if (kiotExisting) summary.textContent = 'KiotViet · ' + kiotExisting.code;
+      fold.appendChild(summary);
+      fold.appendChild(phoneField);
+      fold.appendChild(invoiceField);
       fold.addEventListener('toggle', () => {
+        s.kiotOpen = fold.open;
         if (fold.open && !fold.querySelector('.kiot-panel')) fold.appendChild(kiotPanel(d));
       });
       side.appendChild(fold);
+    } else {
+      const grid = el('div', { class: 'grid2' });
+      grid.appendChild(phoneField);
+      grid.appendChild(invoiceField);
+      side.appendChild(grid);
     }
     if (refund) side.appendChild(refundPanel(d, f, locked));
-    if (addrOn) side.appendChild(addressPanel(f, locked));
+    if (addrOn && !me.canKiot) side.appendChild(addressPanel(f, locked, d));
 
     const extra = el('details', { class: 'extra-detail' });
     extra.appendChild(el('summary', { text: 'Thêm chi tiết gửi' }));
@@ -1498,10 +1544,6 @@
     extraGrid.appendChild(field('kiot_summary', 'Tóm tắt Kiot', d.kiot_summary, { disabled: locked, wide: true, multiline: true, rows: '3' }));
     extraGrid.appendChild(field('qr_image_url', 'Link ảnh QR', d.qr_image_url, { disabled: locked, wide: true }));
     extra.appendChild(extraGrid);
-    extra.appendChild(el('p', {
-      class: 'hint',
-      text: '@Farm gửi qua Zalo sau khi duyệt. Zalo Bot dùng bot_ rồi tới chat id. Messenger dùng fb_ rồi tới PSID và chỉ gửi khi bật MESSENGER_ENABLED rồi bấm Duyệt và gửi. Shopee, FB và kênh tự thêm chưa có đường gửi — duyệt xong tin nằm ở Chờ gửi.',
-    }));
     if (d.qr_image_url && /^https?:\/\//i.test(d.qr_image_url)) {
       extra.appendChild(el('img', { class: 'qr', alt: 'Mã QR', src: d.qr_image_url }));
     }
@@ -1518,14 +1560,9 @@
       sendBtn.id = 'btn-approve';
       actions.appendChild(sendBtn);
     }
-    actions.appendChild(el('span', {
-      class: 'sticky-note',
-      text: refund
-        ? 'Tin chỉ gửi khi bấm Duyệt & Gửi. Không tự hoàn.'
-        : 'Tin chỉ gửi khi bấm Duyệt & Gửi.',
-    }));
     form.appendChild(actions);
     detailEl.appendChild(form);
+    if (fold && fold.open && !fold.querySelector('.kiot-panel')) fold.appendChild(kiotPanel(d));
     document.body.classList.add('show-detail');
     if (scrollDetailToTop) {
       scrollDetailToTop = false;
@@ -1534,6 +1571,51 @@
     }
     syncBarHeight();
     requestAnimationFrame(syncBarHeight);
+  }
+
+  function fillActionChips(row, d) {
+    const locked = d.approval_status === 'SENT';
+    if (d.deleted_at) return;
+    if (!locked) row.appendChild(chipButton('Lưu', () => saveDraft(d)));
+    lineActions(d, 'detail-actions').querySelectorAll('button').forEach(btn => {
+      btn.classList.add('card-chip');
+      row.appendChild(btn);
+    });
+    statusActions(d).querySelectorAll('button').forEach(btn => {
+      if (btn.disabled || btn.textContent === 'Trả về Chờ xử lý') return;
+      btn.classList.add('card-chip');
+      row.appendChild(btn);
+    });
+    if (!locked && d.approval_status !== 'REJECTED') {
+      const rejectBtn = chipButton('Từ chối bản nháp', () => rejectDraft(d));
+      rejectBtn.classList.add('chip-danger');
+      row.appendChild(rejectBtn);
+    }
+    if (me.canDelete) {
+      row.appendChild(deleteAction(d, 'item', 'Xóa tin này'));
+      row.appendChild(deleteAction(d, 'thread', 'Xóa cả cuộc chat'));
+    }
+  }
+
+  function chipButton(label, onClick) {
+    const btn = el('button', { type: 'button', class: 'card-chip', text: label });
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      onClick();
+    });
+    return btn;
+  }
+
+  function rareMenuItems(d, locked) {
+    const items = [];
+    if (!d.deleted_at && d.inbox_status !== 'pending') {
+      items.push(folderBtn(d, 'pending', 'Trả về Chờ xử lý'));
+    }
+    if (!locked && d.approval_status !== 'PENDING_REVIEW') {
+      items.push(actionButton('Đưa về chờ xử lý', 'ghost', () => reopen()));
+    }
+    return items;
   }
 
   function blockField(name, label, value, opts) {
@@ -1557,7 +1639,7 @@
     panel.appendChild(el('h4', { text: 'Đổi trả / hoàn tiền — cần người duyệt' }));
     panel.appendChild(el('p', {
       class: 'refund-lead',
-      text: 'Không tự hoàn. Không dùng chữ “đã duyệt hoàn”. Bạn chọn hướng xử lý, rồi mới Duyệt và gửi tin cho khách.',
+      text: 'Không tự hoàn. Không dùng chữ “đã duyệt hoàn”.',
     }));
     const decide = el('div', { class: 'decide' }, [
       el('span', { text: 'Quyết định của bạn' }),
@@ -1589,55 +1671,119 @@
     panel.appendChild(blockField('internal_note', 'Ghi chú nội bộ (không gửi khách)', f.internal_note, {
       disabled: locked, placeholder: 'Ví dụ: hàng rò — chờ xác nhận trước khi hoàn',
     }));
-    panel.appendChild(el('p', {
-      class: 'refund-note',
-      text: 'Tin trả khách ở dưới vẫn chỉ đi khi bấm Duyệt và gửi.',
-    }));
     return panel;
   }
 
-  function addressPanel(f, locked) {
-    const box = el('div', { class: 'addr-block', id: 'd-address' });
-    box.appendChild(el('div', { class: 'addr-head' }, [
-      el('h4', { text: 'Địa chỉ giao / hoàn (ViettelPost)' }),
-      el('span', { class: 'addr-hint', text: '3 cấp + địa chỉ chi tiết' }),
-    ]));
-    const grid = el('div', { class: 'addr-grid3' });
-    const province = el('select', { id: 'd-province', name: 'province_id', 'aria-label': 'Tỉnh Thành phố ViettelPost' });
-    const district = el('select', { id: 'd-district', name: 'district_id', 'aria-label': 'Quận Huyện ViettelPost' });
-    const ward = el('select', { id: 'd-ward', name: 'ward_id', 'aria-label': 'Phường Xã ViettelPost' });
-    if (locked) {
-      province.disabled = true;
-      district.disabled = true;
-      ward.disabled = true;
-    }
-    grid.appendChild(el('div', { class: 'field-block' }, [
-      el('label', { for: 'd-province', text: 'Tỉnh / Thành phố' }),
-      province,
-    ]));
-    grid.appendChild(el('div', { class: 'field-block' }, [
-      el('label', { for: 'd-district', text: 'Quận / Huyện' }),
-      district,
-    ]));
-    grid.appendChild(el('div', { class: 'field-block' }, [
-      el('label', { for: 'd-ward', text: 'Phường / Xã' }),
-      ward,
-    ]));
-    box.appendChild(grid);
+  function addressPanel(f, locked, d) {
+    return buildAddressEditor({ f, locked, draft: d, heading: true }).box;
+  }
 
+  function addressSeedText(d) {
+    return [d && d.customer_query, d && d.customer_intent, d && d.kiot_summary]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  function buildAddressEditor(opts) {
+    opts = opts || {};
+    const f = opts.f || {};
+    const locked = !!opts.locked;
+    const box = el('div', { class: 'addr-block', id: opts.blockId || 'd-address' });
+    if (opts.heading !== false) {
+      box.appendChild(el('div', { class: 'addr-head' }, [
+        el('h4', { text: 'Địa chỉ giao (Viettel Post)' }),
+        el('span', { class: 'addr-hint', text: 'Tỉnh, quận huyện, phường xã' }),
+      ]));
+    }
+    const hint = el('p', {
+      class: 'addr-prefill',
+      text: 'Đã điền từ tin nhắn. Kiểm tra lại trước khi tạo đơn.',
+      hidden: 'hidden',
+    });
+    const err = el('p', { class: 'addr-error', hidden: 'hidden' });
     const street = el('input', {
-      id: 'd-street',
+      id: opts.streetId || 'd-street',
       name: 'address_detail',
       type: 'text',
-      placeholder: 'Ví dụ: 12 Nguyễn Xí, hẻm 3',
+      placeholder: 'Số nhà, đường, thôn ấp',
+      autocomplete: 'street-address',
     });
-    street.value = f.address_detail || '';
     if (locked) street.disabled = true;
-    street.addEventListener('input', () => { dirty = true; });
-    box.appendChild(el('div', { class: 'field-block' }, [
-      el('label', { for: 'd-street', text: 'Địa chỉ chi tiết (số nhà, đường)' }),
+    const streetWrap = el('div', { class: 'field-block field-wide' }, [
+      el('label', { for: street.id, text: 'Số nhà, đường, thôn ấp' }),
       street,
-    ]));
+    ]);
+
+    function combo(labelText, inputId, prefix) {
+      const input = el('input', {
+        type: 'search',
+        id: inputId,
+        placeholder: 'Gõ để tìm, không cần dấu',
+        autocomplete: 'off',
+        role: 'combobox',
+        'aria-expanded': 'false',
+        'aria-autocomplete': 'list',
+        'aria-label': labelText,
+      });
+      if (locked) input.disabled = true;
+      const idInput = el('input', { type: 'hidden', name: prefix + '_id' });
+      const nameInput = el('input', { type: 'hidden', name: prefix + '_name' });
+      const codeInput = prefix === 'ward' ? null : el('input', { type: 'hidden', name: prefix + '_code' });
+      const list = el('div', { class: 'addr-hits', role: 'listbox', hidden: 'hidden' });
+      const wrap = el('div', { class: 'field-block addr-combo field-wide' }, [
+        el('label', { for: inputId, text: labelText }),
+        input,
+        idInput,
+        nameInput,
+        list,
+      ]);
+      if (codeInput) wrap.appendChild(codeInput);
+      let current = null;
+      function close() {
+        list.hidden = true;
+        input.setAttribute('aria-expanded', 'false');
+      }
+      function setItem(item, silent) {
+        current = item || null;
+        idInput.value = item ? item.id : '';
+        nameInput.value = item ? item.label : '';
+        if (codeInput) codeInput.value = item && item.code ? item.code : '';
+        input.value = item ? item.label : '';
+        close();
+        if (!silent) {
+          dirty = true;
+          paintLine();
+          if (opts.onInput) opts.onInput();
+        }
+      }
+      input.addEventListener('input', () => {
+        current = null;
+        idInput.value = '';
+        nameInput.value = '';
+        if (codeInput) codeInput.value = '';
+        dirty = true;
+        paintHits();
+        paintLine();
+      });
+      input.addEventListener('focus', () => paintHits());
+      return { wrap, input, setItem, close, item: () => current };
+    }
+
+    const ward = combo('Phường / Xã', opts.wardInputId || 'd-ward', 'ward');
+    const district = combo('Quận / Huyện', opts.districtInputId || 'd-district', 'district');
+    const province = combo('Tỉnh / Thành', opts.provinceInputId || 'd-province', 'province');
+    ward.wrap.querySelector('label').appendChild(el('span', { class: 'addr-req', text: 'bắt buộc' }));
+    province.wrap.querySelector('label').appendChild(el('span', { class: 'addr-req', text: 'bắt buộc' }));
+
+    const lineEl = el('p', { class: 'addr-line', id: opts.lineId || 'addr-line' });
+    const lineInput = el('input', { type: 'hidden', name: 'address_line' });
+    const ids = el('div', { class: 'addr-ids', 'aria-label': 'Mã ViettelPost' });
+    const provinceCode = el('code', { id: 'd-province-id', text: '—' });
+    const districtCode = el('code', { id: 'd-district-id', text: '—' });
+    const wardCode = el('code', { id: 'd-ward-id', text: '—' });
+    ids.appendChild(el('span', null, [document.createTextNode('PROVINCE_ID '), provinceCode]));
+    ids.appendChild(el('span', null, [document.createTextNode('DISTRICT_ID '), districtCode]));
+    ids.appendChild(el('span', null, [document.createTextNode('WARDS_ID '), wardCode]));
 
     const slot = el('select', { id: 'd-delivery-slot', name: 'delivery_slot', 'aria-label': 'Thời gian hẹn giao' });
     SLOTS.forEach(opt => {
@@ -1647,35 +1793,188 @@
     });
     if (locked) slot.disabled = true;
     slot.addEventListener('change', () => { dirty = true; });
+
+    box.appendChild(streetWrap);
+    box.appendChild(ward.wrap);
+    box.appendChild(district.wrap);
+    box.appendChild(province.wrap);
+    box.appendChild(lineEl);
+    box.appendChild(lineInput);
+    box.appendChild(err);
+    box.appendChild(hint);
+    box.appendChild(ids);
     box.appendChild(el('div', { class: 'field-block' }, [
       el('label', { for: 'd-delivery-slot', text: 'Thời gian hẹn giao' }),
       slot,
     ]));
 
-    const ids = el('div', { class: 'addr-ids', 'aria-label': 'Mã ViettelPost' });
-    const provinceCode = el('code', { id: 'd-province-id', text: '—' });
-    const districtCode = el('code', { id: 'd-district-id', text: '—' });
-    const wardCode = el('code', { id: 'd-ward-id', text: '—' });
-    ids.appendChild(el('span', null, [document.createTextNode('PROVINCE_ID '), provinceCode]));
-    ids.appendChild(el('span', null, [document.createTextNode('DISTRICT_ID '), districtCode]));
-    ids.appendChild(el('span', null, [document.createTextNode('WARDS_ID '), wardCode]));
-    box.appendChild(ids);
-
-    function syncIds() {
-      provinceCode.textContent = province.value || '—';
-      districtCode.textContent = district.value || '—';
-      wardCode.textContent = ward.value || '—';
+    function paintHitsFor(which) {
+      const api = window.vtpAddress;
+      if (!api || !api.loaded() || locked) return;
+      const lists = [province, district, ward];
+      lists.forEach(row => { if (row !== which) row.close(); });
+      const q = which.input.value;
+      let hits = [];
+      if (which === province) hits = api.searchProvinces(q, 8);
+      else if (which === district) hits = api.searchDistricts(q, province.item() && province.item().id, 8);
+      else {
+        const districtId = district.item() && district.item().id;
+        const provinceId = province.item() && province.item().id;
+        if (!districtId && !provinceId && api.fold(q).length < 2) hits = [];
+        else hits = api.searchWards(q, districtId, provinceId, 8);
+      }
+      which.wrap.querySelector('.addr-hits').textContent = '';
+      const list = which.wrap.querySelector('.addr-hits');
+      hits.forEach(item => {
+        const btn = el('button', { type: 'button', class: 'addr-hit', text: item.label });
+        btn.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          choose(which, item);
+        });
+        list.appendChild(btn);
+      });
+      list.hidden = hits.length === 0;
+      which.input.setAttribute('aria-expanded', hits.length ? 'true' : 'false');
     }
-    const districtList = withCurrent([].concat(...Object.values(VTP_DISTRICTS)), f.district_id, f.district_name);
-    const wardList = withCurrent([].concat(...Object.values(VTP_WARDS)), f.ward_id, f.ward_name);
-    fillPlaceSelect(province, withCurrent(VTP_PROVINCES, f.province_id, f.province_name), f.province_id || '', 'Chọn tỉnh / thành');
-    fillPlaceSelect(district, districtList, f.district_id || '', 'Chọn quận / huyện');
-    fillPlaceSelect(ward, wardList, f.ward_id || '', 'Chọn phường / xã');
-    syncIds();
-    [province, district, ward].forEach(select => {
-      select.addEventListener('change', () => { dirty = true; syncIds(); });
+    function paintHits() { paintHitsFor(document.activeElement === district.input ? district : document.activeElement === province.input ? province : ward); }
+    ward.input.addEventListener('focus', () => paintHitsFor(ward));
+    district.input.addEventListener('focus', () => paintHitsFor(district));
+    province.input.addEventListener('focus', () => paintHitsFor(province));
+    ward.input.addEventListener('input', () => paintHitsFor(ward));
+    district.input.addEventListener('input', () => paintHitsFor(district));
+    province.input.addEventListener('input', () => paintHitsFor(province));
+
+    function choose(which, item) {
+      const api = window.vtpAddress;
+      hint.hidden = true;
+      if (which === province) {
+        province.setItem(item);
+        if (district.item() && district.item().provinceId !== item.id) district.setItem(null, true);
+        if (ward.item() && ward.item().provinceId !== item.id) ward.setItem(null, true);
+      } else if (which === district) {
+        district.setItem(item);
+        const parent = api.getProvince(item.provinceId);
+        if (parent) province.setItem(parent, true);
+        if (ward.item() && ward.item().districtId !== item.id) ward.setItem(null, true);
+      } else {
+        ward.setItem(item);
+        const parentDistrict = api.getDistrict(item.districtId);
+        if (parentDistrict) district.setItem(parentDistrict, true);
+        const parentProvince = api.getProvince(item.provinceId || (parentDistrict && parentDistrict.provinceId));
+        if (parentProvince) province.setItem(parentProvince, true);
+      }
+      paintLine();
+    }
+
+    function value() {
+      const p = province.item();
+      const d = district.item();
+      const w = ward.item();
+      const detail = street.value.trim();
+      const body = {
+        detail,
+        provinceId: p ? p.id : '',
+        provinceName: p ? p.label : '',
+        provinceCode: p && p.code ? p.code : '',
+        districtId: d ? d.id : '',
+        districtName: d ? d.label : '',
+        districtCode: d && d.code ? d.code : '',
+        wardId: w ? w.id : '',
+        wardName: w ? w.label : '',
+        province: p,
+        district: d,
+        ward: w,
+      };
+      body.line = window.vtpAddress ? window.vtpAddress.line(body).slice(0, 300) : [detail, body.wardName, body.districtName, body.provinceName].filter(Boolean).join(', ');
+      return body;
+    }
+
+    function paintLine() {
+      const v = value();
+      lineEl.textContent = v.line;
+      lineInput.value = v.line;
+      provinceCode.textContent = v.provinceId || '—';
+      districtCode.textContent = v.districtId || '—';
+      wardCode.textContent = v.wardId || '—';
+    }
+
+    function setValue(v) {
+      const api = window.vtpAddress;
+      const src = v || {};
+      street.value = src.detail || '';
+      const p = src.province || (api && api.getProvince(src.provinceId));
+      const d = src.district || (api && api.getDistrict(src.districtId));
+      const w = src.ward || (api && api.getWard(src.wardId));
+      province.setItem(p, true);
+      district.setItem(d, true);
+      ward.setItem(w, true);
+      paintLine();
+    }
+
+    function setFromText(text) {
+      const api = window.vtpAddress;
+      if (!api || !api.loaded()) return null;
+      const parsed = api.parse(text || '');
+      if (!(parsed.province || parsed.ward || parsed.detail)) return null;
+      setValue(parsed);
+      return parsed;
+    }
+
+    street.addEventListener('input', () => {
+      dirty = true;
+      hint.hidden = true;
+      paintLine();
+      if (opts.onInput) opts.onInput();
     });
-    return box;
+
+    function validateForConfirm() {
+      const v = value();
+      const started = !!(v.detail || v.provinceId || v.districtId || v.wardId);
+      if (!started || !window.vtpAddress) {
+        err.hidden = true;
+        return { ok: true, errors: [] };
+      }
+      const check = window.vtpAddress.validate(v);
+      err.hidden = check.ok;
+      err.textContent = check.ok ? '' : check.errors.join(' ');
+      return check;
+    }
+
+    function applyInitial() {
+      if (!box.isConnected || !window.vtpAddress || !window.vtpAddress.loaded()) return;
+      if (opts.parts && (opts.parts.provinceId || opts.parts.wardId || opts.parts.detail)) {
+        setValue(opts.parts);
+        return;
+      }
+      if (f.province_id || f.ward_id || f.district_id || f.address_detail || f.address_line) {
+        setValue({
+          detail: f.address_detail || '',
+          provinceId: f.province_id,
+          districtId: f.district_id,
+          wardId: f.ward_id,
+        });
+        if (!f.province_id && !f.ward_id && f.address_line) setFromText(f.address_line);
+        return;
+      }
+      const parsed = setFromText(opts.seedText || addressSeedText(opts.draft));
+      if (parsed && (parsed.province || parsed.ward)) hint.hidden = false;
+    }
+
+    document.addEventListener('click', function onDoc(ev) {
+      if (!box.isConnected) {
+        document.removeEventListener('click', onDoc);
+        return;
+      }
+      if (!box.contains(ev.target)) {
+        province.close();
+        district.close();
+        ward.close();
+      }
+    });
+
+    if (window.vtpAddress) window.vtpAddress.ready().then(applyInitial).catch(() => {});
+    return { box, street, value, setValue, setFromText, validateForConfirm, paintLine };
   }
 
   function actionButton(label, kind, onClick) {
@@ -1698,12 +1997,15 @@
       internal_note: data.internal_note || null,
       kiot_ref: data.kiot_ref || null,
       province_id: data.province_id || null,
-      province_name: selectedName(detailEl.querySelector('#d-province')) || null,
+      province_name: data.province_name || null,
+      province_code: data.province_code || null,
       district_id: data.district_id || null,
-      district_name: selectedName(detailEl.querySelector('#d-district')) || null,
+      district_name: data.district_name || null,
+      district_code: data.district_code || null,
       ward_id: data.ward_id || null,
-      ward_name: selectedName(detailEl.querySelector('#d-ward')) || null,
+      ward_name: data.ward_name || null,
       address_detail: data.address_detail || null,
+      address_line: data.address_line || null,
       delivery_slot: data.delivery_slot || null,
       kiot_code: (formOf(currentDraft()).kiot_code) || null,
       kiot_total: (formOf(currentDraft()).kiot_total) || null,
@@ -1790,25 +2092,84 @@
 
   function save() { return patch(payload(), 'Đã lưu.'); }
   function reject() { return patch(payload({ approval_status: 'REJECTED' }), 'Đã từ chối.'); }
+
+  async function saveDraft(d) {
+    if (!d) return;
+    if (d.id === selectedId && detailEl.querySelector('#draft-reply')) return save();
+    const s = ensureCard(d);
+    if (busy) return;
+    busy = true;
+    try {
+      await api('/admin/api/drafts/' + d.id, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          draft_reply: s.reply || '',
+          actor_name: actorName(),
+          learn: s.learnTouched ? s.learn !== false : true,
+        }),
+      });
+      s.dirty = false;
+      toast('Đã lưu.');
+      listStamp = '';
+      await load();
+    } catch (e) {
+      if (e.message !== 'unauthorized') toast(e.message);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function rejectDraft(d) {
+    if (!d) return;
+    if (d.id === selectedId && detailEl.querySelector('#draft-reply')) return reject();
+    const s = ensureCard(d);
+    if (busy) return;
+    busy = true;
+    try {
+      await api('/admin/api/drafts/' + d.id, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          draft_reply: s.reply || d.draft_reply || '',
+          approval_status: 'REJECTED',
+          actor_name: actorName(),
+          learn: s.learnTouched ? s.learn !== false : true,
+        }),
+      });
+      s.dirty = false;
+      toast('Đã từ chối.');
+      listStamp = '';
+      await load();
+    } catch (e) {
+      if (e.message !== 'unauthorized') toast(e.message);
+    } finally {
+      busy = false;
+    }
+  }
   function reopen() {
     return patch({ approval_status: 'PENDING_REVIEW', actor_name: actorName() }, 'Đã đưa về chờ duyệt.');
   }
   function send() {
+    const policy = window.sendOnce;
     const data = readForm();
-    const refund = !!detailEl.querySelector('#d-refund');
-    let msg = refund
-      ? 'Gửi phản hồi này cho khách? Hoàn tiền không tự chạy — chỉ tin nhắn được gửi.'
-      : 'Gửi tin này cho khách?';
-    if (data.sales_channel && data.sales_channel !== 'farm') {
-      const ch = channels.find(c => c.id === data.sales_channel);
-      msg = 'Kênh ' + (ch ? ch.name : data.sales_channel) + ' chưa có đường gửi. Tin sẽ được duyệt và nằm ở Chờ gửi. Tiếp tục?';
-    } else if (data.channel === 'messenger') {
-      msg = refund
-        ? 'Gửi phản hồi này cho khách trên Facebook Messenger? Hoàn tiền không tự chạy.'
-        : 'Gửi tin này cho khách trên Facebook Messenger?';
+    const card = ensureCard({ id: selectedId });
+    const plan = policy
+      ? policy.prepare({ reply: data.draft_reply, learn: card.learn })
+      : { send: !!String(data.draft_reply || '').trim(), inline: 'Nhập câu trả lời trước khi gửi.' };
+    const err = document.getElementById('reply-error');
+    if (!plan.send) {
+      if (err) {
+        err.hidden = false;
+        err.textContent = plan.inline;
+      }
+      return;
     }
-    if (!confirm(msg)) return;
-    return patch(payload({ approval_status: 'APPROVED', send: true }), 'Đã duyệt.');
+    if (err) err.hidden = true;
+    if (policy && !policy.gate.tryBegin(selectedId)) return;
+    const id = selectedId;
+    const btn = document.getElementById('btn-approve');
+    if (btn) btn.disabled = true;
+    return Promise.resolve(patch(payload({ approval_status: 'APPROVED', send: true }), 'Đã gửi.'))
+      .finally(() => { if (policy) policy.gate.end(id); });
   }
 
   function vnd(n) {
@@ -1872,6 +2233,7 @@
     renderList();
     if (!fromPop && detailPushed) {
       detailPushed = false;
+      syncBarHeight();
       history.back();
       return;
     }
@@ -1901,22 +2263,24 @@
 
   function kiotPanel(d, prefix) {
     const pid = prefix ? String(prefix) : 'detail';
+    const savedKiot = (ensureCard(d).kiot && window.kiotLines)
+      ? window.kiotLines.restore(ensureCard(d).kiot)
+      : null;
     const state = {
-      document: 'invoice',
-      lines: [blankKiotLine()],
+      document: savedKiot ? savedKiot.document : 'invoice',
+      lines: savedKiot && savedKiot.lines.length ? savedKiot.lines : [blankKiotLine()],
       quote: null,
       submitting: false,
-      touched: {},
+      touched: savedKiot ? Object.assign({}, savedKiot.touched) : {},
       existing: kiotMark(d),
       acknowledge: false,
       kiotCustomer: null,
       lookupTimer: null,
     };
     const panel = el('section', { class: 'kiot-panel', id: 'kiot-panel-' + pid });
-    panel.appendChild(el('h4', { text: 'Tạo đơn KiotViet' }));
     panel.appendChild(el('p', {
       class: 'kiot-lead',
-      text: 'Điền nhanh hoặc chọn từng món. Chưa tạo trên KiotViet cho đến khi bạn bấm xác nhận. Tin khách không tự gửi.',
+      text: 'Điền nhanh hoặc chọn từng món. Chưa tạo trên KiotViet cho đến khi bạn bấm xác nhận.',
     }));
 
     const quick = el('textarea', {
@@ -1925,10 +2289,11 @@
       placeholder: '1 xuc xich, 2 nước nghệ lên men',
       'aria-label': 'Nhập nhanh sản phẩm và số lượng',
     });
-    quick.addEventListener('input', () => { state.touched.quick = true; dirty = true; state.quote = null; });
+    quick.addEventListener('input', () => { state.touched.quick = true; dirty = true; state.quote = null; rememberKiot(); });
+    autoGrow(quick, 2);
     const quickBtn = el('button', { type: 'button', class: 'btn btn-sm', text: 'Điền vào đơn' });
     quickBtn.addEventListener('click', () => runQuick());
-    panel.appendChild(el('div', { class: 'kiot-quick-row' }, [quick, quickBtn]));
+    panel.appendChild(quick);
     const quickMsg = el('p', { class: 'kiot-msg', hidden: 'hidden' });
     panel.appendChild(quickMsg);
 
@@ -1960,45 +2325,68 @@
       invoiceBtn.classList.toggle('active', kind === 'invoice');
       orderBtn.classList.toggle('active', kind === 'order');
       paintSummary();
+      if (typeof rememberKiot === 'function') rememberKiot();
     }
     invoiceBtn.addEventListener('click', () => setDoc('invoice'));
     orderBtn.addEventListener('click', () => setDoc('order'));
     docRow.appendChild(invoiceBtn);
     docRow.appendChild(orderBtn);
-    panel.appendChild(docRow);
+    panel.appendChild(el('div', { class: 'kiot-doc-head' }, [quickBtn, docRow]));
 
     const grid = el('div', { class: 'kiot-grid' });
     const seeded = seededKiotName(d);
     const nameInput = kiotInput('Tên khách', seeded.name, 'kiot-name-' + pid);
-    const nameHint = el('p', { class: 'kiot-name-hint', text: seeded.hint });
+    const nameHint = el('span', { class: 'kiot-name-hint', text: hintSuffix(seeded.hint) });
     nameHint.hidden = !seeded.hint;
-    nameInput.wrap.appendChild(nameHint);
-    const phoneInput = kiotInput('Số điện thoại', d.customer_phone || '', 'kiot-phone-' + pid, { type: 'tel', inputmode: 'tel' });
-    const addrInput = kiotInput('Địa chỉ giao', addressText(d), 'kiot-address-' + pid);
+    const nameLabel = nameInput.wrap.querySelector('label');
+    if (nameLabel) nameLabel.appendChild(nameHint);
+    const phoneInput = kiotInput('SĐT tra KiotViet', d.customer_phone || '', 'kiot-phone-' + pid, { type: 'tel', inputmode: 'tel' });
+    const invoiceInput = adoptDraftField('invoice_code');
+    const rawKiot = ensureCard(d).kiot || null;
+    const addressEditor = buildAddressEditor({
+      f: formOf(d),
+      locked: d.approval_status === 'SENT',
+      draft: d,
+      streetId: 'kiot-address-' + pid,
+      wardInputId: 'kiot-ward-' + pid,
+      districtInputId: 'kiot-district-' + pid,
+      provinceInputId: 'kiot-province-' + pid,
+      lineId: 'kiot-addr-line-' + pid,
+      blockId: 'kiot-addr-block-' + pid,
+      heading: true,
+      parts: rawKiot && rawKiot.addressParts,
+      seedText: rawKiot && rawKiot.address && !(rawKiot.addressParts) ? rawKiot.address : addressSeedText(d),
+      onInput() { state.touched.address = true; rememberKiot(); },
+    });
+    const addrInput = { wrap: addressEditor.box, input: addressEditor.street };
     nameInput.input.addEventListener('input', () => {
       state.touched.name = true;
       dirty = true;
       nameHint.textContent = '';
       nameHint.hidden = true;
+      rememberKiot();
     });
     phoneInput.input.addEventListener('input', () => {
       state.touched.phone = true;
       dirty = true;
       state.quote = null;
       scheduleKiotLookup();
+      rememberKiot();
     });
-    addrInput.input.addEventListener('input', () => { state.touched.address = true; dirty = true; });
     grid.appendChild(nameInput.wrap);
     grid.appendChild(phoneInput.wrap);
-    grid.appendChild(addrInput.wrap);
+    if (invoiceInput) grid.appendChild(invoiceInput.wrap);
     panel.appendChild(grid);
+    panel.appendChild(addressEditor.box);
 
     const linesEl = el('div', { class: 'kiot-lines' });
     panel.appendChild(linesEl);
-    const addBtn = el('button', { type: 'button', class: 'btn btn-sm', text: 'Thêm dòng' });
+    const addBtn = el('button', { type: 'button', class: 'btn btn-sm kiot-add', text: 'Thêm dòng' });
+    addBtn.textContent = '+ Thêm sản phẩm';
     addBtn.addEventListener('click', () => {
-      state.lines.push(blankKiotLine());
+      state.lines = window.kiotLines ? window.kiotLines.addLine(state.lines) : state.lines.concat([blankKiotLine()]);
       state.quote = null;
+      dirty = true;
       paintLines();
     });
     panel.appendChild(addBtn);
@@ -2007,9 +2395,10 @@
     const discountInput = kiotInput('Giảm giá (đ)', '0', 'kiot-discount-' + pid, { inputmode: 'decimal' });
     const shipInput = kiotInput('Phí ship (đ)', '0', 'kiot-ship-' + pid, { inputmode: 'decimal' });
     const noteInput = kiotInput('Ghi chú', '', 'kiot-note-' + pid);
-    discountInput.input.addEventListener('input', () => { state.quote = null; paintTotals(); });
-    shipInput.input.addEventListener('input', () => { state.touched.ship = true; state.quote = null; paintTotals(); });
-    noteInput.input.addEventListener('input', () => { dirty = true; });
+    discountInput.input.addEventListener('input', () => { state.quote = null; paintTotals(); rememberKiot(); });
+    shipInput.input.addEventListener('input', () => { state.touched.ship = true; state.quote = null; paintTotals(); rememberKiot(); });
+    noteInput.input.addEventListener('input', () => { dirty = true; rememberKiot(); });
+    noteInput.wrap.classList.add('field-wide');
     moneyRow.appendChild(discountInput.wrap);
     moneyRow.appendChild(shipInput.wrap);
     panel.appendChild(moneyRow);
@@ -2046,10 +2435,6 @@
       box.appendChild(el('p', { class: 'kiot-created-note', text: bits.join(' · ') }));
       if (invoice && mark.image) {
         box.appendChild(el('img', { class: 'kiot-invoice-img', src: mark.image, alt: 'Hoá đơn ' + mark.code }));
-        box.appendChild(el('p', {
-          class: 'kiot-created-note',
-          text: 'Ảnh và nội dung CK đang chờ. Bấm Duyệt & Gửi ở thanh dưới để gửi khách.',
-        }));
       }
       if (!invoice) {
         const issue = el('button', { type: 'button', class: 'btn btn-primary', text: 'Xuất hóa đơn' });
@@ -2057,7 +2442,7 @@
         box.appendChild(issue);
         box.appendChild(el('p', {
           class: 'kiot-created-note',
-          text: 'Xuất hoá đơn để có mã QR. Chưa gửi cho khách cho đến khi bấm Duyệt & Gửi.',
+          text: 'Xuất hoá đơn để có mã QR.',
         }));
       }
       return box;
@@ -2077,7 +2462,7 @@
         }
         toast(data.saved === false
           ? (data.error || ('Đã xuất ' + data.code))
-          : ('Đã xuất ' + data.code + '. Tin vẫn chờ duyệt, chưa gửi.'));
+          : ('Đã xuất ' + data.code));
         dirty = false;
         detailStamp = '';
         listStamp = '';
@@ -2086,6 +2471,36 @@
         if (e.message !== 'unauthorized') showError(e.message);
         button.disabled = false;
       }
+    }
+
+    function lineAmountText(line) {
+      const amount = window.kiotLines ? window.kiotLines.lineAmount(line) : null;
+      if (amount == null) {
+        const price = Number(line.price);
+        const qty = Number(line.quantity);
+        if (!Number.isFinite(price) || !Number.isFinite(qty)) return 'Thành tiền —';
+        return 'Thành tiền ' + vnd(price * qty);
+      }
+      return 'Thành tiền ' + vnd(amount);
+    }
+
+    function rememberKiot() {
+      if (!window.kiotLines) return;
+      const s = ensureCard(d);
+      s.kiot = window.kiotLines.snapshot({
+        document: state.document,
+        lines: state.lines,
+        quick: quick.value,
+        name: nameInput.input.value,
+        phone: phoneInput.input.value,
+        address: addressEditor.value().line,
+        discount: discountInput.input.value,
+        ship: shipInput.input.value,
+        note: noteInput.input.value,
+        touched: state.touched,
+      });
+      s.kiot.addressParts = addressEditor.value();
+      s.kiotDirty = true;
     }
 
     function showError(text) {
@@ -2099,6 +2514,7 @@
     }
 
     function payloadLines() {
+      if (window.kiotLines) return window.kiotLines.payloadLines(state.lines);
       return state.lines.filter(line => line.sku || line.name || line.phrase).map(line => ({
         sku: line.sku || '',
         product_name: line.name || line.phrase || '',
@@ -2114,6 +2530,9 @@
     }
 
     function localTotal() {
+      if (window.kiotLines) {
+        return window.kiotLines.orderTotal(state.lines, moneyVal(discountInput.input), moneyVal(shipInput.input));
+      }
       const sub = state.lines.reduce((sum, line) => {
         const price = Number(line.price);
         const qty = Number(line.quantity);
@@ -2125,7 +2544,7 @@
 
     function paintTotals() {
       const ready = state.lines.some(line => line.sku && line.price != null);
-      totals.textContent = ready ? 'Tổng tạm tính: ' + vnd(localTotal()) : 'Chọn sản phẩm để thấy giá KiotViet.';
+      totals.textContent = ready ? ('Tổng ' + vnd(localTotal())) : 'Chọn sản phẩm để thấy giá KiotViet.';
     }
 
     function paintSummary() {
@@ -2142,7 +2561,8 @@
       summary.appendChild(el('strong', { text: title }));
       const who = [nameInput.input.value.trim() || 'Khách', phoneInput.input.value.trim()].filter(Boolean).join(' · ');
       summary.appendChild(el('p', { text: who }));
-      if (addrInput.input.value.trim()) summary.appendChild(el('p', { text: 'Giao: ' + addrInput.input.value.trim() }));
+      const place = addressEditor.value().line;
+      if (place) summary.appendChild(el('p', { class: 'addr-line', text: place }));
       (q.lines || []).forEach(line => {
         const stock = line.stock ? ' — ' + stockText(line.stock) : '';
         summary.appendChild(el('p', {
@@ -2161,9 +2581,11 @@
 
     function paintLines() {
       linesEl.textContent = '';
+      linesEl.dataset.count = String(state.lines.length);
       state.lines.forEach((line, index) => linesEl.appendChild(lineRow(line, index)));
       paintTotals();
       paintSummary();
+      rememberKiot();
     }
 
     function lineRow(line, index) {
@@ -2179,9 +2601,11 @@
       } else {
         head.appendChild(el('strong', { text: 'Sản phẩm' }));
       }
-      const remove = el('button', { type: 'button', class: 'kiot-remove', text: 'Xoá' });
+      const remove = el('button', { type: 'button', class: 'kiot-remove', text: 'Xoá', 'aria-label': 'Bỏ dòng này' });
       remove.addEventListener('click', () => {
-        state.lines.splice(index, 1);
+        state.lines = window.kiotLines
+          ? window.kiotLines.removeLine(state.lines, index)
+          : state.lines.filter((_, i) => i !== index);
         if (!state.lines.length) state.lines.push(blankKiotLine());
         state.quote = null;
         dirty = true;
@@ -2190,7 +2614,9 @@
       head.appendChild(remove);
       row.appendChild(head);
 
+      let tools = null;
       if (!line.sku) {
+        tools = el('div', { class: 'kiot-line-tools' });
         if (line.status === 'ambiguous' && line.candidates && line.candidates.length) {
           const pick = el('select', { 'aria-label': 'Chọn sản phẩm cho ' + (line.phrase || 'dòng') });
           pick.appendChild(el('option', { value: '', text: 'Có vài món khớp — chọn một' }));
@@ -2201,7 +2627,9 @@
           pick.addEventListener('change', () => {
             const cand = line.candidates[Number(pick.value)];
             if (!cand) return;
-            applyProduct(line, cand);
+            state.lines = window.kiotLines
+              ? window.kiotLines.chooseProduct(state.lines, index, cand)
+              : (applyProduct(line, cand), state.lines);
             state.quote = null;
             dirty = true;
             paintLines();
@@ -2211,7 +2639,7 @@
         const search = el('input', { type: 'search', placeholder: 'Tìm tên hoặc mã KiotViet', 'aria-label': 'Tìm sản phẩm', autocomplete: 'off' });
         search.value = line.query || '';
         const results = el('div', { class: 'kiot-results' });
-        paintSearch(results, line);
+        paintSearch(results, line, index);
         search.addEventListener('input', () => {
           line.query = search.value;
           dirty = true;
@@ -2220,14 +2648,15 @@
           if (String(query || '').trim().length < 2) {
             line.searchPhase = 'idle';
             line.hits = [];
-            paintSearch(results, line);
+            paintSearch(results, line, index);
             return;
           }
           line.searchPhase = 'loading';
-          paintSearch(results, line);
-          line._timer = setTimeout(() => fillSearch(query, results, line), 250);
+          paintSearch(results, line, index);
+          line._timer = setTimeout(() => fillSearch(query, results, line, index), 250);
         });
-        row.appendChild(search);
+        tools.appendChild(search);
+        row.appendChild(tools);
         row.appendChild(results);
       }
 
@@ -2245,24 +2674,30 @@
         const shown = window.kiotPicker ? window.kiotPicker.qtyText(qty.value) : String(qty.value || '1');
         if (qty.value !== shown) qty.value = shown;
         line.quantity = window.kiotPicker ? window.kiotPicker.normalizeQty(shown) : (Number(shown) || 1);
+        if (window.kiotLines) window.kiotLines.restock(line);
         state.quote = null;
         dirty = true;
         paintTotals();
         const totalEl = row.querySelector('.kiot-line-total');
-        if (totalEl) totalEl.textContent = line.price != null && Number.isFinite(line.quantity) ? vnd(line.price * line.quantity) : '—';
+        if (totalEl) totalEl.textContent = lineAmountText(line);
+        const stockEl = row.querySelector('.kiot-stock');
+        if (stockEl) stockEl.textContent = line.sku ? stockText(line.stock) : '';
         confirmBtn.disabled = true;
       };
       qty.addEventListener('input', keepQty);
       qty.addEventListener('change', keepQty);
       qtyWrap.appendChild(qty);
-      row.appendChild(qtyWrap);
+      if (!tools) {
+        const bare = el('div', { class: 'kiot-line-tools' });
+        bare.appendChild(qtyWrap);
+        row.appendChild(bare);
+      } else {
+        tools.appendChild(qtyWrap);
+      }
 
       const meta = el('div', { class: 'kiot-meta' });
-      meta.appendChild(el('span', { text: line.price != null ? vnd(line.price) : 'Giá —' }));
-      meta.appendChild(el('span', {
-        class: 'kiot-line-total',
-        text: line.price != null && Number.isFinite(Number(line.quantity)) ? vnd(line.price * line.quantity) : '—',
-      }));
+      meta.appendChild(el('span', { class: 'kiot-unit', text: line.price != null ? ('Đơn giá ' + vnd(line.price)) : 'Đơn giá —' }));
+      meta.appendChild(el('span', { class: 'kiot-line-total', text: lineAmountText(line) }));
       const stockCls = line.stock && line.stock.level === 'blocked' ? 'bad' : line.stock && line.stock.level === 'low' ? 'warn' : '';
       meta.appendChild(el('span', { class: 'kiot-stock ' + stockCls, text: line.sku ? stockText(line.stock) : '' }));
       row.appendChild(meta);
@@ -2290,16 +2725,16 @@
       return bits.join(' · ') || 'Sản phẩm';
     }
 
-    function paintSearch(box, line) {
+    function paintSearch(box, line, index) {
       box.textContent = '';
       const note = window.kiotPicker ? window.kiotPicker.searchNote(line.searchPhase) : '';
       if (note) box.appendChild(el('p', { class: 'kiot-search-note', text: note }));
       (line.hits || []).slice(0, 8).forEach(product => {
         const btn = el('button', { type: 'button', class: 'kiot-hit', text: hitText(product) });
         btn.addEventListener('click', () => {
-          applyProduct(line, product);
-          line.hits = [];
-          line.searchPhase = 'idle';
+          state.lines = window.kiotLines
+            ? window.kiotLines.chooseProduct(state.lines, index, product)
+            : (applyProduct(line, product), state.lines);
           state.quote = null;
           dirty = true;
           paintLines();
@@ -2308,12 +2743,12 @@
       });
     }
 
-    async function fillSearch(q, box, line) {
+    async function fillSearch(q, box, line, index) {
       const query = String(q || '').trim();
       if (query.length < 2) {
         line.searchPhase = 'idle';
         line.hits = [];
-        paintSearch(box, line);
+        paintSearch(box, line, index);
         return;
       }
       if (String(line.query || '').trim() !== query) return;
@@ -2323,12 +2758,12 @@
         const products = (data.products || []).slice(0, 8);
         line.hits = products;
         line.searchPhase = products.length ? 'ok' : 'empty';
-        paintSearch(box, line);
+        paintSearch(box, line, index);
       } catch (e) {
         if (String(line.query || '').trim() !== query) return;
         line.hits = [];
         line.searchPhase = 'error';
-        paintSearch(box, line);
+        paintSearch(box, line, index);
       }
     }
 
@@ -2342,19 +2777,21 @@
           body: JSON.stringify({ text: quick.value }),
         });
         const rows = data.lines || [];
-        state.lines = rows.length ? rows.map(row => ({
-          sku: row.sku || '',
-          name: row.name || '',
-          unit: row.unit || '',
-          price: row.price,
-          quantity: row.quantity || 1,
-          phrase: row.phrase || '',
-          status: row.status || 'unmatched',
-          warning: row.warning || '',
-          stock: row.stock || null,
-          candidates: row.candidates || [],
-          query: row.status === 'unmatched' ? (row.phrase || '') : '',
-        })) : [blankKiotLine()];
+        state.lines = window.kiotLines
+          ? window.kiotLines.applyQuick(state.lines, rows)
+          : (rows.length ? rows.map(row => ({
+            sku: row.sku || '',
+            name: row.name || '',
+            unit: row.unit || '',
+            price: row.price,
+            quantity: row.quantity || 1,
+            phrase: row.phrase || '',
+            status: row.status || 'unmatched',
+            warning: row.warning || '',
+            stock: row.stock || null,
+            candidates: row.candidates || [],
+            query: row.status === 'unmatched' ? (row.phrase || '') : '',
+          })) : [blankKiotLine()]);
         state.quote = null;
         dirty = true;
         const ambiguous = state.lines.filter(line => line.status === 'ambiguous').length;
@@ -2386,6 +2823,13 @@
         showError('Còn dòng chưa chọn mã KiotViet.');
         return;
       }
+      if (confirm) {
+        const addressCheck = addressEditor.validateForConfirm();
+        if (!addressCheck.ok) {
+          showError(addressCheck.errors[0]);
+          return;
+        }
+      }
       if (confirm && state.existing && !state.acknowledge) {
         showError('Nháp đã có chứng từ. Chỉ tạo thêm khi bạn tick xác nhận.');
         return;
@@ -2398,7 +2842,7 @@
         document: state.document,
         customer_name: nameInput.input.value.trim(),
         phone: phoneInput.input.value.trim(),
-        address: addrInput.input.value.trim(),
+        address: addressEditor.value().line,
         note: noteInput.input.value.trim(),
         discount: moneyVal(discountInput.input),
         shipping_fee: moneyVal(shipInput.input),
@@ -2419,16 +2863,19 @@
         });
         if (!confirm) {
           state.quote = data;
-          (data.lines || []).forEach((row, i) => {
-            const line = state.lines[i];
-            if (!line) return;
-            if (row.price != null) line.price = row.price;
-            if (row.sku) line.sku = row.sku;
-            if (row.name) line.name = row.name;
-            if (row.unit) line.unit = row.unit;
-            if (row.stock) line.stock = row.stock;
-            if (row.missing) line.status = 'unmatched';
-          });
+          if (window.kiotLines) state.lines = window.kiotLines.mergeQuote(state.lines, data.lines || []);
+          else {
+            (data.lines || []).forEach((row, i) => {
+              const line = state.lines[i];
+              if (!line) return;
+              if (row.price != null) line.price = row.price;
+              if (row.sku) line.sku = row.sku;
+              if (row.name) line.name = row.name;
+              if (row.unit) line.unit = row.unit;
+              if (row.stock) line.stock = row.stock;
+              if (row.missing) line.status = 'unmatched';
+            });
+          }
           paintLines();
           if (data.error) showError(data.error);
           return;
@@ -2445,7 +2892,7 @@
         showExisting({ code, total: data.total });
         toast(data.saved === false
           ? (data.error || ('Đã tạo ' + code + ' nhưng chưa ghi vào nháp.'))
-          : ('Đã tạo ' + code + ' · ' + vnd(data.total) + '. Tin vẫn chờ duyệt, chưa gửi.'));
+          : ('Đã tạo ' + code + ' · ' + vnd(data.total)));
         dirty = false;
         detailStamp = '';
         listStamp = '';
@@ -2500,15 +2947,24 @@
       }, 400);
     }
 
+    if (savedKiot) {
+      if (savedKiot.name) nameInput.input.value = savedKiot.name;
+      if (savedKiot.phone) phoneInput.input.value = savedKiot.phone;
+      if (savedKiot.quick) quick.value = savedKiot.quick;
+      if (savedKiot.discount != null) discountInput.input.value = savedKiot.discount;
+      if (savedKiot.ship != null) shipInput.input.value = savedKiot.ship;
+      if (savedKiot.note) noteInput.input.value = savedKiot.note;
+      if (savedKiot.document === 'order') setDoc('order');
+    }
     paintLines();
     api('/admin/api/drafts/' + d.id + '/kiotviet').then(data => {
       if (!panel.isConnected) return;
-      if (!state.touched.name && data.customer_name) {
+      if (!state.touched.name && data.customer_name && !(savedKiot && savedKiot.name)) {
         nameInput.input.value = data.customer_name;
-        nameHint.textContent = data.name_hint || '';
+        nameHint.textContent = hintSuffix(data.name_hint || '');
         nameHint.hidden = !data.name_hint;
       }
-      if (!state.touched.phone && data.phone) phoneInput.input.value = data.phone;
+      if (!state.touched.phone && data.phone && !(savedKiot && savedKiot.phone)) phoneInput.input.value = data.phone;
       if (data.kiot_customer_id || data.kiot_customer_code) {
         state.kiotCustomer = {
           id: data.kiot_customer_id || null,
@@ -2517,10 +2973,15 @@
           phone: data.phone || phoneInput.input.value.trim(),
         };
       }
-      if (!state.touched.address && data.address) addrInput.input.value = data.address;
-      if (!state.touched.quick && data.quick_text) quick.value = data.quick_text;
-      if (!state.touched.ship && data.shipping_fee != null) shipInput.input.value = String(data.shipping_fee);
+      if (!state.touched.address && data.address && !addressEditor.value().wardId && !(rawKiot && rawKiot.addressParts)) {
+        addressEditor.setFromText(data.address);
+      }
+      if (!state.touched.quick && data.quick_text && !(savedKiot && savedKiot.quick)) quick.value = data.quick_text;
+      if (!state.touched.ship && data.shipping_fee != null && !(savedKiot && savedKiot.touched && savedKiot.touched.ship)) {
+        shipInput.input.value = String(data.shipping_fee);
+      }
       if (data.existing) showExisting(data.existing);
+      rememberKiot();
     }).catch(() => {});
     return panel;
   }
@@ -2546,6 +3007,7 @@
   }
 
   function blankKiotLine() {
+    if (window.kiotLines) return window.kiotLines.blankLine();
     return {
       sku: '',
       name: '',
@@ -2561,6 +3023,30 @@
       hits: [],
       searchPhase: 'idle',
     };
+  }
+
+  function stripChannelPrefix(text) {
+    return String(text || '').replace(/^Tên (?:Zalo|FB):\s*/, '');
+  }
+
+  function displayChannelName(item) {
+    if (item.source === 'zalo' || item.source === 'fb') {
+      const name = String(item.name || '').trim();
+      if (name) return name;
+      return stripChannelPrefix(item.text);
+    }
+    return item.text || item.name || '';
+  }
+
+  function adoptDraftField(name, id) {
+    const input = detailEl.querySelector('input[name="' + name + '"]');
+    if (!input) return null;
+    if (id) {
+      input.id = id;
+      const label = input.parentElement && input.parentElement.querySelector('label');
+      if (label) label.htmlFor = id;
+    }
+    return { wrap: input.closest('.field-block'), input };
   }
 
   function nameFallback(raw) {
@@ -2583,7 +3069,7 @@
     const hd = saleCode(d);
     const kiotName = kiot && kiot.name && !opaqueId(kiot.name) ? String(kiot.name).trim() : '';
     const stored = String((d && d.customer_name) || '').trim();
-    const name = kiotName || (stored && !opaqueId(stored) ? stored : 'Khách');
+    const name = kiotName || (stored && !opaqueId(stored) ? stripChannelPrefix(stored) : 'Khách');
     const row = el('span', { class: 'id-row' });
     row.appendChild(el('span', { class: 'id-name', text: name }));
     if (kh && !opaqueId(kh)) row.appendChild(el('span', { class: 'id-code', title: 'Mã KH', text: kh }));
@@ -2607,7 +3093,7 @@
         const id = String(d.customer_user_id || '').trim();
         const stored = String(d.customer_name || '').trim();
         if (phone && !opaqueId(phone)) return [el('span', { class: 'msg-name', text: phone })];
-        if (stored && !opaqueId(stored)) return [el('span', { class: 'msg-name', text: stored })];
+        if (stored && !opaqueId(stored)) return [el('span', { class: 'msg-name', text: stripChannelPrefix(stored) })];
         return nameFallback(id || stored || phone);
       }
       const onlyOpaque = names.length === 1 && (names[0].source === 'id' || opaqueId(names[0].text || names[0].name));
@@ -2622,7 +3108,7 @@
       if (item.avatar && /^https:\/\//.test(item.avatar)) {
         bit.appendChild(el('img', { class: 'msg-avatar', alt: '', src: item.avatar }));
       }
-      bit.appendChild(el('span', { text: item.text || ((item.label || 'Tên') + ': ' + item.name) }));
+      bit.appendChild(el('span', { text: displayChannelName(item) }));
       nodes.push(bit);
     });
     return nodes.length ? nodes : nameFallback('');
@@ -2639,6 +3125,29 @@
       name: own.name,
       hint: own.source === 'fb' ? 'lấy từ Tên FB' : 'lấy từ Tên Zalo',
     };
+  }
+
+  function autoGrow(area, minLines) {
+    if (!area) return;
+    const fit = () => {
+      area.style.height = 'auto';
+      const style = getComputedStyle(area);
+      const line = parseFloat(style.lineHeight) || 22;
+      const pad = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      const border = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0);
+      const min = Math.ceil(line * minLines + pad + border);
+      area.style.height = Math.max(min, area.scrollHeight) + 'px';
+    };
+    area.addEventListener('input', fit);
+    requestAnimationFrame(fit);
+  }
+
+  function hintSuffix(hint) {
+    const text = String(hint || '').trim();
+    if (!text) return '';
+    if (/zalo/i.test(text)) return '· từ Zalo';
+    if (/fb/i.test(text)) return '· từ FB';
+    return '· ' + text.replace(/^lấy từ\s+/i, '');
   }
 
   function kiotInput(label, value, id, opts) {
@@ -2717,55 +3226,6 @@
     return 'Đã duyệt · ' + tail;
   }
 
-  async function approveCard(d) {
-    const s = ensureCard(d);
-    const text = String(s.reply || '').trim();
-    if (!text) {
-      toast('Nhập câu trả lời trước khi gửi.');
-      return;
-    }
-    const where = d.channel === 'messenger' ? ' trên Facebook Messenger' : '';
-    if (!confirm('Gửi tin này cho khách' + where + '?')) return;
-    if (busy) return;
-    busy = true;
-    const card = findCard(d.id);
-    const sendBtn = card && card.querySelector('.card-actions > .btn-primary');
-    if (sendBtn) {
-      sendBtn.disabled = true;
-      sendBtn.textContent = 'Đang gửi…';
-    }
-    try {
-      const res = await api('/admin/api/drafts/' + d.id, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          draft_reply: text,
-          send: true,
-          learn: s.learn !== false,
-          actor_name: actorName(),
-          approval_status: 'APPROVED',
-        }),
-      });
-      s.dirty = false;
-      s.reply = text;
-      dirty = cardsDirty();
-      const sent = res.send && res.send.sent;
-      toast(sent ? learnNote(res, true) : (res.send && res.send.pendingAdapter ? learnNote(res, false) : (res.send ? 'Đã duyệt, chưa gửi được.' : 'Đã lưu.')));
-      s.dirty = false;
-      persistReplies();
-      queueAdvance(d.id);
-      listStamp = '';
-      await load();
-    } catch (e) {
-      if (e.message !== 'unauthorized') toast(e.message);
-      if (sendBtn) {
-        sendBtn.disabled = false;
-        sendBtn.textContent = 'Duyệt & Gửi';
-      }
-    } finally {
-      busy = false;
-    }
-  }
-
   function lineActions(d, className) {
     const row = el('div', { class: 'msg-actions' + (className ? ' ' + className : '') });
     const current = d.biz_line === 'sale' || d.biz_line === 'dv' ? d.biz_line : '';
@@ -2780,15 +3240,15 @@
     return row;
   }
 
-  function deleteButton(d) {
-    const del = el('button', { type: 'button', class: 'card-act card-del', text: 'Xóa' });
-    del.addEventListener('click', (ev) => {
+  function deleteAction(d, scope, label) {
+    const btn = el('button', { type: 'button', class: 'card-act card-del card-chip chip-danger', text: 'Xóa' });
+    btn.textContent = label || (scope === 'thread' ? 'Xóa cả cuộc chat' : 'Xóa tin này');
+    btn.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      removeDraft(d.id);
+      removeDrafts(d, scope);
     });
-    if (!me.canDelete) del.hidden = true;
-    return del;
+    return btn;
   }
 
   async function moveLine(id, line) {
@@ -2806,25 +3266,115 @@
     }
   }
 
-  async function removeDraft(id) {
-    if (!confirm('Xoá tin này khỏi hộp thư? Tin trên Facebook và Zalo không bị xoá, và không gửi gì cho khách.')) return;
+  function threadMates(d) {
+    const user = String((d && d.customer_user_id) || '').trim();
+    if (!user) return [d];
+    const mates = drafts.filter(item => item
+      && item.channel === d.channel
+      && item.customer_user_id === user
+      && !pendingDeletes.has(item.id));
+    return mates.length ? mates : [d];
+  }
+
+  function pushUndoToast(id, scope) {
+    const host = document.getElementById('undo-toasts');
+    const node = el('div', { class: 'toast', role: 'status' });
+    const action = { label: 'Hoàn tác' };
+    node.appendChild(document.createTextNode(scope === 'thread' ? 'Đã xoá cả cuộc chat. ' : 'Đã xoá tin này. '));
+    const b = el('button', { type: 'button', class: 'linkish', text: action.label });
+    b.addEventListener('click', () => { undoPending(id); });
+    node.appendChild(b);
+    if (host) host.appendChild(node);
+    return node;
+  }
+
+  // Xóa hides the cards now. DELETE runs only after 3s if Hoàn tác was not clicked.
+  // A refresh during that window omits the pending ids, so the cards stay gone.
+  function removeDrafts(d, scope) {
+    const policy = window.undoDelete;
+    if (!policy || policy.needsConfirm() || !d || !me.canDelete) return;
+    const targets = scope === 'thread' ? threadMates(d) : [d];
+    const fresh = targets.filter(item => item && item.id && !pendingDeletes.has(item.id));
+    if (!fresh.length) return;
+    const entries = fresh.map(item => {
+      const index = drafts.findIndex(row => row && row.id === item.id);
+      const card = findCard(item.id);
+      const next = card ? card.nextSibling : null;
+      if (card) card.remove();
+      return {
+        id: item.id,
+        draft: index >= 0 ? drafts[index] : item,
+        index: index < 0 ? 0 : index,
+        card,
+        next,
+      };
+    });
+    const idSet = new Set(entries.map(entry => entry.id));
+    drafts = drafts.filter(row => row && !idSet.has(row.id));
+    if (idSet.has(selectedId)) {
+      selectedId = null;
+      detailStamp = '';
+      dirty = false;
+      document.body.classList.remove('show-detail');
+    }
+    const anchor = entries[0];
+    const toastNode = pushUndoToast(anchor.id, scope);
+    const job = policy.schedule(anchor.id, {
+      ms: policy.UNDO_MS,
+      onFinalize: () => finalizeDelete(entries.map(entry => entry.id), scope, anchor.draft),
+    });
+    entries.forEach(entry => {
+      pendingDeletes.set(entry.id, { ...entry, job, toastNode, scope, anchor: anchor.draft });
+    });
+  }
+
+  function undoPending(id) {
+    const entry = pendingDeletes.get(id);
+    const policy = window.undoDelete;
+    if (!entry || !policy || !entry.job.undo()) return;
+    const group = [...pendingDeletes.entries()].filter(([, item]) => item.job === entry.job);
+    group.forEach(([gid]) => pendingDeletes.delete(gid));
+    if (entry.toastNode) entry.toastNode.remove();
+    group.sort((a, b) => a[1].index - b[1].index);
+    group.forEach(([, item]) => {
+      if (item.draft) drafts = policy.restoreInPlace(drafts, item);
+    });
+    renderList();
+    toast('Đã hoàn tác.');
+  }
+
+  async function finalizeDelete(ids, scope, anchor) {
+    const sample = pendingDeletes.get(ids[0]);
+    if (!sample) return;
+    const toastNode = sample.toastNode;
     try {
-      await api('/admin/api/drafts/' + id + '/delete', {
+      const data = await api('/admin/api/drafts/' + encodeURIComponent(anchor.id) + '/delete', {
         method: 'POST',
-        body: JSON.stringify({ actor_name: actorName() }),
+        body: JSON.stringify({
+          actor_name: actorName(),
+          scope: scope === 'thread' ? 'thread' : 'item',
+          channel: anchor.channel,
+          customer_user_id: anchor.customer_user_id,
+        }),
       });
-      if (selectedId === id && !dirty) {
-        selectedId = null;
-        detailStamp = '';
-        document.body.classList.remove('show-detail');
-      }
+      const gone = data && Array.isArray(data.deleted) ? data.deleted.map(row => row && row.id) : ids;
+      ids.concat(gone).forEach(id => {
+        if (!id) return;
+        pendingDeletes.delete(id);
+        settledDeletes.add(id);
+      });
+      if (toastNode) toastNode.remove();
       listStamp = '';
-      toast('Đã xoá khỏi hộp thư.', {
-        label: 'Hoàn tác',
-        run: () => restoreDraft(id),
-      });
       await load();
     } catch (e) {
+      const policy = window.undoDelete;
+      ids.forEach(id => {
+        const item = pendingDeletes.get(id);
+        pendingDeletes.delete(id);
+        if (item && policy && item.draft) drafts = policy.restoreInPlace(drafts, item);
+      });
+      renderList();
+      if (toastNode) toastNode.remove();
       if (e.message !== 'unauthorized') toast(e.message);
     }
   }
@@ -2985,6 +3535,9 @@
     } catch (_) { /* server still enforces the role */ }
   }
 
+  const detailBack = document.getElementById('detail-back');
+  if (detailBack) detailBack.addEventListener('click', () => closeDetail(false));
+
   const menuToggle = document.getElementById('menu-toggle');
   const appMenu = document.getElementById('app-menu');
   function setMenu(open) {
@@ -3022,8 +3575,25 @@
     });
   }
 
+  const searchToggle = document.getElementById('search-toggle');
   const searchInput = document.getElementById('inbox-search');
-  if (searchInput) searchInput.addEventListener('input', () => renderList());
+  function setSearch(open) {
+    document.body.classList.toggle('search-open', open);
+    if (searchToggle) searchToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open && searchInput) searchInput.focus();
+  }
+  if (searchToggle) {
+    searchToggle.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      setSearch(!document.body.classList.contains('search-open'));
+    });
+  }
+  if (searchInput) {
+    searchInput.addEventListener('input', () => {
+      renderList();
+      paintActiveFilters();
+    });
+  }
 
   let lastScrollY = 0;
   window.addEventListener('scroll', () => {
@@ -3060,6 +3630,11 @@
     const tag = document.activeElement ? document.activeElement.tagName : '';
     const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
       || (document.activeElement && document.activeElement.isContentEditable);
+    if (ev.key === 'Escape' && document.body.classList.contains('search-open')) {
+      setSearch(false);
+      if (searchInput) searchInput.blur();
+      return;
+    }
     if (typing) return;
     if (ev.key === 'Escape') {
       const morePanel = document.querySelector('.more-panel:not([hidden])');

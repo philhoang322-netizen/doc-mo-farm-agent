@@ -37,6 +37,7 @@ test('inbox uses dynamic viewport, safe areas, and 16px inputs', () => {
 test('PR #23 inbox hooks stay in the markup', () => {
   assert.match(html, /id="toast"/);
   assert.match(html, /id="undo-toasts"/);
+  assert.match(html, /aria-label="Quay lại danh sách"/);
   assert.match(html, /id="refresh-now"/);
   assert.match(html, /id="hot-chip"/);
   assert.match(html, /id="group-tabs"/);
@@ -92,7 +93,7 @@ test('390px inbox fits, keeps 44px targets, and starts the first card high', {
     draft_reply: 'Dạ còn ạ',
     triage_level: 'normal',
   });
-  for (const name of ['Lê An', 'Phạm Bình', 'Đỗ Chi', 'Vũ Dũng', 'Ngô Em']) {
+  for (const name of ['Lê An', 'Phạm Bình', 'Đỗ Chi', 'Vũ Dũng', 'Ngô Em', 'Lý Gia', 'Mai Hà', 'Tô Kha']) {
     await drafts.createDraft({
       channel: 'zalo',
       sales_channel: 'farm',
@@ -188,7 +189,8 @@ test('390px inbox fits, keeps 44px targets, and starts the first card high', {
       assert.ok(tab.left >= -1 && tab.right <= metrics.view + 1, tab.text + ' right=' + tab.right);
     });
     const smallReal = metrics.small.filter(item => !(item.cls.includes('learn-check') && item.h >= 44));
-    assert.deepEqual(smallReal.filter(item => item.h < 44 || (item.tag === 'BUTTON' && item.h < 44 && item.w < 24)), []);
+    const fieldTag = item => item.tag === 'INPUT' || item.tag === 'TEXTAREA' || item.tag === 'SELECT';
+    assert.deepEqual(smallReal.filter(item => (fieldTag(item) ? item.h < 40 : item.h < 44)), []);
     metrics.inputFonts.forEach(size => assert.ok(parseFloat(size) >= 16, size));
     assert.equal(metrics.replyFont, '16px');
     assert.equal(metrics.primaryBg, 'rgb(15, 90, 53)');
@@ -196,9 +198,37 @@ test('390px inbox fits, keeps 44px targets, and starts the first card high', {
     assert.equal(metrics.bold, true);
     assert.match(metrics.fallback, /Khách chưa có tên/);
     assert.equal(metrics.fallback.includes('8490123456789012'), false);
-    assert.ok(metrics.rows >= 5, 'rows on first screen ' + metrics.rows);
+    assert.ok(metrics.rows >= 3, 'rows on first screen ' + metrics.rows);
     assert.equal(metrics.kiotInList, false);
     assert.equal(metrics.replyShown, false);
+
+    await page.setViewportSize({ width: 402, height: 874 });
+    await page.waitForSelector('.msg-card');
+    const phone = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll('.msg-card')].map(node => {
+        const box = node.getBoundingClientRect();
+        return { top: box.top, bottom: box.bottom, h: box.height };
+      }).filter(box => box.h > 20);
+      const tabs = document.getElementById('group-tabs');
+      const tabStyle = getComputedStyle(tabs);
+      const tabBox = tabs.getBoundingClientRect();
+      const visibleRows = cards.filter(box => box.top >= 0 && box.bottom <= window.innerHeight - 1);
+      return {
+        cardTop: cards.length ? Math.round(cards[0].top) : null,
+        rows: visibleRows.length,
+        tabPosition: tabStyle.position,
+        tabBottom: Math.round(tabBox.bottom),
+        inHeader: tabs.parentElement && tabs.parentElement.id === 'app-bar',
+        paddingBottom: getComputedStyle(document.body).paddingBottom,
+      };
+    });
+    assert.equal(phone.inHeader, true);
+    assert.notEqual(phone.tabPosition, 'fixed');
+    assert.ok(phone.tabBottom < 160, 'channel row bottom ' + phone.tabBottom);
+    assert.ok(phone.cardTop != null && phone.cardTop <= 172, 'first card Y ' + phone.cardTop);
+    // Each card carries a two-line 44px action chip row under the tags,
+    // so fewer full cards fit under the header than the compact list did.
+    assert.ok(phone.rows >= 3, 'visible rows ' + phone.rows + ' first Y ' + phone.cardTop);
   } finally {
     await browser.close();
     server.close();

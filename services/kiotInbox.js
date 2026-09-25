@@ -136,6 +136,7 @@ function suggestLines(text) {
 
 function addressFrom(draft) {
   const f = (draft && draft.review_form) || {};
+  if (f.address_line) return String(f.address_line).trim();
   return [f.address_detail, f.ward_name, f.district_name, f.province_name]
     .map(part => String(part || '').trim())
     .filter(Boolean)
@@ -585,6 +586,7 @@ async function prepareOrCreate(id, body, actorName) {
         channel: draft.channel,
         items: saleItems,
         total: created.total,
+        deliveryAddress: address,
       }, audit.managerActor(actorName));
     } catch (err) {
       console.error('Invoice record failed:', err.message);

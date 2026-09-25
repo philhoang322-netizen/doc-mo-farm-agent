@@ -79,7 +79,7 @@ test('the order form shows picker notes and does not create a Kiot document by i
   assert.match(routes, /\/admin\/kiot-picker\.js/);
   assert.match(js, /step: '1'/);
   assert.match(js, /searchNote\(line\.searchPhase\)/);
-  assert.match(js, /fillSearch\(query, results, line\), 250\)/);
+  assert.match(js, /fillSearch\(query, results, line, index\), 250\)/);
   assert.match(js, /searchPhase = 'error'/);
   assert.match(js, /searchPhase = products\.length \? 'ok' : 'empty'/);
   assert.match(js, /Xác nhận tạo hoá đơn/);

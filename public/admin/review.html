@@ -15,6 +15,9 @@
 <body class="hitl inbox">
 <div class="wrap">
 <header class="app-bar" id="app-bar">
+  <button type="button" id="detail-back" class="icon-btn detail-back" aria-label="Quay lại danh sách">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+  </button>
   <div class="brand">
     <h1><span id="product-name">{{PRODUCT_NAME}}</span> <span class="ver" id="app-version">{{VERSION_LABEL}}</span></h1>
   </div>
@@ -23,6 +26,9 @@
     <input id="inbox-search" type="search" placeholder="Tìm khách hoặc tin" autocomplete="off" enterkeyhint="search">
   </label>
   <div class="bar-actions">
+    <button type="button" id="search-toggle" class="icon-btn" aria-label="Tìm khách hoặc tin" aria-expanded="false" aria-controls="inbox-search">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+    </button>
     <button type="button" id="health-toggle" class="health-chip" aria-expanded="false" aria-controls="health-banner" aria-label="Tình trạng kênh">
       <span class="health-dot" aria-hidden="true"></span>
       <span class="health-label"></span>
@@ -34,6 +40,11 @@
     <button type="button" id="menu-toggle" class="icon-btn" aria-expanded="false" aria-controls="app-menu" aria-label="Menu">
       <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
     </button>
+  </div>
+  <div class="group-scroll" id="group-tabs" role="tablist" aria-label="Nhóm hộp thư">
+    <button type="button" class="chip queue-tab" role="tab" data-nhom="zalo" aria-selected="true">Zalo OA <span class="count"></span></button>
+    <button type="button" class="chip queue-tab" role="tab" data-nhom="fb-sale">FB-Sale <span class="count"></span></button>
+    <button type="button" class="chip queue-tab" role="tab" data-nhom="fb-dv">FB-DV <span class="count"></span></button>
   </div>
   <div id="app-menu" class="app-menu" hidden>
     <div class="field actor-field">
@@ -104,11 +115,6 @@
           <h2>Hàng chờ duyệt</h2>
         </div>
         <div class="toolbar">
-          <div class="group-scroll" id="group-tabs" role="tablist" aria-label="Nhóm hộp thư">
-            <button type="button" class="chip queue-tab" role="tab" data-nhom="zalo" aria-selected="true">Zalo OA <span class="count"></span></button>
-            <button type="button" class="chip queue-tab" role="tab" data-nhom="fb-sale">FB-Sale <span class="count"></span></button>
-            <button type="button" class="chip queue-tab" role="tab" data-nhom="fb-dv">FB-DV <span class="count"></span></button>
-          </div>
           <div class="folder-bar">
             <nav class="folder-row" id="folder-nav" aria-label="Thư mục trạng thái">
               <button type="button" class="folder" data-folder="pending" aria-selected="true">Chờ xử lý <span class="count"></span></button>
@@ -118,6 +124,7 @@
               <button type="button" class="folder" data-folder="declined">Từ chối <span class="count"></span></button>
               <button type="button" class="folder folder-deleted" data-folder="deleted">Đã xóa <span class="count"></span></button>
             </nav>
+            <button type="button" class="hot-list" id="hot-list" hidden aria-pressed="false" aria-label="Nóng"><span class="hot-mark" aria-hidden="true"></span><span class="count"></span></button>
             <button type="button" class="icon-btn filter-btn" id="filter-toggle" aria-expanded="false" aria-controls="filter-panel" aria-label="Bộ lọc">
               <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
               <span class="filter-text">Bộ lọc</span>
@@ -166,6 +173,11 @@
 <script src="/admin/inbox-refresh.js"></script>
 <script src="/admin/inbox-order.js"></script>
 <script src="/admin/kiot-picker.js"></script>
+<script src="/admin/kiot-lines.js"></script>
+<script src="/admin/card-time.js"></script>
+<script src="/admin/undo-delete.js"></script>
+<script src="/admin/send-once.js"></script>
+<script src="/admin/vtp-address.js"></script>
 <script src="/admin/thread-context.js"></script>
 <script src="/admin/review.js"></script>
 </body>

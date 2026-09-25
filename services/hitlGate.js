@@ -156,6 +156,7 @@ async function releaseToCustomer(p, text, extra = {}) {
     biz_line: biz.biz_line,
     biz_sticky: biz.biz_sticky,
     source_msg_id: clip(p.msgId, 200),
+    source_received_at: p.receivedAt || null,
     assigned_department: clip(extra.assigned_department || routed.department, 120),
     ticket_status: clip(extra.ticket_status || ticketDefault, 120),
     qr_image_url: httpUrl(extra.qr_image_url),

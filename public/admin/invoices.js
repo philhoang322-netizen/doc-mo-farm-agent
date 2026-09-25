@@ -83,6 +83,24 @@
     meta.appendChild(badge);
     open.appendChild(rowEl);
     open.appendChild(meta);
+    if (row.delivery_address) {
+      const place = document.createElement('p');
+      place.className = 'addr-line';
+      place.textContent = row.delivery_address;
+      open.appendChild(place);
+    }
+    const items = Array.isArray(row.items) ? row.items : [];
+    if (items.length) {
+      const lines = document.createElement('ul');
+      lines.className = 'lines';
+      items.forEach(item => {
+        const li = document.createElement('li');
+        const amount = item.amount != null ? item.amount : Number(item.price) * Number(item.quantity);
+        li.textContent = (item.name || item.product_name || 'Sản phẩm') + ' × ' + (item.quantity ?? '') + ' · ' + vnd(amount);
+        lines.appendChild(li);
+      });
+      open.appendChild(lines);
+    }
     el.appendChild(open);
 
     const extra = document.createElement('div');
