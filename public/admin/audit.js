@@ -92,6 +92,10 @@
         class: 'who',
         text: `${when(row.at)} · ${row.actor} · ${row.entity_type} ${row.entity_id}`,
       }));
+      const sent = window.cardTime && row.after && window.cardTime.sentLabel(row.after);
+      if (sent) {
+        card.appendChild(el('p', { class: 'who', text: sent.text + ' · ' + sent.who }));
+      }
       if (row.before || row.after) {
         const pair = el('div', { class: 'pair' });
         if (row.before) {

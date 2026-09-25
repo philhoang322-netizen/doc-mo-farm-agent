@@ -753,6 +753,7 @@ async function processBody(body, deps) {
         ...base,
         text: ev.message.text,
         msgId: ev.message.mid || `fb_${psid}_${ev.timestamp || Date.now()}`,
+        receivedAt: ev.timestamp || null,
       }));
       continue;
     }
@@ -768,6 +769,7 @@ async function processBody(body, deps) {
         ...base,
         text,
         msgId: ev.postback.mid || `pb_${psid}_${ev.timestamp || Date.now()}`,
+        receivedAt: ev.timestamp || null,
       }));
       continue;
     }
@@ -779,6 +781,7 @@ async function processBody(body, deps) {
         ...base,
         kind,
         msgId: ev.message.mid || `att_${psid}_${ev.timestamp || Date.now()}`,
+        receivedAt: ev.timestamp || null,
       }));
       continue;
     }

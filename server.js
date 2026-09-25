@@ -687,6 +687,7 @@ app.post('/bot/webhook', async (req, res) => {
       replyTo: evt.chatId,
       text: evt.text,
       msgId: evt.messageId,
+      receivedAt: body.timestamp || null,
       senderName: evt.senderName,
       send: (to, text) => botService.sendMessage(to, text),
       sendPhoto: (to, url, caption) => botService.sendPhoto(to, url, caption),
@@ -711,6 +712,7 @@ app.post('/bot/webhook', async (req, res) => {
       externalKey: `bot_${chatId}`,
       replyTo: chatId,
       msgId: msg.message_id,
+      receivedAt: body.timestamp || null,
       senderName: msg.from?.display_name,
       send: (to, text) => botService.sendMessage(to, text),
       log: logEvent,
@@ -893,6 +895,7 @@ app.post('/webhook', async (req, res) => {
           replyTo: senderId,
           text: event.message?.text || '',
           msgId: event.message?.msg_id,
+          receivedAt: event.timestamp || null,
           senderName,
           send,
           log: logEvent,
@@ -910,7 +913,7 @@ app.post('/webhook', async (req, res) => {
       if (kind) {
         await pipeline.handleNonText({
           channel: 'oa', kind, externalKey: senderId, replyTo: senderId,
-          msgId: event.message?.msg_id, senderName, send, log: logEvent,
+          msgId: event.message?.msg_id, receivedAt: event.timestamp || null, senderName, send, log: logEvent,
         });
         continue;
       }

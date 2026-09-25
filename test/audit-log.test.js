@@ -23,6 +23,7 @@ const assert = require('node:assert/strict');
 const aiAgent = require('../services/aiAgent');
 const audit = require('../services/audit');
 const drafts = require('../services/drafts');
+const cardTime = require('../public/admin/card-time');
 const kiotviet = require('../services/kiotviet');
 const pipeline = require('../services/pipeline');
 const stockGate = require('../services/stockGate');
@@ -117,6 +118,16 @@ describe('audit log', { concurrency: 1 }, () => {
       assert.equal(sent.logs.length, 1);
       assert.equal(sent.logs[0].actor, 'manager:Minh');
       assert.equal(sent.logs[0].after.approval_status, 'SENT');
+      assert.equal(sent.logs[0].after.send_message_id, 'sent-1');
+      assert.equal(sent.logs[0].meta.send_message_id, 'sent-1');
+      assert.equal(result.draft.send_message_id, 'sent-1');
+      assert.equal(result.draft.sent_by, 'manager:Minh');
+      assert.equal(result.draft.sent_at, result.send.sent_at);
+      const shown = cardTime.sentLabel(result.draft);
+      assert.match(shown.text, /^Gửi: \d{2}:\d{2} \d{2}\/\d{2}\/\d{4}$/);
+      assert.equal(shown.who, 'Minh');
+      assert.equal(cardTime.sentLabel({ sent_at: result.draft.sent_at, sent_by: 'manager' }).who, 'Quản lý');
+      assert.equal(cardTime.sentLabel({ sent_at: result.draft.sent_at, sent_by: 'sale:lan' }).who, 'lan');
       assert.equal(JSON.stringify(sent.logs).includes(SECRET), false);
       assert.equal(JSON.stringify(approved.logs).includes(SECRET), false);
     } finally {

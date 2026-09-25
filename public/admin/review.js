@@ -382,14 +382,20 @@
     toastEl._t = setTimeout(() => { toastEl.hidden = true; }, action ? 8000 : 3200);
   }
 
-  function when(iso) {
-    if (!iso) return '';
-    const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-    if (Number.isNaN(diff)) return '';
-    if (diff < 60) return 'vừa xong';
-    if (diff < 3600) return Math.floor(diff / 60) + ' phút trước';
-    if (diff < 86400) return Math.floor(diff / 3600) + ' giờ trước';
-    return new Date(iso).toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
+  function receivedNode(d) {
+    const label = window.cardTime && window.cardTime.receivedLabel(d);
+    if (!label || !label.text) return null;
+    return el('span', {
+      class: 'msg-time' + (label.approx ? ' is-approx' : ''),
+      text: label.text,
+      title: label.title || '',
+    });
+  }
+
+  function sentNode(d) {
+    const label = window.cardTime && window.cardTime.sentLabel(d);
+    if (!label) return null;
+    return el('p', { class: 'msg-sent', text: label.text + ' · ' + label.who });
   }
 
   function formatDay(iso) {
@@ -781,7 +787,8 @@
       const nameBox = el('div', { class: 'msg-names' });
       channelNameNodes(d).forEach(node => nameBox.appendChild(node));
       top.appendChild(nameBox);
-      top.appendChild(el('span', { class: 'msg-time', text: when(d.created_at) }));
+      const received = receivedNode(d);
+      if (received) top.appendChild(received);
       btn.appendChild(top);
       btn.appendChild(el('div', { class: 'msg-kicker', text: 'Khách nhắn' }));
       btn.appendChild(el('div', { class: 'msg-customer', text: snippet(d) || '—' }));
@@ -816,6 +823,8 @@
       card.appendChild(replyLabel);
       card.appendChild(reply);
       card.appendChild(replyError);
+      const sent = sentNode(d);
+      if (sent) card.appendChild(sent);
 
       const actions = el('div', { class: 'card-actions' });
       if (openReply) {
@@ -930,6 +939,8 @@
     const nameBox = el('div', { class: 'msg-names' });
     channelNameNodes(d).forEach(node => nameBox.appendChild(node));
     nameRow.appendChild(nameBox);
+    const received = receivedNode(d);
+    if (received) nameRow.appendChild(received);
     const kiotShown = Array.isArray(d.channel_names) && d.channel_names.some(item => item && item.code);
     if (code && !kiotShown) {
       nameRow.appendChild(el('span', { class: 'cust-code', title: 'Mã khách hàng', text: code }));
@@ -991,6 +1002,8 @@
       if (err) err.hidden = true;
     });
     body.appendChild(el('div', { class: 'field-block' }, [reply]));
+    const sent = sentNode(d);
+    if (sent) body.appendChild(sent);
     body.appendChild(el('p', { id: 'reply-error', class: 'reply-error', hidden: true }));
     if (!locked) {
       const learn = el('label', { class: 'learn-toggle' });

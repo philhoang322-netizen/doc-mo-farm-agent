@@ -80,6 +80,7 @@ async function defaultIngest(item) {
     senderName: item.name || null,
     text: item.text,
     msgId: item.id,
+    receivedAt: item.created_time || null,
     send: async () => null,
     log: () => {},
   });

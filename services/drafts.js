@@ -22,6 +22,7 @@ const triage = require('./triage');
 const bizLine = require('./bizLine');
 const inboxStatus = require('./inboxStatus');
 const tombstones = require('./tombstones');
+const sourceTime = require('../public/admin/card-time');
 
 const STATUSES = ['PENDING_REVIEW', 'APPROVED', 'REJECTED', 'SENT'];
 const STATUS_SET = new Set(STATUSES);
@@ -114,6 +115,9 @@ function blankDraft(fields) {
     pii_note: fields.pii_note || null,
     reviewed_at: null,
     sent_at: null,
+    sent_by: null,
+    send_message_id: null,
+    source_received_at: sourceTime.parse(fields.source_received_at),
     send_error: null,
     send_via: null,
     send_hook: null,
@@ -199,6 +203,9 @@ function fromRow(row) {
     pii_note: row.pii_note || null,
     reviewed_at: toIso(row.reviewed_at),
     sent_at: toIso(row.sent_at),
+    sent_by: row.sent_by || null,
+    send_message_id: row.send_message_id || null,
+    source_received_at: toIso(row.source_received_at),
     send_error: row.send_error || null,
     send_via: row.send_via || null,
     send_hook: row.send_hook || null,
@@ -276,6 +283,9 @@ ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_status TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_prev_status TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_status_at TIMESTAMPTZ;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_status_auto BOOLEAN;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS source_received_at TIMESTAMPTZ;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS sent_by TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS send_message_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_outbound_drafts_triage
     ON outbound_drafts (triage_level, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_outbound_drafts_source_msg
@@ -305,6 +315,7 @@ async function ensureReady() {
     await trainingLog.ensureReady();
     await tombstones.ensureReady();
     await sweepSoftDeleted();
+    await backfillSourceTimes();
   })().catch((err) => {
     ready = null;
     throw err;
@@ -589,9 +600,10 @@ async function insertDraft(draft) {
        message_type, template_name, sales_channel, delivery_phase,
        customer_query, ai_draft_version, triage_level, triage_label, review_form,
        biz_line, biz_sticky, deleted_at, source_msg_id,
-       inbox_status, inbox_prev_status, inbox_status_at, inbox_status_auto
+       inbox_status, inbox_prev_status, inbox_status_at, inbox_status_auto,
+       source_received_at, sent_by, send_message_id
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42
      ) RETURNING *`,
     [
       draft.id, draft.created_at, draft.updated_at, draft.channel,
@@ -608,6 +620,7 @@ async function insertDraft(draft) {
       reviewFormJson(draft.review_form),
       draft.biz_line, draft.biz_sticky === true, draft.deleted_at, draft.source_msg_id,
       draft.inbox_status, draft.inbox_prev_status, draft.inbox_status_at, draft.inbox_status_auto === true,
+      draft.source_received_at, draft.sent_by, draft.send_message_id,
     ]
   );
   return fromRow(r.rows[0]);
@@ -631,7 +644,8 @@ async function saveDraft(draft) {
        customer_query=$26, ai_draft_version=$27,
        triage_level=$28, triage_label=$29, review_form=$30,
        biz_line=$31, biz_sticky=$32, deleted_at=$33, source_msg_id=$34,
-       inbox_status=$35, inbox_prev_status=$36, inbox_status_at=$37, inbox_status_auto=$38
+       inbox_status=$35, inbox_prev_status=$36, inbox_status_at=$37, inbox_status_auto=$38,
+       source_received_at=$39, sent_by=$40, send_message_id=$41
      WHERE id=$1
      RETURNING *`,
     [
@@ -647,9 +661,26 @@ async function saveDraft(draft) {
       reviewFormJson(draft.review_form),
       draft.biz_line, draft.biz_sticky === true, draft.deleted_at, draft.source_msg_id,
       draft.inbox_status, draft.inbox_prev_status, draft.inbox_status_at, draft.inbox_status_auto === true,
+      draft.source_received_at, draft.sent_by, draft.send_message_id,
     ]
   );
   return fromRow(r.rows[0]);
+}
+
+async function backfillSourceTimes() {
+  if (!db.DB_ENABLED) {
+    let changed = false;
+    for (const draft of memory.values()) {
+      if (draft.source_received_at) continue;
+      const got = sourceTime.fromSyntheticMsgId(draft.source_msg_id);
+      if (!got) continue;
+      draft.source_received_at = got;
+      changed = true;
+    }
+    if (changed) await persistFile();
+    return;
+  }
+  await db.pool.query(sourceTime.BACKFILL_SQL);
 }
 
 async function loadAllRaw() {
@@ -809,6 +840,7 @@ async function createDraft(body, ctx = {}) {
   fields.biz_line = biz.biz_line;
   fields.biz_sticky = biz.biz_sticky;
   fields.source_msg_id = cleanText('source_msg_id', body && body.source_msg_id);
+  fields.source_received_at = sourceTime.parse(body && body.source_received_at);
   if (fields.source_msg_id && await tombstones.isBlocked(fields.channel, fields.source_msg_id)) {
     const err = new DraftError(409, 'Tin đã xoá');
     err.code = 'deleted';
@@ -827,7 +859,7 @@ async function createDraft(body, ctx = {}) {
     entity_id: draft.id,
     before: null,
     after: audit.draftSnapshot(draft),
-    meta: audit.draftMeta(draft),
+    meta: { ...audit.draftMeta(draft), source_received_at: draft.source_received_at },
   });
   return draft;
 }
@@ -1233,12 +1265,21 @@ async function deliver(draft) {
           error: `Facebook chưa gửi được: ${detail}. Bản nháp giữ ở APPROVED. Hook: services/messenger.js sendText(psid, text).`,
         };
       }
+      const sentAt = new Date().toISOString();
       let qrError = null;
       if (draft.qr_image_url && !text.includes(draft.qr_image_url)) {
         const qr = await messenger.sendImage(psid, draft.qr_image_url);
         if (!qr || !qr.ok) qrError = 'Đã gửi nội dung, chưa gửi được ảnh QR.';
       }
-      return { ok: true, sent: true, via: 'messenger', hook, error: qrError };
+      return {
+        ok: true,
+        sent: true,
+        via: 'messenger',
+        hook,
+        error: qrError,
+        message_id: sourceTime.platformMessageId(result),
+        sent_at: sentAt,
+      };
     } catch (e) {
       return {
         ok: false,
@@ -1283,12 +1324,21 @@ async function deliver(draft) {
           error: 'Zalo Bot API không gửi được. Bản nháp giữ ở APPROVED. Hook: zaloBotService.sendMessage(chatId, text).',
         };
       }
+      const sentAt = new Date().toISOString();
       let qrError = null;
       if (draft.qr_image_url) {
         const photo = await botService.sendPhoto(chatId, draft.qr_image_url, 'Mã QR thanh toán');
         if (!photo) qrError = 'Đã gửi nội dung, chưa gửi được ảnh QR.';
       }
-      return { ok: true, sent: true, via: 'zalo_bot', hook: 'zaloBotService.sendMessage', error: qrError };
+      return {
+        ok: true,
+        sent: true,
+        via: 'zalo_bot',
+        hook: 'zaloBotService.sendMessage',
+        error: qrError,
+        message_id: sourceTime.platformMessageId(result),
+        sent_at: sentAt,
+      };
     }
 
     if (!zaloService.getTokens().accessToken) {
@@ -1314,12 +1364,21 @@ async function deliver(draft) {
         error: `Zalo OA chưa gửi được: ${detail}. Bản nháp giữ ở APPROVED. Hook: zaloService.sendTextMessage(userId, text).`,
       };
     }
+    const sentAt = new Date().toISOString();
     let qrError = null;
     if (draft.qr_image_url && !text.includes(draft.qr_image_url)) {
       const qr = await zaloService.sendTextMessage(uid, draft.qr_image_url);
       if (!qr) qrError = 'Đã gửi nội dung. Ảnh QR gửi kèm bằng link vì OA helper chỉ có tin chữ, và lần gửi link chưa thành công.';
     }
-    return { ok: true, sent: true, via: 'zalo_oa', hook: 'zaloService.sendTextMessage', error: qrError };
+    return {
+      ok: true,
+      sent: true,
+      via: 'zalo_oa',
+      hook: 'zaloService.sendTextMessage',
+      error: qrError,
+      message_id: sourceTime.platformMessageId(result),
+      sent_at: sentAt,
+    };
   } catch (e) {
     const hook = uid.startsWith('bot_') ? 'zaloBotService.sendMessage' : 'zaloService.sendTextMessage';
     return {
@@ -1362,6 +1421,12 @@ async function writeDraftAudit(existing, saved, { actor, wantSend, send, learn, 
   if (wantSend) {
     meta.learning = learn ? 'on' : 'off';
     if (exampleKind) meta.example_kind = exampleKind;
+    if (send && send.sent) {
+      meta.sent_at = saved.sent_at;
+      meta.sent_by = saved.sent_by;
+      meta.send_message_id = saved.send_message_id || null;
+      meta.source_received_at = saved.source_received_at || null;
+    }
   }
   if (contentChanged(existing, saved)) {
     await audit.record({
@@ -1395,6 +1460,9 @@ async function writeDraftAudit(existing, saved, { actor, wantSend, send, learn, 
         draft_reply: saved.draft_reply,
         send_via: saved.send_via,
         send_error: saved.send_error,
+        sent_at: saved.sent_at,
+        sent_by: saved.sent_by,
+        send_message_id: saved.send_message_id,
       },
       meta,
     });
@@ -1460,6 +1528,8 @@ async function updateDraft(id, body, ctx = {}) {
       next.approval_status = 'APPROVED';
       next.reviewed_at = new Date().toISOString();
       next.sent_at = null;
+      next.sent_by = null;
+      next.send_message_id = null;
       next.delivery_phase = 'sending';
       next.send_error = null;
       await saveDraft(next);
@@ -1482,10 +1552,14 @@ async function updateDraft(id, body, ctx = {}) {
         next.approval_status = 'APPROVED';
         next.send_via = null;
         next.sent_at = null;
+        next.sent_by = null;
+        next.send_message_id = null;
         next.send_error = null;
       } else if (send.sent) {
         next.approval_status = 'SENT';
-        next.sent_at = new Date().toISOString();
+        next.sent_at = send.sent_at || new Date().toISOString();
+        next.sent_by = String(actor || 'manager').slice(0, 120);
+        next.send_message_id = send.message_id || null;
         next.send_via = send.via;
         if (inboxStatus.inferFolder(next) !== 'bought') {
           next.inbox_status = 'sent';
@@ -1496,6 +1570,8 @@ async function updateDraft(id, body, ctx = {}) {
         next.approval_status = 'APPROVED';
         next.send_via = null;
         next.sent_at = null;
+        next.sent_by = null;
+        next.send_message_id = null;
       }
       next.send_hook = send.hook || null;
       if (!send.pendingAdapter) next.send_error = send.error || null;
@@ -1505,6 +1581,8 @@ async function updateDraft(id, body, ctx = {}) {
       if (input.approval_status === 'PENDING_REVIEW') {
         next.reviewed_at = null;
         next.sent_at = null;
+        next.sent_by = null;
+        next.send_message_id = null;
         next.send_error = null;
         next.send_via = null;
         next.send_hook = null;
@@ -1578,6 +1656,7 @@ module.exports = {
   opsStatus,
   GROUPS,
   createDraft,
+  backfillSourceTimes,
   listDrafts,
   getDraft,
   updateDraft,
