@@ -13,7 +13,10 @@ const zaloService = require('./zaloService');
 const kiotviet = require('./kiotviet');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** A failed lookup is not a saved name. Try Graph again after this, not after a day. */
+const MISS_MS = 15 * 60 * 1000;
 const FETCH_MS = 2500;
+const seenFbProfileError = new Set();
 
 const SCHEMA = `ALTER TABLE customers ADD COLUMN IF NOT EXISTS channel_names JSONB`;
 
@@ -57,10 +60,14 @@ function asNames(value) {
   for (const source of ['zalo', 'fb']) {
     const row = obj[source];
     if (!row || typeof row !== 'object') continue;
+    const name = row.name ? String(row.name).trim().slice(0, 120) : null;
+    const rawId = isRawChannelId(name);
     out[source] = {
-      name: row.name ? String(row.name).trim().slice(0, 120) : null,
+      name: rawId ? null : name,
       avatar: row.avatar ? String(row.avatar).slice(0, 500) : null,
       fetched_at: row.fetched_at || null,
+      missed: rawId || !name,
+      via: row.via === 'thread' ? 'thread' : 'profile',
     };
   }
   if (obj.kiot && typeof obj.kiot === 'object') {
@@ -84,11 +91,35 @@ function kiotShape(row) {
   };
 }
 
+function isRawChannelId(name) {
+  const text = String(name || '').trim();
+  return /^fb_\d{6,}$/.test(text);
+}
+
+function usableName(name, channelId) {
+  const text = clip(name, 120);
+  if (!text) return '';
+  if (channelId && text === String(channelId).trim()) return '';
+  if (isRawChannelId(text)) return '';
+  return text;
+}
+
 function fresh(entry, now) {
   if (!entry || !entry.fetched_at) return false;
   const at = Date.parse(entry.fetched_at);
   if (!Number.isFinite(at)) return false;
-  return (now || Date.now()) - at < DAY_MS;
+  const ttl = entry.name && !entry.missed ? DAY_MS : MISS_MS;
+  return (now || Date.now()) - at < ttl;
+}
+
+function logFbProfileOnce(psid, err) {
+  const id = String(psid || '').trim();
+  if (!id || seenFbProfileError.has(id)) return;
+  seenFbProfileError.add(id);
+  if (seenFbProfileError.size > 500) {
+    seenFbProfileError.delete(seenFbProfileError.values().next().value);
+  }
+  console.error('FB profile skipped:', { psid: id, code: graphCode(err) });
 }
 
 function readJson() {
@@ -133,17 +164,22 @@ async function ensureColumn() {
 async function loadRecord(externalId) {
   const key = String(externalId || '').trim();
   const file = asNames(readJson()[key]);
-  if (!key || !db.DB_ENABLED) return { id: null, names: file, phone: null };
+  if (!key || !db.DB_ENABLED)     return { id: null, names: file, phone: null, displayName: null };
   try {
     await ensureColumn();
     const customer = await db.getCustomerByExternalId(key);
-    if (!customer) return { id: null, names: file, phone: null };
+    if (!customer) return { id: null, names: file, phone: null, displayName: null };
     const stored = asNames(customer.channel_names);
     const names = Object.keys(stored).length ? stored : file;
-    return { id: customer.id, names, phone: db.normalizePhone(customer.phone) };
+    return {
+      id: customer.id,
+      names,
+      phone: db.normalizePhone(customer.phone),
+      displayName: customer.display_name || null,
+    };
   } catch (err) {
     console.error('Channel name read skipped:', err.message);
-    return { id: null, names: file, phone: null };
+    return { id: null, names: file, phone: null, displayName: null };
   }
 }
 
@@ -195,12 +231,70 @@ async function fetchFb(userId) {
       timeout: FETCH_MS,
     });
     const data = res && res.data;
-    if (!data || data.error) return null;
+    if (!data || data.error) {
+      logFbProfileOnce(psid, { response: { status: res && res.status, data } });
+      return null;
+    }
     const name = fbName(data);
     if (!name) return null;
-    return { name, avatar: httpsUrl(data.profile_pic) };
+    return { name, avatar: httpsUrl(data.profile_pic), via: 'profile' };
   } catch (err) {
-    console.error('FB profile skipped:', graphCode(err));
+    logFbProfileOnce(psid, err);
+    return null;
+  }
+}
+
+function threadName(payload, pageId, psid) {
+  const convos = payload && Array.isArray(payload.data) ? payload.data : [];
+  const people = [];
+  const froms = [];
+  for (const conv of convos) {
+    const participants = conv && conv.participants && conv.participants.data;
+    if (Array.isArray(participants)) people.push(...participants);
+    const messages = conv && conv.messages && conv.messages.data;
+    if (Array.isArray(messages)) {
+      for (const msg of messages) {
+        if (msg && msg.from) froms.push(msg.from);
+      }
+    }
+  }
+  const named = (person) => {
+    if (!person) return '';
+    const id = String(person.id || '');
+    if (pageId && id === String(pageId)) return '';
+    const name = usableName(person.name, `fb_${psid}`);
+    if (!name || name === String(psid)) return '';
+    return name;
+  };
+  const match = people.find(person => String(person && person.id || '') === String(psid));
+  const fromMatch = named(match) || named(froms.find(person => String(person && person.id || '') === String(psid)));
+  if (fromMatch) return fromMatch;
+  for (const person of people.concat(froms)) {
+    const name = named(person);
+    if (name) return name;
+  }
+  return '';
+}
+
+async function fetchFbThread(userId) {
+  const token = messenger.pageToken();
+  const page = messenger.pageId();
+  const psid = messenger.psidFromUserId(userId);
+  if (!token || !page || !psid || psid.length > 80) return null;
+  const url = `https://graph.facebook.com/v21.0/${encodeURIComponent(page)}/conversations`;
+  if (url.includes(token)) return null;
+  try {
+    const res = await messenger.graphHttp.get(url, {
+      params: { user_id: psid, fields: 'participants,messages.limit(5){from}' },
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: FETCH_MS,
+    });
+    const data = res && res.data;
+    if (!data || data.error) return null;
+    const name = threadName(data, page, psid);
+    return name ? { name, avatar: null, via: 'thread' } : null;
+  } catch (err) {
+    console.error('FB conversation name skipped:', graphCode(err));
     return null;
   }
 }
@@ -266,6 +360,7 @@ function present(names, ownSource) {
       name: names.zalo.name,
       avatar: httpsUrl(names.zalo.avatar),
       own: ownSource === 'zalo',
+      via: names.zalo.via === 'thread' ? 'thread' : 'profile',
     });
   }
   if (names.fb && names.fb.name) {
@@ -275,6 +370,7 @@ function present(names, ownSource) {
       name: names.fb.name,
       avatar: httpsUrl(names.fb.avatar),
       own: ownSource === 'fb',
+      via: names.fb.via === 'thread' ? 'thread' : 'profile',
     });
   }
   return out;
@@ -284,12 +380,24 @@ function channelList(list) {
   return (Array.isArray(list) ? list : []).filter(item => item && (item.source === 'zalo' || item.source === 'fb') && item.name);
 }
 
+function pushChannel(lines, item) {
+  lines.push({
+    source: item.source,
+    label: item.label,
+    name: item.name,
+    avatar: item.avatar || null,
+    own: !!item.own,
+    text: `${item.label}: ${item.name}`,
+  });
+}
+
 /**
- * Card header lines. KiotViet name and Mã KH come first when a phone
- * matches. Then the channel name. A card with neither still shows the
- * phone, then the channel id.
+ * Card header lines, in order: Tên Kiot and Mã KH, a Graph or OA profile
+ * name, the name already stored on the draft, a Page-conversation name,
+ * then the phone, then the channel id. The raw id is the header only when
+ * no name exists anywhere.
  */
-function headerLines({ kiot, channels, phone, channelId } = {}) {
+function headerLines({ kiot, channels, phone, channelId, storedName, storedSource } = {}) {
   const lines = [];
   const kiotName = clip(kiot && kiot.name, 120);
   const code = clip(kiot && kiot.code, 40);
@@ -306,15 +414,28 @@ function headerLines({ kiot, channels, phone, channelId } = {}) {
       text: parts.join(' · '),
     });
   }
-  for (const item of channelList(channels)) {
+  const listed = channelList(channels);
+  for (const item of listed) {
+    if (item.via === 'thread') continue;
+    pushChannel(lines, item);
+  }
+  const stored = usableName(storedName, channelId);
+  const source = storedSource === 'zalo' ? 'zalo' : (storedSource === 'fb' ? 'fb' : '');
+  if (stored && source && !lines.some(line => line.source === source && line.name)) {
+    const label = source === 'fb' ? 'Tên FB' : 'Tên Zalo';
     lines.push({
-      source: item.source,
-      label: item.label,
-      name: item.name,
-      avatar: item.avatar || null,
-      own: !!item.own,
-      text: `${item.label}: ${item.name}`,
+      source,
+      label,
+      name: stored,
+      own: true,
+      stored: true,
+      text: `${label}: ${stored}`,
     });
+  }
+  for (const item of listed) {
+    if (item.via !== 'thread') continue;
+    if (lines.some(line => line.source === item.source && line.name)) continue;
+    pushChannel(lines, item);
   }
   if (!lines.some(line => line.name)) {
     const fallbackPhone = db.normalizePhone(phone) || clip(phone, 20);
@@ -383,13 +504,40 @@ async function forDraft(draft, now) {
     const source = sourceOf(draft);
     const record = id ? await loadRecord(id) : { id: null, names: {}, phone: null };
     if (id && source && !fresh(record.names[source], now)) {
-      const got = await withTimeout(fetchSource(source, id));
+      let got = await withTimeout(fetchSource(source, id));
+      const storedAlready = usableName(draft.customer_name, id);
+      if (source === 'fb' && !(got && usableName(got.name, id)) && !storedAlready) {
+        const thread = await withTimeout(fetchFbThread(id));
+        if (thread && thread.name) got = thread;
+      }
       const previous = record.names[source] || {};
-      record.names[source] = {
-        name: (got && got.name) || previous.name || null,
-        avatar: (got && got.avatar) || previous.avatar || null,
-        fetched_at: new Date(now || Date.now()).toISOString(),
-      };
+      const at = new Date(now || Date.now()).toISOString();
+      const resolved = got && usableName(got.name, id);
+      const kept = usableName(previous.name, id);
+      if (resolved) {
+        record.names[source] = {
+          name: resolved,
+          avatar: (got && got.avatar) || previous.avatar || null,
+          fetched_at: at,
+          missed: false,
+          via: got && got.via === 'thread' ? 'thread' : 'profile',
+        };
+      } else if (kept) {
+        record.names[source] = {
+          name: kept,
+          avatar: previous.avatar || null,
+          fetched_at: at,
+          missed: false,
+          via: previous.via === 'thread' ? 'thread' : 'profile',
+        };
+      } else {
+        record.names[source] = {
+          name: null,
+          avatar: null,
+          fetched_at: at,
+          missed: true,
+        };
+      }
       await saveRecord(id, record);
     }
     const phone = db.normalizePhone(draft.customer_phone) || record.phone || null;
@@ -414,17 +562,23 @@ async function forDraft(draft, now) {
         phone: (kiot && kiot.phone) || phone || null,
       };
     }
+    const storedName = usableName(draft.customer_name, id)
+      || usableName(record.displayName, id);
     return headerLines({
       kiot,
       channels: present(record.names, source),
       phone,
       channelId: id,
+      storedName,
+      storedSource: source,
     });
   } catch (err) {
     console.error('Channel name skipped:', err.message);
     return headerLines({
       phone: draft && draft.customer_phone,
       channelId: draft && draft.customer_user_id,
+      storedName: draft && draft.customer_name,
+      storedSource: sourceOf(draft),
     });
   }
 }
@@ -443,6 +597,8 @@ async function previewPhone(draft, phone, now) {
       channels,
       phone: key || '',
       channelId: draft && draft.customer_user_id,
+      storedName: draft && draft.customer_name,
+      storedSource: sourceOf(draft),
     }),
   };
 }
