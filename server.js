@@ -30,10 +30,17 @@ const PORT = process.env.PORT || 3000;
 
 // Meta signs the raw POST bytes. Capture them before express.json, which
 // skips any content type that is not JSON and would leave rawBody empty.
+// express.raw runs only on this route, consumes the stream, and tags the
+// buffer as capture_raw. The global JSON parser then sees a finished
+// request and does not read or decode it. Its verify hook fills rawBody
+// only when capture did not (tests, or a parser skip) and tags verify_hook.
 app.use('/messenger/webhook', messenger.captureRawBody);
 app.use(express.json({
   verify: (req, _res, buf) => {
-    if (!Buffer.isBuffer(req.rawBody)) req.rawBody = buf;
+    if (!Buffer.isBuffer(req.rawBody)) {
+      req.rawBody = buf;
+      req.messengerRawSource = 'verify_hook';
+    }
   },
 }));
 app.use(express.urlencoded({ extended: false })); // admin form posts

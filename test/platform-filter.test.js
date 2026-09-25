@@ -7,7 +7,8 @@ const os = require('os');
 const fs = require('fs');
 
 process.env.DATABASE_URL = '';
-process.env.DRAFTS_JSON_PATH = path.join(os.tmpdir(), `platform-filter-${process.pid}.json`);
+const draftDir = fs.mkdtempSync(path.join(os.tmpdir(), 'platform-filter-'));
+process.env.DRAFTS_JSON_PATH = path.join(draftDir, 'drafts.json');
 process.env.NODE_ENV = 'test';
 
 const { test } = require('node:test');
