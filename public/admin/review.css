@@ -1224,6 +1224,38 @@ body.hitl .want-box {
 }
 body.hitl .want-box span { display: block; font-size: 13px; font-weight: 700; margin-bottom: 4px; }
 body.hitl .want-box .msg-customer { margin: 0; }
+body.hitl .thread-context {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 var(--space-3);
+}
+body.hitl .thread-list { display: flex; flex-direction: column; gap: 6px; }
+body.hitl .thread-row { display: flex; }
+body.hitl .thread-row.out { justify-content: flex-end; }
+body.hitl .thread-bubble {
+  max-width: 85%;
+  border-radius: 14px;
+  padding: 8px 10px;
+  font-size: 14px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+body.hitl .thread-row.in .thread-bubble { background: #ece7e0; color: var(--ink); }
+body.hitl .thread-row.out .thread-bubble { background: var(--green-soft); color: var(--ink); }
+body.hitl .thread-meta { font-size: 12px; font-weight: 650; color: var(--muted); margin-bottom: 2px; }
+body.hitl .thread-more {
+  align-self: flex-start;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--green-deep);
+  min-height: var(--tap);
+  min-width: var(--tap);
+  padding: 0 4px;
+  font-weight: 650;
+  font-size: 15px;
+}
 body.hitl .grid2,
 body.hitl .refund-grid { display: grid; grid-template-columns: 1fr; gap: var(--space-3); margin-bottom: var(--space-4); }
 body.hitl .field-block label { display: block; font-size: 13px; font-weight: 700; color: var(--ink-soft); margin-bottom: 4px; }

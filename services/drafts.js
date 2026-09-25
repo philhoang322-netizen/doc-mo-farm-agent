@@ -1044,7 +1044,34 @@ async function moveBizLine(id, line, ctx = {}) {
     after: { biz_line: line, biz_sticky: true },
     meta: { ...audit.draftMeta(saved), from: existing.biz_line || null, to: line },
   });
+  try {
+    await require('./threadLabels').setManual(saved.channel, saved.customer_user_id, line);
+  } catch (err) {
+    console.error('thread label skipped:', err.message);
+  }
   return decorate(saved);
+}
+
+async function applyThreadLabel(channel, userId, row) {
+  await ensureReady();
+  if (!userId || !row) return 0;
+  if (row.label !== 'sale' && row.label !== 'dv') return 0;
+  const all = await loadAllRaw();
+  let updated = 0;
+  for (const d of all) {
+    if (!d || d.deleted_at) continue;
+    if (d.channel !== channel || d.customer_user_id !== userId) continue;
+    if (d.approval_status !== 'PENDING_REVIEW') continue;
+    if (d.biz_sticky && row.source !== 'manual') continue;
+    const sticky = row.source === 'manual';
+    if (d.biz_line === row.label && d.biz_sticky === sticky) continue;
+    d.biz_line = row.label;
+    d.biz_sticky = sticky;
+    d.updated_at = new Date().toISOString();
+    await saveDraft(d);
+    updated += 1;
+  }
+  return updated;
 }
 
 async function softDelete(id, ctx = {}) {
@@ -1655,6 +1682,7 @@ module.exports = {
   conversationLine,
   findBySourceMsg,
   moveBizLine,
+  applyThreadLabel,
   softDelete,
   restoreDraft,
   setInboxStatus,

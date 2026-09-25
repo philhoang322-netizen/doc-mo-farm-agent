@@ -181,6 +181,21 @@ async function sendTextMessage(recipientId, message) {
       recipient: { user_id: recipientId },
       message: { text: chunk },
     });
+    if (last && last.error === 0) {
+      const mid = last.message_id
+        || (last.data && last.data.message_id)
+        || '';
+      try {
+        await require('./conversationStore').recordOutbound({
+          channel: 'zalo',
+          thread_id: String(recipientId),
+          text: chunk,
+          source_msg_id: mid ? String(mid) : null,
+        });
+      } catch (err) {
+        console.error('conversation record skipped:', err.message);
+      }
+    }
   }
   return last;
 }

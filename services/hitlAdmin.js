@@ -261,6 +261,21 @@ async function withProfiles(payload) {
   return payload;
 }
 
+async function attachThreadContext(payload) {
+  const rows = payload && payload.drafts;
+  if (!Array.isArray(rows)) return payload;
+  const threadLabels = require('./threadLabels');
+  await Promise.all(rows.map(async (draft) => {
+    try {
+      draft.thread_context = await threadLabels.contextForDraft(draft);
+    } catch (err) {
+      console.error('thread context skipped:', err.message);
+      draft.thread_context = [];
+    }
+  }));
+  return payload;
+}
+
 async function attachChannelNames(payload) {
   const rows = payload && payload.drafts;
   if (!Array.isArray(rows)) return payload;
@@ -301,7 +316,7 @@ async function list(req, res) {
       hop: typeof q.hop === 'string' && q.hop ? q.hop : null,
       viewer,
     });
-    res.json(await withProfiles(await attachChannelNames(payload)));
+    res.json(await attachThreadContext(await withProfiles(await attachChannelNames(payload))));
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : 'Không tải được danh sách' });
   }
@@ -419,6 +434,56 @@ async function setFolder(req, res) {
   } catch (e) {
     const status = e.status || 500;
     res.status(status).json({ error: e.status ? e.message : 'Không chuyển được thư mục' });
+  }
+}
+
+async function fbBackfillStart(req, res) {
+  try {
+    if (!access.canManageUsers(await who(req))) return deny(res);
+    const fbBackfill = require('./fbBackfill');
+    const result = await fbBackfill.start({ months: req.query && req.query.months });
+    res.status(result.already_running ? 200 : 202).json({
+      ok: true,
+      started: result.started !== false,
+      already_running: !!result.already_running,
+    });
+  } catch (e) {
+    console.error('FB backfill failed to start:', e.message);
+    res.status(500).json({ error: 'Không bắt đầu được lần kéo lịch sử' });
+  }
+}
+
+async function fbBackfillStatus(req, res) {
+  try {
+    if (!access.canManageUsers(await who(req))) return deny(res);
+    const fbBackfill = require('./fbBackfill');
+    res.json(await fbBackfill.publicStatus());
+  } catch (e) {
+    console.error('FB backfill status failed:', e.message);
+    res.status(500).json({ error: 'Không đọc được trạng thái kéo lịch sử' });
+  }
+}
+
+async function fbRelabel(req, res) {
+  try {
+    if (!access.canManageUsers(await who(req))) return deny(res);
+    const threadLabels = require('./threadLabels');
+    const result = await threadLabels.relabel();
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('FB relabel failed:', e.message);
+    res.status(500).json({ error: 'Không gán lại được nhãn' });
+  }
+}
+
+async function fbLabelStats(req, res) {
+  try {
+    if (!access.canManageUsers(await who(req))) return deny(res);
+    const threadLabels = require('./threadLabels');
+    res.json(await threadLabels.stats());
+  } catch (e) {
+    console.error('FB label stats failed:', e.message);
+    res.status(500).json({ error: 'Không đọc được thống kê nhãn' });
   }
 }
 
@@ -1019,6 +1084,7 @@ function mount(app) {
   app.get('/admin/inbox-refresh.js', requirePageAsset, sendAsset('inbox-refresh.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/inbox-order.js', requirePageAsset, sendAsset('inbox-order.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/kiot-picker.js', requirePageAsset, sendAsset('kiot-picker.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/thread-context.js', requirePageAsset, sendAsset('thread-context.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/review.js', requirePageAsset, sendAsset('review.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/audit.js', requirePageAsset, sendAsset('audit.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/invoices.css', requirePageAsset, sendAsset('invoices.css', 'text/css; charset=utf-8'));
@@ -1059,6 +1125,10 @@ function mount(app) {
   app.post('/admin/api/drafts/:id/delete', requireApi, removeDraft);
   app.post('/admin/api/drafts/:id/restore', requireApi, restoreOne);
   app.post('/admin/api/inbox/sync', requireApi, syncInbox);
+  app.post('/admin/api/fb/backfill', requireApi, fbBackfillStart);
+  app.get('/admin/api/fb/backfill/status', requireApi, fbBackfillStatus);
+  app.post('/admin/api/fb/relabel', requireApi, fbRelabel);
+  app.get('/admin/api/fb/labels/stats', requireApi, fbLabelStats);
   app.post('/admin/api/drafts/:id/folder', requireApi, setFolder);
   app.get('/admin/api/kiotviet/products', requireApi, kiotSearch);
   app.get('/admin/api/kiotviet/customer', requireApi, kiotCustomer);

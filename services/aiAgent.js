@@ -791,13 +791,27 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
   // Only the agent's own long replies get trimmed; the customer's words never do.
   const HISTORY_TURNS = Number(process.env.HISTORY_TURNS || 16);
   const MAX_TURN_CHARS = 1200;
+  let threadTurns = [];
+  try {
+    threadTurns = await require('./conversationStore').promptTurns(zaloUserId, 10);
+  } catch (err) {
+    console.error('thread context skipped:', err.message);
+  }
   const history = await db.getConversationHistory(zaloUserId, HISTORY_TURNS);
-  const messages = history.map(h => ({
-    role: h.role,
-    content: (h.role === 'assistant' && h.content.length > MAX_TURN_CHARS)
-      ? h.content.slice(0, MAX_TURN_CHARS) + ' […]'
-      : h.content,
-  }));
+  // Prefer the stored thread when it is at least as complete as the messages
+  // table (backfill and page echoes live there). Otherwise keep the existing
+  // history so a brand-new row does not hide older turns.
+  const source = threadTurns.length && threadTurns.length >= history.length ? threadTurns : history;
+  const messages = source.map(h => ({
+    role: h.role === 'assistant' ? 'assistant' : 'user',
+    content: (h.role === 'assistant' && String(h.content || '').length > MAX_TURN_CHARS)
+      ? String(h.content).slice(0, MAX_TURN_CHARS) + ' […]'
+      : String(h.content || ''),
+  })).filter(h => h.content);
+  if (messages.length && messages[messages.length - 1].role === 'user') {
+    const last = String(messages[messages.length - 1].content || '').trim();
+    if (last === String(userMessage || '').trim()) messages.pop();
+  }
   const routed = stations.filterAndRoute(userMessage);
   messages.push({
     role: 'user',
