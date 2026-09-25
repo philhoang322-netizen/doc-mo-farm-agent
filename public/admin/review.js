@@ -1265,8 +1265,15 @@
         }));
       }
       card.appendChild(actions);
-      if (!d.deleted_at) card.appendChild(deleteButtons(d));
+      if (!d.deleted_at) card.appendChild(cardChips(d));
       return card;
+  }
+
+  function cardChips(d) {
+    const row = el('div', { class: 'card-chips' });
+    fillActionChips(row, d);
+    if (!row.childNodes.length) row.hidden = true;
+    return row;
   }
 
   function receivedStamp(d) {
@@ -1359,21 +1366,14 @@
     });
     toggle.textContent = '⋯';
     const panel = el('div', { class: 'more-panel', role: 'menu', hidden: 'hidden' });
-    function addItem(node) {
+    rareMenuItems(d, locked).forEach(node => {
       if (!node || node.disabled) return;
       node.setAttribute('role', 'menuitem');
       panel.appendChild(node);
-    }
-    if (!locked) addItem(actionButton('Lưu', 'ghost', () => save()));
-    if (!d.deleted_at) {
-      lineActions(d, 'detail-actions').querySelectorAll('button').forEach(addItem);
-      statusActions(d).querySelectorAll('button').forEach(addItem);
-    }
-    if (!locked && d.approval_status !== 'REJECTED') {
-      addItem(actionButton('Từ chối bản nháp', 'ghost', () => reject()));
-    }
-    if (!locked && d.approval_status !== 'PENDING_REVIEW') {
-      addItem(actionButton('Đưa về chờ xử lý', 'ghost', () => reopen()));
+    });
+    if (!panel.childNodes.length) {
+      wrap.hidden = true;
+      return wrap;
     }
     toggle.addEventListener('click', (ev) => {
       ev.preventDefault();
@@ -1427,6 +1427,10 @@
     const side = el('div', { class: 'detail-side' });
     const s = ensureCard(d);
     body.appendChild(meta);
+    const quick = el('div', { class: 'detail-quick' });
+    quick.classList.add('card-chips');
+    fillActionChips(quick, d);
+    if (quick.childNodes.length) body.appendChild(quick);
     side.appendChild(customerPanel(d));
     const want = el('div', { class: 'want-box' });
     want.appendChild(el('span', { text: 'Khách đang muốn' }));
@@ -1434,24 +1438,6 @@
     wantText.appendChild(richFragment(snippet(d) || '—'));
     want.appendChild(wantText);
     main.appendChild(want);
-    if (!d.deleted_at || !locked) {
-      const quick = el('div', { class: 'detail-quick' });
-      if (!d.deleted_at) {
-        quick.appendChild(lineActions(d, 'detail-actions'));
-        quick.appendChild(statusActions(d));
-      }
-      const draftActs = [];
-      if (!locked) draftActs.push(actionButton('Lưu', 'ghost', () => save()));
-      if (!locked && d.approval_status !== 'REJECTED') {
-        draftActs.push(actionButton('Từ chối bản nháp', 'ghost', () => reject()));
-      }
-      if (!locked && d.approval_status !== 'PENDING_REVIEW') {
-        draftActs.push(actionButton('Đưa về chờ xử lý', 'ghost', () => reopen()));
-      }
-      if (draftActs.length && quick.childNodes.length) quick.appendChild(el('span', { class: 'quick-sep', 'aria-hidden': 'true' }));
-      draftActs.forEach(btn => quick.appendChild(btn));
-      if (quick.childNodes.length) main.appendChild(quick);
-    }
 
     if (needsHumanTicket(d) && !refund) {
       main.appendChild(el('p', {
@@ -1556,7 +1542,6 @@
 
     const actions = el('div', { class: 'sticky-actions' });
     actions.appendChild(moreMenu(d, locked));
-    if (!d.deleted_at) actions.appendChild(deleteButtons(d));
     if (!locked && me.canSend) {
       const sendBtn = actionButton('Duyệt & Gửi', refund ? 'send refund-mode' : 'send', () => send());
       sendBtn.id = 'btn-approve';
@@ -1573,6 +1558,51 @@
     }
     syncBarHeight();
     requestAnimationFrame(syncBarHeight);
+  }
+
+  function fillActionChips(row, d) {
+    const locked = d.approval_status === 'SENT';
+    if (d.deleted_at) return;
+    if (!locked) row.appendChild(chipButton('Lưu', () => saveDraft(d)));
+    lineActions(d, 'detail-actions').querySelectorAll('button').forEach(btn => {
+      btn.classList.add('card-chip');
+      row.appendChild(btn);
+    });
+    statusActions(d).querySelectorAll('button').forEach(btn => {
+      if (btn.disabled || btn.textContent === 'Trả về Chờ xử lý') return;
+      btn.classList.add('card-chip');
+      row.appendChild(btn);
+    });
+    if (!locked && d.approval_status !== 'REJECTED') {
+      const rejectBtn = chipButton('Từ chối bản nháp', () => rejectDraft(d));
+      rejectBtn.classList.add('chip-danger');
+      row.appendChild(rejectBtn);
+    }
+    if (me.canDelete) {
+      row.appendChild(deleteAction(d, 'item', 'Xóa tin này'));
+      row.appendChild(deleteAction(d, 'thread', 'Xóa cả cuộc chat'));
+    }
+  }
+
+  function chipButton(label, onClick) {
+    const btn = el('button', { type: 'button', class: 'card-chip', text: label });
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      onClick();
+    });
+    return btn;
+  }
+
+  function rareMenuItems(d, locked) {
+    const items = [];
+    if (!d.deleted_at && d.inbox_status !== 'pending') {
+      items.push(folderBtn(d, 'pending', 'Trả về Chờ xử lý'));
+    }
+    if (!locked && d.approval_status !== 'PENDING_REVIEW') {
+      items.push(actionButton('Đưa về chờ xử lý', 'ghost', () => reopen()));
+    }
+    return items;
   }
 
   function blockField(name, label, value, opts) {
@@ -1825,6 +1855,59 @@
 
   function save() { return patch(payload(), 'Đã lưu.'); }
   function reject() { return patch(payload({ approval_status: 'REJECTED' }), 'Đã từ chối.'); }
+
+  async function saveDraft(d) {
+    if (!d) return;
+    if (d.id === selectedId && detailEl.querySelector('#draft-reply')) return save();
+    const s = ensureCard(d);
+    if (busy) return;
+    busy = true;
+    try {
+      await api('/admin/api/drafts/' + d.id, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          draft_reply: s.reply || '',
+          actor_name: actorName(),
+          learn: s.learnTouched ? s.learn !== false : true,
+        }),
+      });
+      s.dirty = false;
+      toast('Đã lưu.');
+      listStamp = '';
+      await load();
+    } catch (e) {
+      if (e.message !== 'unauthorized') toast(e.message);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function rejectDraft(d) {
+    if (!d) return;
+    if (d.id === selectedId && detailEl.querySelector('#draft-reply')) return reject();
+    const s = ensureCard(d);
+    if (busy) return;
+    busy = true;
+    try {
+      await api('/admin/api/drafts/' + d.id, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          draft_reply: s.reply || d.draft_reply || '',
+          approval_status: 'REJECTED',
+          actor_name: actorName(),
+          learn: s.learnTouched ? s.learn !== false : true,
+        }),
+      });
+      s.dirty = false;
+      toast('Đã từ chối.');
+      listStamp = '';
+      await load();
+    } catch (e) {
+      if (e.message !== 'unauthorized') toast(e.message);
+    } finally {
+      busy = false;
+    }
+  }
   function reopen() {
     return patch({ approval_status: 'PENDING_REVIEW', actor_name: actorName() }, 'Đã đưa về chờ duyệt.');
   }
@@ -2896,19 +2979,8 @@
     return row;
   }
 
-  function deleteButtons(d) {
-    const row = el('div', { class: 'card-delete' });
-    if (!me.canDelete) {
-      row.hidden = true;
-      return row;
-    }
-    row.appendChild(deleteAction(d, 'item', 'Xóa tin này'));
-    row.appendChild(deleteAction(d, 'thread', 'Xóa cả cuộc chat'));
-    return row;
-  }
-
   function deleteAction(d, scope, label) {
-    const btn = el('button', { type: 'button', class: 'card-act card-del', text: 'Xóa' });
+    const btn = el('button', { type: 'button', class: 'card-act card-del card-chip chip-danger', text: 'Xóa' });
     btn.textContent = label || (scope === 'thread' ? 'Xóa cả cuộc chat' : 'Xóa tin này');
     btn.addEventListener('click', (ev) => {
       ev.preventDefault();

@@ -877,7 +877,7 @@ body.inbox .msg-card .msg {
   gap: 2px;
   justify-content: center;
   min-height: 64px;
-  padding: 8px 12px 7px;
+  padding: 8px 12px 2px;
 }
 body.inbox .msg-card .msg-names {
   flex-direction: column;
@@ -1190,6 +1190,51 @@ body.inbox .detail-quick button.btn {
   font-weight: 650;
 }
 body.inbox .detail-quick button.btn { color: var(--green-deep); }
+body.inbox .card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+body.inbox .msg-card .card-chips { padding: 2px 12px 6px; }
+body.inbox .detail-quick.card-chips { margin: 2px 0 6px; }
+body.inbox .msg-card .card-chips > button,
+body.inbox .detail-quick.card-chips > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  text-align: left;
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  width: auto;
+  max-width: none;
+  min-width: max-content;
+  height: 44px;
+  min-height: 44px;
+  max-height: 44px;
+  padding: 0 7px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+body.inbox .msg-card .card-chips > button.chip-danger,
+body.inbox .detail-quick.card-chips > button.chip-danger {
+  color: var(--red);
+  border-color: #e7c4c0;
+  background: #fff;
+}
 
 body.hitl .cust-fold,
 body.hitl .kiot-fold {
@@ -1393,9 +1438,15 @@ body.inbox .more-panel {
 }
 body.inbox .more-panel .btn,
 body.inbox .more-panel .card-act {
+  display: flex;
+  align-items: center;
   width: 100%;
   min-width: 0;
+  height: 44px;
+  min-height: 44px;
+  padding: 0 12px;
   justify-content: flex-start;
+  text-align: left;
   background: transparent;
   color: var(--ink);
   border-radius: var(--radius-sm);
