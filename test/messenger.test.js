@@ -21,6 +21,7 @@ delete process.env.FB_APP_SECRET_ALT;
 delete process.env.FB_CLIENT_TOKEN;
 delete process.env.MESSENGER_SKIP_VERIFY;
 delete process.env.MESSENGER_SIG_CAPTURE;
+delete process.env.MESSENGER_VERIFY_MODE;
 
 const { describe, test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -103,6 +104,7 @@ function clearSignatureDiagEnv() {
   delete process.env.FB_CLIENT_TOKEN;
   delete process.env.MESSENGER_SKIP_VERIFY;
   delete process.env.MESSENGER_SIG_CAPTURE;
+  delete process.env.MESSENGER_VERIFY_MODE;
 }
 
 function assertLogsOmit(errors, parts) {
@@ -1023,6 +1025,266 @@ describe('Messenger channel', { concurrency: 1 }, () => {
       assert.match(updated.draft.send_error, /outside the window/);
     } finally {
       messenger.graphHttp.post = original;
+    }
+  });
+
+  test('hmac_or_graph keeps a message Graph confirms and does not auto-send', async () => {
+    clearSignatureDiagEnv();
+    process.env.MESSENGER_VERIFY_MODE = 'hmac_or_graph';
+    mockAi();
+    const psid = `gv_${Date.now()}`;
+    const mid = `m_graphverify_${psid}`;
+    const text = 'Dau goi gia bao nhieu?';
+    const gets = [];
+    const sends = [];
+    const originalGet = messenger.graphHttp.get;
+    const originalPost = messenger.graphHttp.post;
+    messenger.graphHttp.get = async (url, config) => {
+      gets.push({ url, auth: config.headers.Authorization });
+      return {
+        status: 200,
+        data: {
+          id: mid,
+          message: text,
+          from: { id: psid },
+          to: { data: [{ id: PAGE }] },
+          created_time: '2026-09-25T00:00:00+0000',
+        },
+      };
+    };
+    messenger.graphHttp.post = async () => {
+      sends.push(1);
+      return { status: 200, data: { message_id: 'should-not-send' } };
+    };
+    const errors = [];
+    const originalError = console.error;
+    console.error = (...args) => { errors.push(args); };
+    try {
+      const raw = JSON.stringify(pageEvent(psid, { mid, text }));
+      const res = await postSigned(raw, `sha256=${'0123456789abcdef'.repeat(4)}`);
+      assert.equal(res.status, 200);
+      assert.equal(sends.length, 0);
+      assert.equal(gets.length, 1);
+      assert.equal(gets[0].url, messenger.messageLookupUrl(mid));
+      assert.equal(gets[0].url.includes('access_token'), false);
+      assert.equal(gets[0].url.includes('page-token-test'), false);
+      assert.equal(gets[0].auth, 'Bearer page-token-test');
+      const draft = await draftFor(`fb_${psid}`);
+      assert.ok(draft);
+      assert.equal(draft.approval_status, 'PENDING_REVIEW');
+      assert.equal(draft.channel, 'messenger');
+      assert.equal(draft.draft_reply, AI);
+      const line = errors.find((args) => args[0] === 'messenger_graph_verified');
+      assert.ok(line, 'expected messenger_graph_verified');
+      assert.equal(line[1].midPrefix, mid.slice(0, 8));
+      assert.equal(line[1].exists, true);
+      assert.equal(line[1].fromMatch, true);
+      assert.equal(line[1].pageMatch, true);
+      assert.equal(line[1].textCompared, true);
+      assert.equal(line[1].textMatch, true);
+      assert.equal(JSON.stringify(line[1]).includes(mid), false);
+      assertLogsOmit(errors, ['page-token-test', 'app-secret-test', 'verify-test-token', mid]);
+    } finally {
+      console.error = originalError;
+      messenger.graphHttp.get = originalGet;
+      messenger.graphHttp.post = originalPost;
+      clearSignatureDiagEnv();
+    }
+  });
+
+  test('hmac_or_graph drops sender, page, and text mismatches', async () => {
+    clearSignatureDiagEnv();
+    process.env.MESSENGER_VERIFY_MODE = 'hmac_or_graph';
+    const originalGet = messenger.graphHttp.get;
+    const originalPost = messenger.graphHttp.post;
+    messenger.graphHttp.post = async () => {
+      throw new Error('Graph send must not run');
+    };
+    const cases = [
+      {
+        name: 'sender_mismatch',
+        from: 'other-psid',
+        to: PAGE,
+        message: 'same text',
+      },
+      {
+        name: 'page_mismatch',
+        from: null,
+        to: 'page-999',
+        message: 'same text',
+      },
+      {
+        name: 'text_mismatch',
+        from: null,
+        to: PAGE,
+        message: 'different text',
+      },
+    ];
+    const errors = [];
+    const originalError = console.error;
+    console.error = (...args) => { errors.push(args); };
+    try {
+      for (const item of cases) {
+        const psid = `bad_${item.name}_${Date.now()}`;
+        const mid = `m_${item.name}_0123456789`;
+        const text = 'same text';
+        messenger.graphHttp.get = async () => ({
+          status: 200,
+          data: {
+            id: mid,
+            message: item.message,
+            from: { id: item.from || psid },
+            to: { data: [{ id: item.to }] },
+          },
+        });
+        const raw = JSON.stringify(pageEvent(psid, { mid, text }));
+        const res = await postSigned(raw, `sha256=${'fedcba9876543210'.repeat(4)}`);
+        assert.equal(res.status, 200, item.name);
+        assert.equal(await draftFor(`fb_${psid}`), null, item.name);
+        const line = errors.filter((args) => args[0] === 'messenger_graph_verify_failed').at(-1);
+        assert.equal(line[1].reason, item.name);
+        assert.equal(line[1].midPrefix, mid.slice(0, 8));
+        assert.equal(JSON.stringify(line[1]).includes(mid), false);
+        assert.equal(JSON.stringify(line[1]).includes('page-999'), false);
+        assert.equal(JSON.stringify(line[1]).includes('other-psid'), false);
+        if (item.name === 'text_mismatch') {
+          assert.equal(line[1].textCompared, true);
+          assert.equal(line[1].textMatch, false);
+        }
+        if (item.name === 'sender_mismatch') assert.equal(line[1].fromMatch, false);
+        if (item.name === 'page_mismatch') assert.equal(line[1].pageMatch, false);
+      }
+      assertLogsOmit(errors, ['page-token-test', 'app-secret-test']);
+    } finally {
+      console.error = originalError;
+      messenger.graphHttp.get = originalGet;
+      messenger.graphHttp.post = originalPost;
+      clearSignatureDiagEnv();
+    }
+  });
+
+  test('hmac_or_graph drops Graph 4xx, timeout, and a missing mid', async () => {
+    clearSignatureDiagEnv();
+    process.env.MESSENGER_VERIFY_MODE = 'hmac_or_graph';
+    const originalGet = messenger.graphHttp.get;
+    const originalPost = messenger.graphHttp.post;
+    const gets = [];
+    messenger.graphHttp.post = async () => {
+      throw new Error('Graph send must not run');
+    };
+    const errors = [];
+    const originalError = console.error;
+    console.error = (...args) => { errors.push(args); };
+    try {
+      const psid = `g4_${Date.now()}`;
+      const mid = `m_graph4xx_0123456789`;
+      messenger.graphHttp.get = async () => {
+        gets.push(1);
+        return {
+          status: 400,
+          data: { error: { message: 'Invalid page-token-test', code: 190 } },
+        };
+      };
+      const raw = JSON.stringify(pageEvent(psid, { mid, text: 'gia bao nhieu' }));
+      const res = await postSigned(raw, `sha256=${'0011223344556677'.repeat(4)}`);
+      assert.equal(res.status, 200);
+      assert.equal(await draftFor(`fb_${psid}`), null);
+      const failed = errors.find((args) => args[0] === 'messenger_graph_verify_failed' && args[1].reason === 'graph_error');
+      assert.ok(failed);
+      assert.equal(failed[1].status, 400);
+      assert.equal(failed[1].errorCode, 190);
+      assert.equal(failed[1].midPrefix, mid.slice(0, 8));
+      assert.equal(JSON.stringify(errors).includes('page-token-test'), false);
+      assert.equal(JSON.stringify(errors).includes('Invalid page-token-test'), false);
+      assert.equal(JSON.stringify(failed[1]).includes(mid), false);
+
+      const timeout = new Error('timeout of 10000ms exceeded');
+      timeout.code = 'ECONNABORTED';
+      messenger.graphHttp.get = async () => { throw timeout; };
+      const psidT = `gto_${Date.now()}`;
+      const midT = `m_timeout_0123456789`;
+      const resT = await postSigned(
+        JSON.stringify(pageEvent(psidT, { mid: midT, text: 'timeout text' })),
+        `sha256=${'8899aabbccddeeff'.repeat(4)}`,
+      );
+      assert.equal(resT.status, 200);
+      assert.equal(await draftFor(`fb_${psidT}`), null);
+      const timed = errors.find((args) => args[0] === 'messenger_graph_verify_failed' && args[1].reason === 'timeout');
+      assert.ok(timed);
+      assert.equal(timed[1].status, undefined);
+      assert.equal(timed[1].midPrefix, midT.slice(0, 8));
+      assert.equal(JSON.stringify(timed[1]).includes('10000'), false);
+      assert.equal(JSON.stringify(timed[1]).includes(midT), false);
+
+      gets.length = 0;
+      messenger.graphHttp.get = async () => {
+        gets.push(1);
+        throw new Error('missing mid must not call Graph');
+      };
+      const psidM = `gmid_${Date.now()}`;
+      const resM = await postSigned(
+        JSON.stringify(pageEvent(psidM, { text: 'no mid on this event' })),
+        `sha256=${'abcdeffedcba9876'.repeat(4)}`,
+      );
+      assert.equal(resM.status, 200);
+      assert.equal(gets.length, 0);
+      assert.equal(await draftFor(`fb_${psidM}`), null);
+      const missing = errors.find((args) => args[0] === 'messenger_graph_verify_failed' && args[1].reason === 'missing_mid');
+      assert.ok(missing);
+      assert.equal(missing[1].midPrefix, undefined);
+    } finally {
+      console.error = originalError;
+      messenger.graphHttp.get = originalGet;
+      messenger.graphHttp.post = originalPost;
+      clearSignatureDiagEnv();
+    }
+  });
+
+  test('a passing HMAC does not call Graph, and skip-verify still bypasses hmac_or_graph', async () => {
+    clearSignatureDiagEnv();
+    process.env.MESSENGER_VERIFY_MODE = 'hmac_or_graph';
+    mockAi();
+    const gets = [];
+    const sends = [];
+    const originalGet = messenger.graphHttp.get;
+    const originalPost = messenger.graphHttp.post;
+    messenger.graphHttp.get = async () => {
+      gets.push(1);
+      throw new Error('Graph lookup must not run when HMAC matches');
+    };
+    messenger.graphHttp.post = async () => {
+      sends.push(1);
+      return { status: 200, data: { message_id: 'should-not-send' } };
+    };
+    try {
+      const psid = `hmacok_${Date.now()}`;
+      const raw = JSON.stringify(pageEvent(psid, { mid: `m-${psid}`, text: 'Dau goi gia bao nhieu?' }));
+      const res = await postSigned(raw);
+      assert.equal(res.status, 200);
+      assert.equal(gets.length, 0);
+      assert.equal(sends.length, 0);
+      const draft = await draftFor(`fb_${psid}`);
+      assert.ok(draft);
+      assert.equal(draft.approval_status, 'PENDING_REVIEW');
+
+      process.env.MESSENGER_SKIP_VERIFY = '1';
+      messenger.graphHttp.get = async () => {
+        gets.push(1);
+        throw new Error('skip-verify must not call Graph');
+      };
+      const psidS = `skipg_${Date.now()}`;
+      const rawS = JSON.stringify(pageEvent(psidS, { mid: `m-${psidS}`, text: 'Dau goi gia bao nhieu?' }));
+      const resS = await postSigned(rawS, `sha256=${'1111222233334444'.repeat(4)}`);
+      assert.equal(resS.status, 200);
+      assert.equal(gets.length, 0);
+      assert.equal(sends.length, 0);
+      const skipped = await draftFor(`fb_${psidS}`);
+      assert.ok(skipped);
+      assert.equal(skipped.approval_status, 'PENDING_REVIEW');
+    } finally {
+      messenger.graphHttp.get = originalGet;
+      messenger.graphHttp.post = originalPost;
+      clearSignatureDiagEnv();
     }
   });
 

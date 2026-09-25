@@ -13,7 +13,10 @@
  * (1 or true) is a temporary bypass for a short pipeline proof.
  * MESSENGER_SIG_CAPTURE (1 or true) logs one messenger_sig_capture line with
  * the signature headers and the exact HMAC bytes (base64) so they can be
- * recomputed offline. Default off. None of these auto-send a customer reply.
+ * recomputed offline. Default off.
+ * MESSENGER_VERIFY_MODE=hmac_or_graph, when HMAC fails, keeps an event only
+ * after Graph confirms that mid. MESSENGER_SKIP_VERIFY still bypasses both.
+ * None of these auto-send a customer reply.
  */
 const crypto = require('crypto');
 const express = require('express');
@@ -27,6 +30,9 @@ const TRUTHY = /^(1|true|yes|on)$/i;
 const graphHttp = {
   post(url, data, config) {
     return axios.post(url, data, config);
+  },
+  get(url, config) {
+    return axios.get(url, config);
   },
 };
 
@@ -72,6 +78,12 @@ function skipVerifyEnabled() {
 /** Temporary: `1` or `true`. Logs the signed bytes. Default off. */
 function sigCaptureEnabled() {
   return /^(1|true)$/i.test(String(process.env.MESSENGER_SIG_CAPTURE || '').trim());
+}
+
+/** `hmac` (default) or `hmac_or_graph`. Anything else stays on HMAC only. */
+function verifyMode() {
+  const mode = String(process.env.MESSENGER_VERIFY_MODE || '').trim().toLowerCase();
+  return mode === 'hmac_or_graph' ? 'hmac_or_graph' : 'hmac';
 }
 
 const SKIP_VERIFY_WARNING = 'TEMPORARY for Phil\'s 10-minute pipeline proof only. MESSENGER_SKIP_VERIFY accepted this POST without a matching HMAC. Unset it immediately. Customer replies stay PENDING_REVIEW and are not auto-sent.';
@@ -528,6 +540,160 @@ function attachmentKind(attachments) {
   return 'file';
 }
 
+const GRAPH_VERIFY_TIMEOUT_MS = 10000;
+
+/**
+ * Read one Messenger message the Page already has.
+ * https://developers.facebook.com/docs/graph-api/reference/message/
+ * Token stays in the Authorization header, never the query string.
+ */
+function messageLookupUrl(mid) {
+  const id = encodeURIComponent(String(mid));
+  return `https://graph.facebook.com/${GRAPH_VERSION}/${id}?fields=id,message,from,to,created_time`;
+}
+
+function midPrefix(mid) {
+  const s = String(mid || '');
+  return s ? s.slice(0, 8) : undefined;
+}
+
+function isTimeoutError(err) {
+  if (!err) return false;
+  if (err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT') return true;
+  return /timeout/i.test(String(err.message || ''));
+}
+
+function graphErrorCode(data) {
+  const code = data && data.error && data.error.code;
+  return typeof code === 'number' && Number.isFinite(code) ? code : undefined;
+}
+
+function graphRecipientIds(to) {
+  const ids = [];
+  const push = (item) => {
+    if (item && item.id != null && String(item.id)) ids.push(String(item.id));
+  };
+  if (!to) return ids;
+  if (Array.isArray(to)) {
+    to.forEach(push);
+    return ids;
+  }
+  push(to);
+  if (Array.isArray(to.data)) to.data.forEach(push);
+  return ids;
+}
+
+function pageMatches(graphIds, entry, ev) {
+  const configured = pageId();
+  const entryId = entry && entry.id != null && String(entry.id) ? String(entry.id) : '';
+  const recipient = ev && ev.recipient && ev.recipient.id != null ? String(ev.recipient.id) : '';
+  const expected = configured || entryId || recipient;
+  if (!expected || graphIds.indexOf(expected) === -1) return false;
+  if (configured && entryId && entryId !== configured) return false;
+  if (configured && recipient && recipient !== configured) return false;
+  if (entryId && recipient && entryId !== recipient) return false;
+  if (configured && graphIds.indexOf(configured) === -1) return false;
+  if (entryId && graphIds.indexOf(entryId) === -1) return false;
+  return true;
+}
+
+async function lookupGraphMessage(mid) {
+  const token = pageToken();
+  if (!token) return { ok: false, reason: 'missing_token' };
+  try {
+    const res = await graphHttp.get(messageLookupUrl(mid), {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: GRAPH_VERIFY_TIMEOUT_MS,
+      validateStatus: () => true,
+    });
+    const status = res && Number.isInteger(res.status) ? res.status : 0;
+    const data = res && res.data && typeof res.data === 'object' ? res.data : {};
+    if (status < 200 || status >= 300) {
+      const errorCode = graphErrorCode(data);
+      return {
+        ok: false,
+        reason: 'graph_error',
+        status,
+        ...(errorCode !== undefined ? { errorCode } : {}),
+      };
+    }
+    if (data.id == null || String(data.id) === '') {
+      return { ok: false, reason: 'not_found', status };
+    }
+    return { ok: true, status, data };
+  } catch (err) {
+    if (isTimeoutError(err)) return { ok: false, reason: 'timeout' };
+    return { ok: false, reason: 'graph_error' };
+  }
+}
+
+/**
+ * HMAC already failed. Keep the event only when Graph shows this mid was
+ * sent by this PSID to this Page. No mid: drop. Never logs the token,
+ * the PSID, the text, or the full mid.
+ */
+async function verifyEventWithGraph(ev, entry) {
+  const mid = ev && ev.message && ev.message.mid != null ? String(ev.message.mid).trim() : '';
+  if (!mid) return { ok: false, log: { reason: 'missing_mid' } };
+  const prefix = midPrefix(mid);
+  const looked = await lookupGraphMessage(mid);
+  if (!looked.ok) {
+    const log = { reason: looked.reason, midPrefix: prefix };
+    if (Number.isInteger(looked.status)) log.status = looked.status;
+    if (looked.errorCode !== undefined) log.errorCode = looked.errorCode;
+    return { ok: false, log };
+  }
+  const data = looked.data;
+  const fromId = data.from && data.from.id != null ? String(data.from.id) : '';
+  const sender = ev.sender && ev.sender.id != null ? String(ev.sender.id) : '';
+  const fromMatch = Boolean(sender) && fromId === sender;
+  const pageMatch = pageMatches(graphRecipientIds(data.to), entry, ev);
+  const eventText = ev.message && typeof ev.message.text === 'string' ? ev.message.text : '';
+  const graphText = typeof data.message === 'string' ? data.message : '';
+  const textCompared = eventText !== '' && graphText !== '';
+  const textMatch = !textCompared || eventText === graphText;
+  const base = {
+    midPrefix: prefix,
+    exists: true,
+    fromMatch,
+    pageMatch,
+    textCompared,
+    textMatch,
+  };
+  if (!fromMatch) return { ok: false, log: { reason: 'sender_mismatch', ...base } };
+  if (!pageMatch) return { ok: false, log: { reason: 'page_mismatch', ...base } };
+  if (!textMatch) return { ok: false, log: { reason: 'text_mismatch', ...base } };
+  return { ok: true, log: base };
+}
+
+async function selectGraphVerifiedEvents(body, log) {
+  const record = log || (() => {});
+  if (!body || body.object !== 'page' || !Array.isArray(body.entry)) {
+    const detail = { reason: 'not_page' };
+    console.error('messenger_graph_verify_failed', detail);
+    record({ type: 'messenger_graph_verify_failed', ...detail });
+    return { object: 'page', entry: [] };
+  }
+  const entries = [];
+  for (const entry of body.entry) {
+    const batch = Array.isArray(entry && entry.messaging) ? entry.messaging : [];
+    const kept = [];
+    for (const ev of batch) {
+      const verdict = await verifyEventWithGraph(ev, entry);
+      if (verdict.ok) {
+        console.error('messenger_graph_verified', verdict.log);
+        record({ type: 'messenger_graph_verified', ...verdict.log });
+        kept.push(ev);
+      } else {
+        console.error('messenger_graph_verify_failed', verdict.log);
+        record({ type: 'messenger_graph_verify_failed', ...verdict.log });
+      }
+    }
+    if (kept.length) entries.push({ ...entry, messaging: kept });
+  }
+  return { ...body, entry: entries };
+}
+
 function messagingEvents(body) {
   if (!body || body.object !== 'page' || !Array.isArray(body.entry)) return [];
   const out = [];
@@ -667,16 +833,22 @@ function mount(app, deps) {
       console.error('messenger_sig_matched_client_token', detail);
       log({ type: 'messenger_sig_matched_client_token', ...detail });
     }
+    let graphGate = false;
     if (!sig.ok) {
       const detail = signatureDetail(req, sig);
       // stdout/stderr, not only the in-memory debug log. Never include the
       // secret, the signature value, the full signature, or the body.
+      // Skip still wins over hmac_or_graph: it accepts the POST with no Graph call.
       if (skipVerifyEnabled()) {
         console.error('messenger_skip_verify_enabled', {
           warning: SKIP_VERIFY_WARNING,
           ...detail,
         });
         log({ type: 'messenger_skip_verify_enabled', ...detail });
+      } else if (verifyMode() === 'hmac_or_graph') {
+        console.error('messenger_bad_signature', detail);
+        log({ type: 'messenger_bad_signature', ...detail });
+        graphGate = true;
       } else {
         console.error('messenger_bad_signature', detail);
         log({ type: 'messenger_bad_signature', ...detail });
@@ -688,7 +860,12 @@ function mount(app, deps) {
       return res.status(400).json({ ok: false, error: 'invalid_json' });
     }
 
-    const run = () => processBody(req.body, deps).catch((err) => {
+    let pipelineBody = req.body;
+    if (graphGate) {
+      pipelineBody = await selectGraphVerifiedEvents(req.body, log);
+    }
+
+    const run = () => processBody(pipelineBody, deps).catch((err) => {
       console.error('Messenger webhook error:', err);
       log({ type: 'messenger_error', error: err.message });
     });
@@ -710,6 +887,8 @@ module.exports = {
   signBody,
   metaEscapedJson,
   buildSigCapture,
+  messageLookupUrl,
+  verifyMode,
   mount,
   processBody,
   sendText,
