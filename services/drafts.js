@@ -1171,6 +1171,40 @@ function isUuid(id) {
  * When delivery cannot run, the caller keeps approval_status = APPROVED
  * and returns `hook` so a later change can plug the missing sender in here.
  */
+async function sendInvoicePicture(draft, sendFn) {
+  if (!draft.qr_image_url) return null;
+  let buffer = null;
+  let link = draft.qr_image_url;
+  try {
+    const invoices = require('./invoices');
+    buffer = await invoices.pngFor(draft.invoice_code);
+    if (/^HD/i.test(String(draft.invoice_code || ''))) link = invoices.pageUrl(draft.invoice_code);
+  } catch (err) {
+    console.error('Invoice image lookup failed:', err.message);
+  }
+  let ok = false;
+  let detail = '';
+  try {
+    const result = await sendFn({ buffer, url: draft.qr_image_url });
+    if (result && result.ok === false) detail = result.error || '';
+    else if (result) ok = true;
+  } catch (err) {
+    detail = err.message || '';
+  }
+  if (ok) return null;
+  return { link, detail };
+}
+
+async function noteImageFallback(sendText, draftText, fail) {
+  if (!fail) return null;
+  const link = fail.link;
+  if (link && !String(draftText || '').includes(link)) {
+    try { await sendText(`Hoá đơn: ${link}`); } catch (_) { /* the error string still tells the manager */ }
+  }
+  const why = fail.detail ? `: ${String(fail.detail).slice(0, 180)}` : '';
+  return `Đã gửi nội dung, chưa gửi được ảnh hoá đơn${why}.`;
+}
+
 async function deliver(draft) {
   const text = String(draft.draft_reply || '').trim();
   if (!text) {
@@ -1227,11 +1261,10 @@ async function deliver(draft) {
           error: `Facebook chưa gửi được: ${detail}. Bản nháp giữ ở APPROVED. Hook: services/messenger.js sendText(psid, text).`,
         };
       }
-      let qrError = null;
-      if (draft.qr_image_url && !text.includes(draft.qr_image_url)) {
-        const qr = await messenger.sendImage(psid, draft.qr_image_url);
-        if (!qr || !qr.ok) qrError = 'Đã gửi nội dung, chưa gửi được ảnh QR.';
-      }
+      // Meta downloads payload.url itself. qr_image_url is the public
+// /hd/<code>/anh?t= link on this server (token, no admin session).
+const fail = await sendInvoicePicture(draft, ({ url }) => messenger.sendImage(psid, url));
+      const qrError = await noteImageFallback(extra => messenger.sendText(psid, extra), text, fail);
       return { ok: true, sent: true, via: 'messenger', hook, error: qrError };
     } catch (e) {
       return {
@@ -1277,11 +1310,11 @@ async function deliver(draft) {
           error: 'Zalo Bot API không gửi được. Bản nháp giữ ở APPROVED. Hook: zaloBotService.sendMessage(chatId, text).',
         };
       }
-      let qrError = null;
-      if (draft.qr_image_url) {
-        const photo = await botService.sendPhoto(chatId, draft.qr_image_url, 'Mã QR thanh toán');
-        if (!photo) qrError = 'Đã gửi nội dung, chưa gửi được ảnh QR.';
-      }
+      const fail = await sendInvoicePicture(draft, async ({ url }) => {
+        const photo = await botService.sendPhoto(chatId, url, 'Hoá đơn');
+        return photo ? { ok: true } : { ok: false, error: 'Zalo Bot không nhận ảnh' };
+      });
+      const qrError = await noteImageFallback(extra => botService.sendMessage(chatId, extra), text, fail);
       return { ok: true, sent: true, via: 'zalo_bot', hook: 'zaloBotService.sendMessage', error: qrError };
     }
 
@@ -1308,12 +1341,15 @@ async function deliver(draft) {
         error: `Zalo OA chưa gửi được: ${detail}. Bản nháp giữ ở APPROVED. Hook: zaloService.sendTextMessage(userId, text).`,
       };
     }
-    let qrError = null;
-    if (draft.qr_image_url && !text.includes(draft.qr_image_url)) {
-      const qr = await zaloService.sendTextMessage(uid, draft.qr_image_url);
-      if (!qr) qrError = 'Đã gửi nội dung. Ảnh QR gửi kèm bằng link vì OA helper chỉ có tin chữ, và lần gửi link chưa thành công.';
-    }
-    return { ok: true, sent: true, via: 'zalo_oa', hook: 'zaloService.sendTextMessage', error: qrError };
+    const fail = await sendInvoicePicture(draft, async ({ buffer, url }) => {
+        const sent = await zaloService.sendImageMessage(uid, { buffer, url });
+        if (sent) return { ok: true };
+        const last = zaloService.getLastError();
+        const detail = last && typeof last === 'object' ? (last.message || '') : (last || '');
+        return { ok: false, error: detail || 'Zalo OA không nhận ảnh' };
+      });
+      const qrError = await noteImageFallback(extra => zaloService.sendTextMessage(uid, extra), text, fail);
+      return { ok: true, sent: true, via: 'zalo_oa', hook: 'zaloService.sendTextMessage', error: qrError };
   } catch (e) {
     const hook = uid.startsWith('bot_') ? 'zaloBotService.sendMessage' : 'zaloService.sendTextMessage';
     return {
@@ -1481,6 +1517,14 @@ async function updateDraft(id, body, ctx = {}) {
         next.approval_status = 'SENT';
         next.sent_at = new Date().toISOString();
         next.send_via = send.via;
+        if (next.qr_image_url && next.invoice_code) {
+          try {
+            const invoices = require('./invoices');
+            await invoices.markSent(next.invoice_code, actor);
+          } catch (err) {
+            console.error('Invoice sent mark failed:', err.message);
+          }
+        }
         if (inboxStatus.inferFolder(next) !== 'bought') {
           next.inbox_status = 'sent';
           next.inbox_status_at = next.sent_at;

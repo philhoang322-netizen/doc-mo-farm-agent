@@ -1387,13 +1387,16 @@
     const code = d.customer_code || f.kiot_ref || '';
     const nameRow = el('div', { class: 'name-row' });
     const nameBox = el('div', { class: 'msg-names' });
-    channelNameNodes(d).forEach(node => nameBox.appendChild(node));
+    const nameNodes = channelNameNodes(d, { when: when(d.created_at) });
+    nameNodes.forEach(node => nameBox.appendChild(node));
     nameRow.appendChild(nameBox);
-    const kiotShown = Array.isArray(d.channel_names) && d.channel_names.some(item => item && item.code);
+    const kiotShown = nameNodes.some(node => node.querySelector && node.querySelector('.id-code'));
     if (code && !kiotShown) {
       nameRow.appendChild(el('span', { class: 'cust-code', title: 'Mã khách hàng', text: code }));
     }
-    nameRow.appendChild(el('span', { class: 'msg-time', text: when(d.created_at) }));
+    if (!nameNodes.some(node => node.querySelector && node.querySelector('.id-when'))) {
+      nameRow.appendChild(el('span', { class: 'msg-time', text: when(d.created_at) }));
+    }
     const meta = el('div', { class: 'detail-meta' }, [nameRow]);
     const badge = triageBadge(d);
     if (badge) meta.appendChild(badge);
@@ -1473,7 +1476,8 @@
     if (me.canKiot) {
       fold = el('details', { class: 'kiot-fold' });
       if (s.kiotOpen || wantsOrder(d)) fold.open = true;
-      fold.appendChild(el('summary', { text: 'Tạo đơn KiotViet' }));
+      const kiotExisting = kiotMark(d);
+      fold.appendChild(el('summary', { text: kiotExisting ? ('KiotViet · ' + kiotExisting.code) : 'Tạo đơn KiotViet' }));
       fold.appendChild(phoneField);
       fold.appendChild(invoiceField);
       fold.addEventListener('toggle', () => {
@@ -1846,10 +1850,18 @@
   function kiotMark(d) {
     if (!d) return null;
     const f = formOf(d);
-    if (f.kiot_code) return { code: f.kiot_code, total: f.kiot_total };
-    const code = String(d.invoice_code || '').trim();
-    if (/^(HD|DH)/i.test(code)) return { code, total: null };
-    return null;
+    const code = String(f.kiot_code || d.invoice_code || '').trim();
+    if (!/^(HD|DH)/i.test(code)) return null;
+    const kind = f.kiot_kind || (/^DH/i.test(code) ? 'order' : 'invoice');
+    const kiot = (Array.isArray(d.channel_names) ? d.channel_names : []).find(item => item && item.source === 'kiot');
+    return {
+      code,
+      total: f.kiot_total,
+      kind,
+      image: d.qr_image_url || '',
+      customerCode: d.customer_code || (kiot && kiot.code) || '',
+      customerName: (kiot && kiot.name) || d.customer_name || 'Khách',
+    };
   }
 
   function openDraft(id, opts) {
@@ -1968,6 +1980,7 @@
     if (state.existing) showExisting(state.existing);
     panel.appendChild(exist);
     panel.appendChild(ackLabel);
+    if (state.existing) panel.appendChild(createdCard(state.existing));
 
     const docRow = el('div', { class: 'kiot-docs', role: 'group', 'aria-label': 'Loại chứng từ' });
     const invoiceBtn = el('button', { type: 'button', class: 'chip active', text: 'Hoá đơn (HĐ)' });
@@ -2054,6 +2067,62 @@
     actions.appendChild(quoteBtn);
     actions.appendChild(confirmBtn);
     panel.appendChild(actions);
+
+    function createdCard(mark) {
+      const box = el('div', { class: 'kiot-created' });
+      const invoice = mark.kind !== 'order';
+      const row = el('div', { class: 'id-row' });
+      row.appendChild(el('span', { class: 'id-name', text: mark.customerName || 'Khách' }));
+      if (mark.customerCode) row.appendChild(el('span', { class: 'id-code', title: 'Mã KH', text: mark.customerCode }));
+      row.appendChild(el('span', { class: 'id-code', title: 'Mã HĐ', text: mark.code }));
+      box.appendChild(row);
+      const bits = [];
+      if (mark.total != null && mark.total !== '') bits.push('Tổng ' + vnd(mark.total));
+      bits.push(invoice ? 'Hoá đơn đã tạo' : 'Đơn đặt hàng đã tạo');
+      box.appendChild(el('p', { class: 'kiot-created-note', text: bits.join(' · ') }));
+      if (invoice && mark.image) {
+        box.appendChild(el('img', { class: 'kiot-invoice-img', src: mark.image, alt: 'Hoá đơn ' + mark.code }));
+        box.appendChild(el('p', {
+          class: 'kiot-created-note',
+          text: 'Ảnh và nội dung CK đang chờ. Bấm Duyệt & Gửi ở thanh dưới để gửi khách.',
+        }));
+      }
+      if (!invoice) {
+        const issue = el('button', { type: 'button', class: 'btn btn-primary', text: 'Xuất hóa đơn' });
+        issue.addEventListener('click', () => issueInvoice(issue));
+        box.appendChild(issue);
+        box.appendChild(el('p', {
+          class: 'kiot-created-note',
+          text: 'Xuất hoá đơn để có mã QR. Chưa gửi cho khách cho đến khi bấm Duyệt & Gửi.',
+        }));
+      }
+      return box;
+    }
+
+    async function issueInvoice(button) {
+      showError('');
+      button.disabled = true;
+      try {
+        const data = await api('/admin/api/drafts/' + d.id + '/kiotviet/invoice', {
+          method: 'POST',
+          body: JSON.stringify({ actor_name: actorName() }),
+        });
+        const reply = detailEl.querySelector('#draft-reply');
+        if (reply && data.draft && data.draft.draft_reply && d.approval_status !== 'SENT') {
+          reply.value = data.draft.draft_reply;
+        }
+        toast(data.saved === false
+          ? (data.error || ('Đã xuất ' + data.code))
+          : ('Đã xuất ' + data.code + '. Tin vẫn chờ duyệt, chưa gửi.'));
+        dirty = false;
+        detailStamp = '';
+        listStamp = '';
+        await load();
+      } catch (e) {
+        if (e.message !== 'unauthorized') showError(e.message);
+        button.disabled = false;
+      }
+    }
 
     function showError(text) {
       if (!text) {
@@ -2514,7 +2583,8 @@
     if (!/^[A-Za-z0-9-]+$/.test(id)) return;
     const fill = (box) => {
       box.textContent = '';
-      channelNameNodes(d).forEach(node => box.appendChild(node));
+      const inDetail = !!(box.closest && box.closest('.name-row'));
+      channelNameNodes(d, { when: inDetail ? when(d.created_at) : '' }).forEach(node => box.appendChild(node));
     };
     document.querySelectorAll('[data-draft-id="' + id + '"] .msg-names').forEach(fill);
     if (selectedId === d.id && detailEl) detailEl.querySelectorAll('.msg-names').forEach(fill);
@@ -2568,30 +2638,63 @@
     return nodes;
   }
 
-  function channelNameNodes(d) {
+  function saleCode(d) {
+    const f = formOf(d);
+    const code = String((f && f.kiot_code) || (d && d.invoice_code) || '').trim();
+    return /^(HD|DH)/i.test(code) ? code : '';
+  }
+
+  function identityRow(d, opts) {
+    opts = opts || {};
+    const names = Array.isArray(d.channel_names) ? d.channel_names : [];
+    const kiot = names.find(item => item && item.source === 'kiot') || null;
+    const kh = String((kiot && kiot.code) || (d && d.customer_code) || formOf(d).kiot_ref || '').trim();
+    const hd = saleCode(d);
+    const kiotName = kiot && kiot.name && !opaqueId(kiot.name) ? String(kiot.name).trim() : '';
+    const stored = String((d && d.customer_name) || '').trim();
+    const name = kiotName || (stored && !opaqueId(stored) ? stripChannelPrefix(stored) : 'Khách');
+    const row = el('span', { class: 'id-row' });
+    row.appendChild(el('span', { class: 'id-name', text: name }));
+    if (kh && !opaqueId(kh)) row.appendChild(el('span', { class: 'id-code', title: 'Mã KH', text: kh }));
+    if (hd) row.appendChild(el('span', { class: 'id-code', title: 'Mã HĐ', text: hd }));
+    if (opts.when) row.appendChild(el('span', { class: 'id-when', text: opts.when }));
+    return row;
+  }
+
+  function channelNameNodes(d, opts) {
+    opts = opts || {};
     const names = Array.isArray(d.channel_names)
-      ? d.channel_names.filter(item => item && (item.text || item.name))
+      ? d.channel_names.filter(item => item && (item.text || item.name || item.code))
       : [];
-    if (!names.length) {
-      const phone = String(d.customer_phone || '').trim();
-      const id = String(d.customer_user_id || '').trim();
-      const stored = String(d.customer_name || '').trim();
-      if (phone && !opaqueId(phone)) return [el('span', { class: 'msg-name', text: phone })];
-      if (stored && !opaqueId(stored)) return [el('span', { class: 'msg-name', text: stripChannelPrefix(stored) })];
-      return nameFallback(id || stored || phone);
+    const kiot = names.find(item => item && item.source === 'kiot') || null;
+    const kh = String((kiot && kiot.code) || (d && d.customer_code) || '').trim();
+    const hd = saleCode(d);
+    const showIdentity = !!((kiot && (kiot.name || kiot.code)) || kh || hd);
+    if (!showIdentity) {
+      if (!names.length) {
+        const phone = String(d.customer_phone || '').trim();
+        const id = String(d.customer_user_id || '').trim();
+        const stored = String(d.customer_name || '').trim();
+        if (phone && !opaqueId(phone)) return [el('span', { class: 'msg-name', text: phone })];
+        if (stored && !opaqueId(stored)) return [el('span', { class: 'msg-name', text: stripChannelPrefix(stored) })];
+        return nameFallback(id || stored || phone);
+      }
+      const onlyOpaque = names.length === 1 && (names[0].source === 'id' || opaqueId(names[0].text || names[0].name));
+      if (onlyOpaque) return nameFallback(names[0].text || names[0].name || '');
     }
-    const onlyOpaque = names.length === 1 && (names[0].source === 'id' || opaqueId(names[0].text || names[0].name));
-    if (onlyOpaque) return nameFallback(names[0].text || names[0].name || '');
-    return names.map(item => {
-      const bit = el('span', {
-        class: 'msg-channel-name' + (item.source === 'kiot' ? ' msg-kiot-name' : ''),
-      });
+    const nodes = showIdentity ? [identityRow(d, opts)] : [];
+    const identityName = showIdentity ? nodes[0].querySelector('.id-name').textContent : '';
+    names.filter(item => item.source !== 'kiot').forEach(item => {
+      if (item.source === 'id' || opaqueId(item.text || item.name)) return;
+      if (identityName && item.name && item.name === identityName) return;
+      const bit = el('span', { class: 'msg-channel-name' });
       if (item.avatar && /^https:\/\//.test(item.avatar)) {
         bit.appendChild(el('img', { class: 'msg-avatar', alt: '', src: item.avatar }));
       }
       bit.appendChild(el('span', { text: displayChannelName(item) }));
-      return bit;
+      nodes.push(bit);
     });
+    return nodes.length ? nodes : nameFallback('');
   }
 
   function seededKiotName(d) {
