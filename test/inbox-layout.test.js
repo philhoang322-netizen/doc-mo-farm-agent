@@ -226,7 +226,9 @@ test('390px inbox fits, keeps 44px targets, and starts the first card high', {
     assert.notEqual(phone.tabPosition, 'fixed');
     assert.ok(phone.tabBottom < 160, 'channel row bottom ' + phone.tabBottom);
     assert.ok(phone.cardTop != null && phone.cardTop <= 172, 'first card Y ' + phone.cardTop);
-    assert.ok(phone.rows >= 8, 'visible rows ' + phone.rows + ' first Y ' + phone.cardTop);
+    // Each card now has a 44px Xóa tin này / Xóa cả cuộc chat row, so fewer
+    // full cards fit under the header than the compact list did.
+    assert.ok(phone.rows >= 5, 'visible rows ' + phone.rows + ' first Y ' + phone.cardTop);
   } finally {
     await browser.close();
     server.close();

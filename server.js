@@ -901,6 +901,7 @@ app.post('/webhook', async (req, res) => {
           replyTo: senderId,
           text: event.message?.text || '',
           msgId: event.message?.msg_id,
+          receivedAt: event.timestamp || null,
           senderName,
           send,
           log: logEvent,

@@ -376,11 +376,20 @@ async function removeDraft(req, res) {
     if (!access.canDelete(p)) return deny(res);
     const existing = await drafts.getDraft(req.params.id);
     if (!existing || !access.canSee(p, existing)) return res.status(404).json({ error: 'Không thấy tin' });
-    const draft = await drafts.softDelete(req.params.id, {
-      actor: await auditActor(req),
-    });
-    if (!draft) return res.status(404).json({ error: 'Không thấy tin' });
-    res.json({ draft });
+    const actor = await auditActor(req);
+    const scope = req.body && req.body.scope === 'thread' ? 'thread' : 'item';
+    const result = scope === 'thread'
+      ? await drafts.hardDeleteThread(req.params.id, {
+        actor,
+        channel: req.body && req.body.channel,
+        customer_user_id: req.body && req.body.customer_user_id,
+      })
+      : await drafts.hardDelete(req.params.id, { actor, scope: 'item' });
+    if (!result || (scope === 'thread' && result.count === 0 && !result.deleted)) {
+      return res.status(404).json({ error: 'Không thấy tin' });
+    }
+    if (scope === 'item' && result.missing) return res.status(404).json({ error: 'Không thấy tin' });
+    res.json(scope === 'thread' ? result : { draft: result });
   } catch (e) {
     const status = e.status || 500;
     res.status(status).json({ error: e.status ? e.message : 'Không xoá được tin' });
@@ -1017,6 +1026,9 @@ function mount(app) {
   app.get('/admin/inbox-refresh.js', requirePageAsset, sendAsset('inbox-refresh.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/inbox-order.js', requirePageAsset, sendAsset('inbox-order.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/kiot-picker.js', requirePageAsset, sendAsset('kiot-picker.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/card-time.js', requirePageAsset, sendAsset('card-time.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/undo-delete.js', requirePageAsset, sendAsset('undo-delete.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/send-once.js', requirePageAsset, sendAsset('send-once.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/review.js', requirePageAsset, sendAsset('review.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/audit.js', requirePageAsset, sendAsset('audit.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/invoices.css', requirePageAsset, sendAsset('invoices.css', 'text/css; charset=utf-8'));

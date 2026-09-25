@@ -833,6 +833,30 @@ body.hitl .msg-card {
   overflow: visible;
   padding: 0;
 }
+body.inbox .msg-card .card-delete {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: 100%;
+  padding: 0 8px 2px;
+}
+body.inbox .card-delete .card-del {
+  flex: 1 1 140px;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 10px;
+  border: 1px solid #e7c4c0;
+  border-radius: 10px;
+  background: #fff;
+  color: var(--red);
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+body.inbox .sticky-actions .card-delete {
+  flex: 1 1 100%;
+  padding: 0;
+}
 body.inbox .msg-card .cust-fold,
 body.inbox .msg-card .draft-label,
 body.inbox .msg-card .card-reply,

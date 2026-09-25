@@ -22,6 +22,8 @@ const triage = require('./triage');
 const bizLine = require('./bizLine');
 const inboxStatus = require('./inboxStatus');
 const inboxOrder = require('../public/admin/inbox-order');
+const tombstones = require('./tombstones');
+const sourceTime = require('../public/admin/card-time');
 
 const STATUSES = ['PENDING_REVIEW', 'APPROVED', 'REJECTED', 'SENT'];
 const STATUS_SET = new Set(STATUSES);
@@ -130,6 +132,8 @@ function blankDraft(fields) {
     biz_sticky: fields.biz_sticky === true,
     deleted_at: null,
     source_msg_id: fields.source_msg_id || null,
+    source_received_at: sourceTime.parse(fields.source_received_at)
+      || sourceTime.fromSyntheticMsgId(fields.source_msg_id),
     inbox_status: inboxStatus.FOLDER_SET.has(fields.inbox_status) ? fields.inbox_status : 'pending',
     inbox_prev_status: inboxStatus.FOLDER_SET.has(fields.inbox_prev_status) ? fields.inbox_prev_status : null,
     inbox_status_at: fields.inbox_status_at || now,
@@ -215,6 +219,7 @@ function fromRow(row) {
     biz_sticky: row.biz_sticky === true || row.biz_sticky === 't' || row.biz_sticky === 'true',
     deleted_at: toIso(row.deleted_at),
     source_msg_id: row.source_msg_id || null,
+    source_received_at: toIso(row.source_received_at),
     inbox_status: inboxStatus.FOLDER_SET.has(row.inbox_status) ? row.inbox_status : null,
     inbox_prev_status: inboxStatus.FOLDER_SET.has(row.inbox_prev_status) ? row.inbox_prev_status : null,
     inbox_status_at: toIso(row.inbox_status_at),
@@ -272,6 +277,7 @@ ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS biz_line TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS biz_sticky BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS source_msg_id TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS source_received_at TIMESTAMPTZ;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_status TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_prev_status TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_status_at TIMESTAMPTZ;
@@ -303,6 +309,8 @@ async function ensureReady() {
       await loadChannels();
     }
     await trainingLog.ensureReady();
+    await tombstones.ensureReady();
+    await backfillSourceTimes();
   })().catch((err) => {
     ready = null;
     throw err;
@@ -587,9 +595,10 @@ async function insertDraft(draft) {
        message_type, template_name, sales_channel, delivery_phase,
        customer_query, ai_draft_version, triage_level, triage_label, review_form,
        biz_line, biz_sticky, deleted_at, source_msg_id,
-       inbox_status, inbox_prev_status, inbox_status_at, inbox_status_auto
+       inbox_status, inbox_prev_status, inbox_status_at, inbox_status_auto,
+       source_received_at
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40
      ) RETURNING *`,
     [
       draft.id, draft.created_at, draft.updated_at, draft.channel,
@@ -606,6 +615,7 @@ async function insertDraft(draft) {
       reviewFormJson(draft.review_form),
       draft.biz_line, draft.biz_sticky === true, draft.deleted_at, draft.source_msg_id,
       draft.inbox_status, draft.inbox_prev_status, draft.inbox_status_at, draft.inbox_status_auto === true,
+      draft.source_received_at,
     ]
   );
   return fromRow(r.rows[0]);
@@ -629,7 +639,8 @@ async function saveDraft(draft) {
        customer_query=$26, ai_draft_version=$27,
        triage_level=$28, triage_label=$29, review_form=$30,
        biz_line=$31, biz_sticky=$32, deleted_at=$33, source_msg_id=$34,
-       inbox_status=$35, inbox_prev_status=$36, inbox_status_at=$37, inbox_status_auto=$38
+       inbox_status=$35, inbox_prev_status=$36, inbox_status_at=$37, inbox_status_auto=$38,
+       source_received_at=$39
      WHERE id=$1
      RETURNING *`,
     [
@@ -645,9 +656,26 @@ async function saveDraft(draft) {
       reviewFormJson(draft.review_form),
       draft.biz_line, draft.biz_sticky === true, draft.deleted_at, draft.source_msg_id,
       draft.inbox_status, draft.inbox_prev_status, draft.inbox_status_at, draft.inbox_status_auto === true,
+      draft.source_received_at,
     ]
   );
   return fromRow(r.rows[0]);
+}
+
+async function backfillSourceTimes() {
+  if (!db.DB_ENABLED) {
+    let changed = false;
+    for (const draft of memory.values()) {
+      if (draft.source_received_at) continue;
+      const got = sourceTime.fromSyntheticMsgId(draft.source_msg_id);
+      if (!got) continue;
+      draft.source_received_at = got;
+      changed = true;
+    }
+    if (changed) await persistFile();
+    return;
+  }
+  await db.pool.query(sourceTime.BACKFILL_SQL);
 }
 
 async function loadAllRaw() {
@@ -807,6 +835,13 @@ async function createDraft(body, ctx = {}) {
   fields.biz_line = biz.biz_line;
   fields.biz_sticky = biz.biz_sticky;
   fields.source_msg_id = cleanText('source_msg_id', body && body.source_msg_id);
+  fields.source_received_at = sourceTime.parse(body && body.source_received_at)
+    || sourceTime.fromSyntheticMsgId(fields.source_msg_id);
+  if (fields.source_msg_id && await tombstones.isBlocked(fields.channel, fields.source_msg_id)) {
+    const err = new DraftError(409, 'Tin đã xoá');
+    err.code = 'deleted';
+    throw err;
+  }
   const prevFolder = await conversationFolder(fields.channel, fields.customer_user_id);
   fields.inbox_status = 'pending';
   fields.inbox_prev_status = prevFolder && prevFolder !== 'pending' ? prevFolder : null;
@@ -1013,6 +1048,98 @@ async function moveBizLine(id, line, ctx = {}) {
     meta: { ...audit.draftMeta(saved), from: existing.biz_line || null, to: line },
   });
   return decorate(saved);
+}
+
+function deletedSummary(existing, deletedAt, scope) {
+  return {
+    id: existing.id,
+    deleted: true,
+    deleted_at: deletedAt,
+    channel: existing.channel || null,
+    customer_user_id: existing.customer_user_id || null,
+    scope: scope === 'thread' ? 'thread' : 'item',
+  };
+}
+
+/**
+ * Remove the draft row. The audit log stays. Nothing is sent to the customer
+ * and KiotViet is not called. A tombstone stops the same source message from
+ * coming back on the 20s refresh, webhook retry, or Đồng bộ tin bị sót.
+ * A later message with a new source id still creates a card.
+ */
+async function hardDelete(id, ctx = {}) {
+  await ensureReady();
+  const existing = await getDraft(id);
+  if (!existing) return { id, deleted: true, missing: true };
+  const deletedAt = new Date().toISOString();
+  const actor = ctx.actor || 'manager';
+  const scope = ctx.scope === 'thread' ? 'thread' : 'item';
+  if (existing.source_msg_id) {
+    await tombstones.record({
+      channel: existing.channel,
+      sourceMsgId: existing.source_msg_id,
+      deletedBy: actor,
+      deletedAt,
+    });
+  }
+  await trainingLog.deleteForDraft(existing.id);
+  try { await require('./handover').forgetDraft(existing.id); } catch (_) { /* handoff table is optional */ }
+  if (!db.DB_ENABLED) {
+    memory.delete(existing.id);
+    await persistFile();
+  } else {
+    await db.pool.query('DELETE FROM outbound_drafts WHERE id = $1', [existing.id]);
+  }
+  await audit.record({
+    actor,
+    action: 'draft.deleted',
+    entity_type: 'draft',
+    entity_id: existing.id,
+    before: { approval_status: existing.approval_status, deleted_at: existing.deleted_at || null },
+    after: { deleted: true },
+    meta: {
+      channel: existing.channel || null,
+      customer_user_id: existing.customer_user_id || null,
+      conversation_id: existing.customer_user_id || null,
+      scope,
+      deleted_at: deletedAt,
+    },
+  });
+  return deletedSummary(existing, deletedAt, scope);
+}
+
+async function listThread(channel, customerUserId) {
+  await ensureReady();
+  const user = String(customerUserId || '').trim();
+  const ch = channel === 'messenger' ? 'messenger' : (channel === 'zalo' ? 'zalo' : '');
+  if (!user || !ch) return [];
+  if (!db.DB_ENABLED) {
+    return [...memory.values()].filter(d => d && d.channel === ch && d.customer_user_id === user);
+  }
+  const r = await db.pool.query(
+    'SELECT * FROM outbound_drafts WHERE channel = $1 AND customer_user_id = $2',
+    [ch, user]
+  );
+  return r.rows.map(fromRow);
+}
+
+async function hardDeleteThread(id, ctx = {}) {
+  await ensureReady();
+  const existing = await getDraft(id);
+  const channel = (existing && existing.channel) || ctx.channel;
+  const userId = (existing && existing.customer_user_id) || ctx.customerUserId || ctx.customer_user_id;
+  const rows = userId ? await listThread(channel, userId) : [];
+  const seen = new Set();
+  const deleted = [];
+  const targets = rows.length ? rows : (existing ? [existing] : []);
+  for (const row of targets) {
+    if (!row || seen.has(row.id)) continue;
+    seen.add(row.id);
+    const out = await hardDelete(row.id, { ...ctx, scope: 'thread' });
+    if (out && !out.missing) deleted.push(out);
+  }
+  if (!deleted.length && !existing) return null;
+  return { scope: 'thread', count: deleted.length, deleted };
 }
 
 async function softDelete(id, ctx = {}) {
@@ -1623,6 +1750,9 @@ module.exports = {
   findBySourceMsg,
   moveBizLine,
   softDelete,
+  hardDelete,
+  hardDeleteThread,
+  listThread,
   restoreDraft,
   setInboxStatus,
   conversationFolder,

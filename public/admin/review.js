@@ -112,6 +112,8 @@
   let detailStamp = '';
   let loadSeq = 0;
   let queuedDrafts = null;
+  const pendingDeletes = new Map();
+  const settledDeletes = new Set();
   let me = { role: 'manager', canSend: true, canDelete: true, canKiot: true, canManageUsers: true };
   let listScrollY = 0;
   let detailPushed = false;
@@ -840,7 +842,10 @@
         api('/admin/api/stats?kenh=' + encodeURIComponent(salesChannel)),
       ]);
       if (seq !== loadSeq) return;
-      const incoming = window.inboxOrder ? window.inboxOrder.sort(data.drafts || []) : (data.drafts || []);
+      const rawIncoming = window.inboxOrder ? window.inboxOrder.sort(data.drafts || []) : (data.drafts || []);
+      const hiddenIds = [...pendingDeletes.keys(), ...settledDeletes];
+      const incoming = (window.undoDelete ? window.undoDelete.omitPending(rawIncoming, hiddenIds) : rawIncoming)
+        .filter(row => row && !hiddenIds.includes(row.id));
       counts = data.counts || {};
       triageCounts = data.triageCounts || triageCounts;
       groupCounts = data.pendingGroupCounts || data.groupCounts || groupCounts;
@@ -1213,10 +1218,12 @@
       customer.appendChild(richFragment(snippet(d) || '—'));
       btn.appendChild(customer);
       const foot = el('div', { class: 'msg-foot' });
-      foot.appendChild(el('span', { class: 'msg-time', text: when(d.created_at) }));
+      const received = receivedStamp(d);
+      foot.appendChild(el('span', { class: 'msg-time', text: received.text, title: received.title }));
       foot.appendChild(tags);
-      const sent = el('span', { class: 'msg-sent', text: d.sent_at ? ('Đã gửi ' + when(d.sent_at)) : '' });
-      if (!d.sent_at) sent.hidden = true;
+      const sentStamp = sentStampOf(d);
+      const sent = el('span', { class: 'msg-sent', text: sentStamp });
+      if (!sentStamp) sent.hidden = true;
       foot.appendChild(sent);
       btn.appendChild(foot);
       btn.addEventListener('click', () => openDraft(d.id));
@@ -1259,7 +1266,22 @@
         }));
       }
       card.appendChild(actions);
+      if (!d.deleted_at) card.appendChild(deleteButtons(d));
       return card;
+  }
+
+  function receivedStamp(d) {
+    const api = window.cardTime;
+    const label = api ? api.receivedLabel(d) : null;
+    if (label && label.text) return { text: label.text, title: label.title || '' };
+    return { text: when(d.created_at), title: '' };
+  }
+
+  function sentStampOf(d) {
+    const api = window.cardTime;
+    const label = api ? api.sentLabel(d) : null;
+    if (label && label.text) return label.who ? (label.text + ' · ' + label.who) : label.text;
+    return d.sent_at ? ('Đã gửi ' + when(d.sent_at)) : '';
   }
 
   function learnToggle(s) {
@@ -1354,11 +1376,6 @@
     if (!locked && d.approval_status !== 'PENDING_REVIEW') {
       addItem(actionButton('Đưa về chờ xử lý', 'ghost', () => reopen()));
     }
-    if (!d.deleted_at && me.canDelete) {
-      const del = deleteButton(d);
-      del.classList.add('menu-delete');
-      addItem(del);
-    }
     toggle.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -1387,7 +1404,7 @@
     const code = d.customer_code || f.kiot_ref || '';
     const nameRow = el('div', { class: 'name-row' });
     const nameBox = el('div', { class: 'msg-names' });
-    const nameNodes = channelNameNodes(d, { when: when(d.created_at) });
+    const nameNodes = channelNameNodes(d, { when: receivedStamp(d).text });
     nameNodes.forEach(node => nameBox.appendChild(node));
     nameRow.appendChild(nameBox);
     const kiotShown = nameNodes.some(node => node.querySelector && node.querySelector('.id-code'));
@@ -1477,7 +1494,9 @@
       fold = el('details', { class: 'kiot-fold' });
       if (s.kiotOpen || wantsOrder(d)) fold.open = true;
       const kiotExisting = kiotMark(d);
-      fold.appendChild(el('summary', { text: kiotExisting ? ('KiotViet · ' + kiotExisting.code) : 'Tạo đơn KiotViet' }));
+      const summary = el('summary', { text: 'Tạo đơn KiotViet' });
+      if (kiotExisting) summary.textContent = 'KiotViet · ' + kiotExisting.code;
+      fold.appendChild(summary);
       fold.appendChild(phoneField);
       fold.appendChild(invoiceField);
       fold.addEventListener('toggle', () => {
@@ -1542,6 +1561,7 @@
 
     const actions = el('div', { class: 'sticky-actions' });
     actions.appendChild(moreMenu(d, locked));
+    if (!d.deleted_at) actions.appendChild(deleteButtons(d));
     if (!locked && me.canSend) {
       const sendBtn = actionButton('Duyệt & Gửi', refund ? 'send refund-mode' : 'send', () => send());
       sendBtn.id = 'btn-approve';
@@ -1824,21 +1844,27 @@
     return patch({ approval_status: 'PENDING_REVIEW', actor_name: actorName() }, 'Đã đưa về chờ duyệt.');
   }
   function send() {
+    const policy = window.sendOnce;
     const data = readForm();
-    const refund = !!detailEl.querySelector('#d-refund');
-    let msg = refund
-      ? 'Gửi phản hồi này cho khách? Hoàn tiền không tự chạy — chỉ tin nhắn được gửi.'
-      : 'Gửi tin này cho khách?';
-    if (data.sales_channel && data.sales_channel !== 'farm') {
-      const ch = channels.find(c => c.id === data.sales_channel);
-      msg = 'Kênh ' + (ch ? ch.name : data.sales_channel) + ' chưa có đường gửi. Tin sẽ được duyệt và nằm ở Chờ gửi. Tiếp tục?';
-    } else if (data.channel === 'messenger') {
-      msg = refund
-        ? 'Gửi phản hồi này cho khách trên Facebook Messenger? Hoàn tiền không tự chạy.'
-        : 'Gửi tin này cho khách trên Facebook Messenger?';
+    const card = ensureCard({ id: selectedId });
+    const plan = policy
+      ? policy.prepare({ reply: data.draft_reply, learn: card.learn })
+      : { send: !!String(data.draft_reply || '').trim(), inline: 'Nhập câu trả lời trước khi gửi.' };
+    const err = document.getElementById('reply-error');
+    if (!plan.send) {
+      if (err) {
+        err.hidden = false;
+        err.textContent = plan.inline;
+      }
+      return;
     }
-    if (!confirm(msg)) return;
-    return patch(payload({ approval_status: 'APPROVED', send: true }), 'Đã duyệt.');
+    if (err) err.hidden = true;
+    if (policy && !policy.gate.tryBegin(selectedId)) return;
+    const id = selectedId;
+    const btn = document.getElementById('btn-approve');
+    if (btn) btn.disabled = true;
+    return Promise.resolve(patch(payload({ approval_status: 'APPROVED', send: true }), 'Đã gửi.'))
+      .finally(() => { if (policy) policy.gate.end(id); });
   }
 
   function vnd(n) {
@@ -2823,15 +2849,26 @@
     return row;
   }
 
-  function deleteButton(d) {
-    const del = el('button', { type: 'button', class: 'card-act card-del', text: 'Xóa' });
-    del.addEventListener('click', (ev) => {
+  function deleteButtons(d) {
+    const row = el('div', { class: 'card-delete' });
+    if (!me.canDelete) {
+      row.hidden = true;
+      return row;
+    }
+    row.appendChild(deleteAction(d, 'item', 'Xóa tin này'));
+    row.appendChild(deleteAction(d, 'thread', 'Xóa cả cuộc chat'));
+    return row;
+  }
+
+  function deleteAction(d, scope, label) {
+    const btn = el('button', { type: 'button', class: 'card-act card-del', text: 'Xóa' });
+    btn.textContent = label || (scope === 'thread' ? 'Xóa cả cuộc chat' : 'Xóa tin này');
+    btn.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      removeDraft(d.id);
+      removeDrafts(d, scope);
     });
-    if (!me.canDelete) del.hidden = true;
-    return del;
+    return btn;
   }
 
   async function moveLine(id, line) {
@@ -2849,25 +2886,115 @@
     }
   }
 
-  async function removeDraft(id) {
-    if (!confirm('Xoá tin này khỏi hộp thư? Tin trên Facebook và Zalo không bị xoá, và không gửi gì cho khách.')) return;
+  function threadMates(d) {
+    const user = String((d && d.customer_user_id) || '').trim();
+    if (!user) return [d];
+    const mates = drafts.filter(item => item
+      && item.channel === d.channel
+      && item.customer_user_id === user
+      && !pendingDeletes.has(item.id));
+    return mates.length ? mates : [d];
+  }
+
+  function pushUndoToast(id, scope) {
+    const host = document.getElementById('undo-toasts');
+    const node = el('div', { class: 'toast', role: 'status' });
+    const action = { label: 'Hoàn tác' };
+    node.appendChild(document.createTextNode(scope === 'thread' ? 'Đã xoá cả cuộc chat. ' : 'Đã xoá tin này. '));
+    const b = el('button', { type: 'button', class: 'linkish', text: action.label });
+    b.addEventListener('click', () => { undoPending(id); });
+    node.appendChild(b);
+    if (host) host.appendChild(node);
+    return node;
+  }
+
+  // Xóa hides the cards now. DELETE runs only after 3s if Hoàn tác was not clicked.
+  // A refresh during that window omits the pending ids, so the cards stay gone.
+  function removeDrafts(d, scope) {
+    const policy = window.undoDelete;
+    if (!policy || policy.needsConfirm() || !d || !me.canDelete) return;
+    const targets = scope === 'thread' ? threadMates(d) : [d];
+    const fresh = targets.filter(item => item && item.id && !pendingDeletes.has(item.id));
+    if (!fresh.length) return;
+    const entries = fresh.map(item => {
+      const index = drafts.findIndex(row => row && row.id === item.id);
+      const card = findCard(item.id);
+      const next = card ? card.nextSibling : null;
+      if (card) card.remove();
+      return {
+        id: item.id,
+        draft: index >= 0 ? drafts[index] : item,
+        index: index < 0 ? 0 : index,
+        card,
+        next,
+      };
+    });
+    const idSet = new Set(entries.map(entry => entry.id));
+    drafts = drafts.filter(row => row && !idSet.has(row.id));
+    if (idSet.has(selectedId)) {
+      selectedId = null;
+      detailStamp = '';
+      dirty = false;
+      document.body.classList.remove('show-detail');
+    }
+    const anchor = entries[0];
+    const toastNode = pushUndoToast(anchor.id, scope);
+    const job = policy.schedule(anchor.id, {
+      ms: policy.UNDO_MS,
+      onFinalize: () => finalizeDelete(entries.map(entry => entry.id), scope, anchor.draft),
+    });
+    entries.forEach(entry => {
+      pendingDeletes.set(entry.id, { ...entry, job, toastNode, scope, anchor: anchor.draft });
+    });
+  }
+
+  function undoPending(id) {
+    const entry = pendingDeletes.get(id);
+    const policy = window.undoDelete;
+    if (!entry || !policy || !entry.job.undo()) return;
+    const group = [...pendingDeletes.entries()].filter(([, item]) => item.job === entry.job);
+    group.forEach(([gid]) => pendingDeletes.delete(gid));
+    if (entry.toastNode) entry.toastNode.remove();
+    group.sort((a, b) => a[1].index - b[1].index);
+    group.forEach(([, item]) => {
+      if (item.draft) drafts = policy.restoreInPlace(drafts, item);
+    });
+    renderList();
+    toast('Đã hoàn tác.');
+  }
+
+  async function finalizeDelete(ids, scope, anchor) {
+    const sample = pendingDeletes.get(ids[0]);
+    if (!sample) return;
+    const toastNode = sample.toastNode;
     try {
-      await api('/admin/api/drafts/' + id + '/delete', {
+      const data = await api('/admin/api/drafts/' + encodeURIComponent(anchor.id) + '/delete', {
         method: 'POST',
-        body: JSON.stringify({ actor_name: actorName() }),
+        body: JSON.stringify({
+          actor_name: actorName(),
+          scope: scope === 'thread' ? 'thread' : 'item',
+          channel: anchor.channel,
+          customer_user_id: anchor.customer_user_id,
+        }),
       });
-      if (selectedId === id && !dirty) {
-        selectedId = null;
-        detailStamp = '';
-        document.body.classList.remove('show-detail');
-      }
+      const gone = data && Array.isArray(data.deleted) ? data.deleted.map(row => row && row.id) : ids;
+      ids.concat(gone).forEach(id => {
+        if (!id) return;
+        pendingDeletes.delete(id);
+        settledDeletes.add(id);
+      });
+      if (toastNode) toastNode.remove();
       listStamp = '';
-      toast('Đã xoá khỏi hộp thư.', {
-        label: 'Hoàn tác',
-        run: () => restoreDraft(id),
-      });
       await load();
     } catch (e) {
+      const policy = window.undoDelete;
+      ids.forEach(id => {
+        const item = pendingDeletes.get(id);
+        pendingDeletes.delete(id);
+        if (item && policy && item.draft) drafts = policy.restoreInPlace(drafts, item);
+      });
+      renderList();
+      if (toastNode) toastNode.remove();
       if (e.message !== 'unauthorized') toast(e.message);
     }
   }

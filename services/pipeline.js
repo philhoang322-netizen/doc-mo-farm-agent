@@ -26,6 +26,7 @@ const stockGate = require('./stockGate');
 const confidenceGate = require('./confidenceGate');
 const audit = require('./audit');
 const triage = require('./triage');
+const tombstones = require('./tombstones');
 
 const FALLBACK_REPLY =
   'Dạ farm đang bận xử lý một chút, bạn nhắn lại giúp mình sau ít phút nha 🌿 ' +
@@ -50,8 +51,24 @@ const PAUSED_INBOX_REPLY =
  * @param {function} [p.typing]   (replyTo) => Promise
  * @param {function} [p.log]      event logger
  */
+async function deletedSource(p) {
+  if (!p || !p.msgId) return false;
+  try {
+    return await tombstones.isBlocked(tombstones.channelKey(p.channel), p.msgId);
+  } catch (_) {
+    return false;
+  }
+}
+
 async function handleMessage(p) {
   const log = p.log || (() => {});
+
+  // A hard-deleted inbox card must not come back from a webhook retry.
+  // A new message id still creates a card. This path does not send.
+  if (await deletedSource(p)) {
+    log({ type: 'deleted_skipped', channel: p.channel, msgId: p.msgId });
+    return { skipped: 'duplicate' };
+  }
 
   // 1. Zalo retries slow webhooks — answer each message once.
   if (!(await ops.isNewEvent(p.msgId, p.channel))) {
@@ -311,6 +328,10 @@ async function handleMessage(p) {
         triage: triaged.level,
       };
     } catch (err) {
+      if (err && err.code === 'deleted') {
+        log({ type: 'deleted_skipped', channel: p.channel, msgId: p.msgId });
+        return { skipped: 'duplicate' };
+      }
       console.error(`Pipeline error (${p.channel}):`, err);
       log({ type: 'error', channel: p.channel, error: err.message });
       try { require('./healthWatch').noteFailure('pipeline', 'exception'); } catch (_) {}
@@ -597,6 +618,7 @@ const UNCLEAR_KINDS = new Set(['image', 'sticker', 'audio', 'video', 'file']);
 
 async function handleNonText(p) {
   const log = p.log || (() => {});
+  if (await deletedSource(p)) return { skipped: 'duplicate' };
   if (!(await ops.isNewEvent(p.msgId, p.channel))) return { skipped: 'duplicate' };
   if (!UNCLEAR_KINDS.has(p.kind)) return { skipped: 'ignored' };
 
