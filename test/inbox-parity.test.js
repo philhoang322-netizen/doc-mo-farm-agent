@@ -200,4 +200,5 @@ test('inbox keeps every pre-redesign control and API trigger', () => {
   assert.match(css, /tag-prev/);
   assert.match(css, /search-open \.inbox-search/);
   assert.match(css, /health-chip\.bad/);
+  assert.match(css, /#app-menu:not\(\[hidden\]\) #storage:not\(\[hidden\]\)/);
 });

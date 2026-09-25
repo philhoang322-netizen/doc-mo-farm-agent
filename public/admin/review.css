@@ -362,6 +362,7 @@ summary { cursor: pointer; font-weight: 700; color: var(--ink); min-height: 44px
   body.show-detail .stats,
   body.show-detail .channels-bar,
   body.show-detail #storage { display: none; }
+  body.inbox.show-detail #app-menu:not([hidden]) #storage:not([hidden]) { display: block; }
   body:not(.show-detail) #detail { display: none; }
   .actions { display: grid; grid-template-columns: 1fr 1fr; }
   .actions .send { grid-column: 1 / -1; }
