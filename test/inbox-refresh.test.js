@@ -84,7 +84,7 @@ test('typing in the order form survives several refresh cycles', { skip: !puppet
   });
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 1100, height: 640 });
+    await page.setViewport({ width: 800, height: 900 });
     await page.goto(base + '/admin', { waitUntil: 'domcontentloaded' });
     await page.type('input[name="password"]', 'secret');
     await Promise.all([

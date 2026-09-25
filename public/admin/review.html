@@ -11,42 +11,38 @@
 <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/admin/review.css">
 </head>
-<body class="hitl">
+<body class="hitl inbox">
 <div class="wrap">
-<header class="top">
+<header class="app-bar" id="app-bar">
   <div class="brand">
     <h1><span id="product-name">{{PRODUCT_NAME}}</span> <span class="ver" id="app-version">{{VERSION_LABEL}}</span></h1>
-    <p>Tin chỉ gửi khi bạn bấm Duyệt và gửi. Nhóm Zalo OA, FB-Sale và FB-DV.</p>
   </div>
-  <div class="top-actions">
+  <label class="inbox-search">
+    <span class="sr-only">Tìm khách hoặc tin</span>
+    <input id="inbox-search" type="search" placeholder="Tìm khách hoặc tin" autocomplete="off" enterkeyhint="search">
+  </label>
+  <div class="bar-actions">
+    <button type="button" id="health-toggle" class="health-chip" aria-expanded="false" aria-controls="health-banner" aria-label="Tình trạng kênh">
+      <span class="health-dot" aria-hidden="true"></span>
+      <span class="health-label"></span>
+    </button>
+    <button type="button" id="refresh-now" class="icon-btn" aria-label="Làm mới">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.3"/><path d="M21 3v6h-6"/></svg>
+      <span class="sr-only">Làm mới</span>
+    </button>
+    <button type="button" id="menu-toggle" class="icon-btn" aria-expanded="false" aria-controls="app-menu" aria-label="Menu">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
+    </button>
+  </div>
+  <div id="app-menu" class="app-menu" hidden>
     <div class="field actor-field">
       <label for="actor-name">Tên người duyệt</label>
       <input id="actor-name" maxlength="80" autocomplete="name" placeholder="Ví dụ: Phước">
     </div>
-    <a class="btn btn-sm" href="/admin/audit">Nhật ký</a>
-    <a class="btn btn-sm" href="/admin/users" id="users-link">Người dùng</a>
-    <a class="btn btn-sm" href="/admin/roster">Ca trực</a>
-    <form method="post" action="/admin/logout">
-      <button class="btn btn-sm btn-ghost" type="submit">Đăng xuất</button>
-    </form>
-  </div>
-</header>
-<p id="storage" class="note warn" hidden></p>
-<section id="health-banner" class="health-banner" hidden aria-live="polite"></section>
-<div class="refresh-row" id="inbox-refresh">
-  <span id="updated-at" class="updated-at">Cập nhật lúc --:--</span>
-  <button type="button" id="new-indicator" class="new-pill" hidden>Có 0 tin mới — bấm để hiện</button>
-  <button type="button" id="refresh-now" class="btn btn-sm">Làm mới</button>
-  <button type="button" id="sync-missed" class="btn btn-sm">Đồng bộ tin bị sót</button>
-  <span id="sync-result" class="sync-result" role="status"></span>
-</div>
-
-<section class="queue-shell" aria-label="Hàng chờ duyệt">
-  <div class="queue-head">
-    <div class="queue-title">
-      <h2>Hàng chờ duyệt</h2>
-      <button type="button" class="linkish" id="channel-settings-toggle">Cài đặt kênh</button>
-    </div>
+    <a class="menu-link" href="/admin/audit">Nhật ký</a>
+    <a class="menu-link" href="/admin/users" id="users-link">Người dùng</a>
+    <a class="menu-link" href="/admin/roster">Ca trực</a>
+    <button type="button" class="menu-link" id="channel-settings-toggle">Cài đặt kênh</button>
     <div id="channel-panel" class="channel-panel hidden">
       <span class="filter-label">Kênh bán</span>
       <div id="channels" class="pills" role="tablist" aria-label="Kênh bán"></div>
@@ -55,93 +51,113 @@
         <button type="submit" class="btn btn-sm">Thêm kênh</button>
       </form>
     </div>
-    <div class="queue-tabs">
-      <div class="group-scroll" id="group-tabs" role="tablist" aria-label="Nhóm hộp thư">
-        <button type="button" class="chip queue-tab" role="tab" data-nhom="zalo" aria-selected="true">Zalo OA <span class="count"></span></button>
-        <button type="button" class="chip queue-tab" role="tab" data-nhom="fb-sale">FB-Sale <span class="count"></span></button>
-        <button type="button" class="chip queue-tab" role="tab" data-nhom="fb-dv">FB-DV <span class="count"></span></button>
-      </div>
-      <div class="queue-tools">
-        <button type="button" class="chip hot-chip" id="hot-chip" data-triage="hot" hidden>Nóng <span class="count"></span></button>
-        <button type="button" class="chip" id="filter-toggle" aria-expanded="false" aria-controls="filter-panel">Bộ lọc</button>
-      </div>
-      <div id="filter-panel" class="filter-panel" hidden>
-        <div class="filter-block" id="triage-tabs" role="tablist" aria-label="Mức ưu tiên">
-          <span class="filter-label">Mức</span>
-          <button type="button" class="chip" role="tab" data-triage="" aria-selected="true">Tất cả</button>
-          <button type="button" class="chip chip-hot" role="tab" data-triage="hot">Nóng <span class="count"></span></button>
-          <button type="button" class="chip chip-urgent" role="tab" data-triage="urgent">Khẩn <span class="count"></span></button>
-          <button type="button" class="chip" role="tab" data-triage="normal">Thường <span class="count"></span></button>
-        </div>
-        <div class="filter-block" id="types" role="tablist" aria-label="Loại tin" hidden>
-          <span class="filter-label">Loại tin</span>
-          <button type="button" class="chip" role="tab" data-type="" aria-selected="true">Tất cả</button>
-          <button type="button" class="chip" role="tab" data-type="follower">Follower</button>
-          <button type="button" class="chip" role="tab" data-type="zns">ZNS</button>
-          <button type="button" class="chip" role="tab" data-type="broadcast">Broadcast</button>
-        </div>
-        <div class="filter-block" id="legacy-ops" role="group" aria-label="Trạng thái gửi">
-          <span class="filter-label">Gửi</span>
-          <button type="button" class="chip" data-ops="sending">Đang gửi <span class="count"></span></button>
-          <button type="button" class="chip" data-ops="queued">Chờ gửi <span class="count"></span></button>
-          <button type="button" class="chip" data-ops="failure">Thất bại <span class="count"></span></button>
-        </div>
-      </div>
-    </div>
-    <div class="zalo-toggle" id="zalo-line" role="tablist" aria-label="Nhãn Zalo" hidden>
-      <button type="button" class="chip" role="tab" data-zline="" aria-selected="true">Tất cả</button>
-      <button type="button" class="chip" role="tab" data-zline="sale">Sale</button>
-      <button type="button" class="chip" role="tab" data-zline="dv">DV</button>
-    </div>
-    <nav class="folder-row" id="folder-nav" aria-label="Thư mục trạng thái">
-      <button type="button" class="folder" data-folder="pending" aria-selected="true">Chờ xử lý <span class="count"></span></button>
-      <button type="button" class="folder" data-folder="sent">Đã gửi <span class="count"></span></button>
-      <button type="button" class="folder" data-folder="bought">Đã mua <span class="count"></span></button>
-      <button type="button" class="folder" data-folder="hesitant">Do dự <span class="count"></span></button>
-      <button type="button" class="folder" data-folder="declined">Từ chối <span class="count"></span></button>
-      <button type="button" class="folder folder-deleted" data-folder="deleted">Đã xóa <span class="count"></span></button>
-    </nav>
-    <div id="active-filters" class="active-filters" hidden></div>
+    <button type="button" class="menu-link" id="sync-missed">Đồng bộ tin bị sót</button>
+    <span id="sync-result" class="sync-result" role="status"></span>
+    <span id="updated-at" class="updated-at">Cập nhật lúc --:--</span>
+    <form method="post" action="/admin/logout">
+      <button class="menu-link menu-logout" type="submit">Đăng xuất</button>
+    </form>
   </div>
+</header>
+<section id="health-banner" class="health-banner" hidden aria-live="polite"></section>
+<p id="storage" class="note warn" hidden></p>
+<button type="button" id="new-indicator" class="new-pill" hidden>Có 0 tin mới — bấm để hiện</button>
+
+<section class="queue-shell" aria-label="Hàng chờ duyệt">
   <div class="workspace">
     <aside class="list" id="queue">
+      <div class="queue-head">
+        <div class="queue-title">
+          <h2>Hàng chờ duyệt</h2>
+        </div>
+        <div class="toolbar">
+          <div class="group-scroll" id="group-tabs" role="tablist" aria-label="Nhóm hộp thư">
+            <button type="button" class="chip queue-tab" role="tab" data-nhom="zalo" aria-selected="true">Zalo OA <span class="count"></span></button>
+            <button type="button" class="chip queue-tab" role="tab" data-nhom="fb-sale">FB-Sale <span class="count"></span></button>
+            <button type="button" class="chip queue-tab" role="tab" data-nhom="fb-dv">FB-DV <span class="count"></span></button>
+          </div>
+          <div class="folder-bar">
+            <nav class="folder-row" id="folder-nav" aria-label="Thư mục trạng thái">
+              <button type="button" class="folder" data-folder="pending" aria-selected="true">Chờ xử lý <span class="count"></span></button>
+              <button type="button" class="folder" data-folder="sent">Đã gửi <span class="count"></span></button>
+              <button type="button" class="folder" data-folder="bought">Đã mua <span class="count"></span></button>
+              <button type="button" class="folder" data-folder="hesitant">Do dự <span class="count"></span></button>
+              <button type="button" class="folder" data-folder="declined">Từ chối <span class="count"></span></button>
+              <button type="button" class="folder folder-deleted" data-folder="deleted">Đã xóa <span class="count"></span></button>
+            </nav>
+            <button type="button" class="icon-btn filter-btn" id="filter-toggle" aria-expanded="false" aria-controls="filter-panel" aria-label="Bộ lọc">
+              <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+              <span class="filter-text">Bộ lọc</span>
+            </button>
+          </div>
+        </div>
+        <div id="filter-panel" class="filter-panel" hidden>
+          <div class="filter-block" id="triage-tabs" role="tablist" aria-label="Mức ưu tiên">
+            <span class="filter-label">Mức</span>
+            <button type="button" class="chip" role="tab" data-triage="" aria-selected="true">Tất cả</button>
+            <button type="button" class="chip chip-hot hot-chip" id="hot-chip" role="tab" data-triage="hot">Nóng <span class="count"></span></button>
+            <button type="button" class="chip chip-urgent" role="tab" data-triage="urgent">Khẩn <span class="count"></span></button>
+            <button type="button" class="chip" role="tab" data-triage="normal">Thường <span class="count"></span></button>
+          </div>
+          <div class="zalo-toggle" id="zalo-line" role="tablist" aria-label="Nhãn Zalo" hidden>
+            <button type="button" class="chip" role="tab" data-zline="" aria-selected="true">Tất cả</button>
+            <button type="button" class="chip" role="tab" data-zline="sale">Sale</button>
+            <button type="button" class="chip" role="tab" data-zline="dv">DV</button>
+          </div>
+          <div class="filter-block" id="types" role="tablist" aria-label="Loại tin" hidden>
+            <span class="filter-label">Loại tin</span>
+            <button type="button" class="chip" role="tab" data-type="" aria-selected="true">Tất cả</button>
+            <button type="button" class="chip" role="tab" data-type="follower">Follower</button>
+            <button type="button" class="chip" role="tab" data-type="zns">ZNS</button>
+            <button type="button" class="chip" role="tab" data-type="broadcast">Broadcast</button>
+          </div>
+          <div class="filter-block" id="legacy-ops" role="group" aria-label="Trạng thái gửi">
+            <span class="filter-label">Gửi</span>
+            <button type="button" class="chip" data-ops="sending">Đang gửi <span class="count"></span></button>
+            <button type="button" class="chip" data-ops="queued">Chờ gửi <span class="count"></span></button>
+            <button type="button" class="chip" data-ops="failure">Thất bại <span class="count"></span></button>
+          </div>
+        </div>
+        <div id="active-filters" class="active-filters" hidden></div>
+      </div>
       <div id="list" class="list-scroll" aria-live="polite"></div>
+      <details class="queue-stats">
+        <summary>Thống kê</summary>
+        <section class="stats" aria-label="Thống kê tin gửi">
+          <article>
+            <h2>Tin gửi theo ngày</h2>
+            <div id="stats-day"></div>
+          </article>
+          <article>
+            <h2>Tin gửi theo mẫu</h2>
+            <div id="stats-template"></div>
+          </article>
+        </section>
+      </details>
+      <details class="composer">
+        <summary>Tạo tin</summary>
+        <form id="create-form">
+          <label>Tên khách <input name="customer_name" maxlength="200"></label>
+          <label>Loại tin
+            <select name="message_type">
+              <option value="follower">Follower</option>
+              <option value="zns">ZNS</option>
+              <option value="broadcast">Broadcast</option>
+            </select>
+          </label>
+          <label>Mẫu <input name="template_name" maxlength="120" placeholder="Tên mẫu, nếu có"></label>
+          <label class="span-2">Câu khách hỏi <input name="customer_query" maxlength="1000" placeholder="Câu khách gửi, nếu có"></label>
+          <label class="span-2">Nội dung <textarea name="draft_reply" required rows="4" maxlength="8000"></textarea></label>
+          <button type="submit" class="btn btn-primary">Đưa vào chờ xử lý</button>
+        </form>
+      </details>
     </aside>
     <main id="detail" class="detail"></main>
   </div>
-  <details class="queue-stats">
-    <summary>Thống kê</summary>
-    <section class="stats" aria-label="Thống kê tin gửi">
-      <article>
-        <h2>Tin gửi theo ngày</h2>
-        <div id="stats-day"></div>
-      </article>
-      <article>
-        <h2>Tin gửi theo mẫu</h2>
-        <div id="stats-template"></div>
-      </article>
-    </section>
-  </details>
-  <details class="composer">
-    <summary>Tạo tin</summary>
-    <form id="create-form">
-      <label>Tên khách <input name="customer_name" maxlength="200"></label>
-      <label>Loại tin
-        <select name="message_type">
-          <option value="follower">Follower</option>
-          <option value="zns">ZNS</option>
-          <option value="broadcast">Broadcast</option>
-        </select>
-      </label>
-      <label>Mẫu <input name="template_name" maxlength="120" placeholder="Tên mẫu, nếu có"></label>
-      <label class="span-2">Câu khách hỏi <input name="customer_query" maxlength="1000" placeholder="Câu khách gửi, nếu có"></label>
-      <label class="span-2">Nội dung <textarea name="draft_reply" required rows="4" maxlength="8000"></textarea></label>
-      <button type="submit" class="btn btn-primary">Đưa vào chờ xử lý</button>
-    </form>
-  </details>
 </section>
 </div>
 <p id="toast" class="toast" role="status" hidden></p>
+<div id="undo-toasts" class="undo-toasts" aria-live="polite"></div>
 <noscript><p class="note warn">Trang này cần JavaScript để duyệt tin.</p></noscript>
 <script>window.OMNI_SALE={{BRAND_JSON}};</script>
 <script src="/admin/inbox-refresh.js"></script>

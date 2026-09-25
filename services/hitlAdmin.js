@@ -107,9 +107,9 @@ const GATE_CSS = `
   input { width:100%; margin-top:4px; font:inherit; font-size:17px; color:#1c1712;
           border:1px solid #e4ddd3; border-radius:12px; padding:12px; min-height:48px; }
   button { width:100%; margin-top:16px; font:inherit; font-size:17px; font-weight:700;
-           min-height:48px; border:0; border-radius:12px; background:#2f6b45; color:#fff; cursor:pointer; }
+           min-height:48px; border:0; border-radius:12px; background:#0f5a35; color:#fff; cursor:pointer; }
   .err { color:#8d2f2f; font-weight:700; }
-  input:focus-visible, button:focus-visible { outline:2px solid #2f6b45; outline-offset:2px; }
+  input:focus-visible, button:focus-visible { outline:2px solid #0f5a35; outline-offset:2px; }
 `;
 
 function loginHtml(error) {
@@ -118,7 +118,7 @@ function loginHtml(error) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
-<meta name="theme-color" content="#3f6b4c">
+<meta name="theme-color" content="#0f5a35">
 <title>Đăng nhập — {{PRODUCT_NAME}}</title>
 <style>${GATE_CSS}</style>
 </head>
@@ -487,7 +487,7 @@ async function auditPage(req, res) {
   }
   if (!access.canManageUsers(await who(req))) return res.status(403).type('html').send('Không đủ quyền');
   const html = await fs.promises.readFile(path.join(PUBLIC, 'audit.html'), 'utf8');
-  res.type('html').send(html);
+  res.type('html').send(brand.applyTemplate(html));
 }
 
 async function rosterView(req, res) {
@@ -741,9 +741,13 @@ function usersHtml(data, error) {
       </td>
     </tr>`
   ).join('');
-  return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>Người dùng</title>
+  return brand.applyTemplate(`<!doctype html><html lang="vi"><head><meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f5a35">
+  <title>Người dùng — {{PRODUCT_NAME}}</title>
   <link rel="stylesheet" href="/admin/review.css"></head><body class="hitl"><div class="wrap">
   <p><a href="/admin">← Hàng chờ</a></p>
+  <p class="brand">{{PRODUCT_NAME}} {{VERSION_LABEL}}</p>
   <h1>Người dùng</h1>
   ${error ? `<p>${esc(error)}</p>` : ''}
   <p>Duyệt &amp; Gửi cho sale/dv: <b>${data.staffCanSend ? 'bật' : 'tắt (chỉ quản lý)'}</b>. Giảm giá sale tối đa ${data.discountLimit}đ. Hoàn tiền, khiếu nại, xóa, và giảm giá lớn vẫn chỉ quản lý.</p>
@@ -760,7 +764,7 @@ function usersHtml(data, error) {
     <button type="submit">Thêm</button>
   </form>
   <table><thead><tr><th>Tên</th><th>Trạng thái</th><th>Vai trò</th><th>Mật khẩu</th><th></th></tr></thead><tbody>${rows}</tbody></table>
-  </div></body></html>`;
+  </div></body></html>`);
 }
 
 async function usersView(req, res) {

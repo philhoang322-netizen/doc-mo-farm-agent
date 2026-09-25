@@ -61,7 +61,7 @@ test('admin queue markup matches the approved HITL screen', () => {
   assert.match(html, /data-triage="hot"/);
   assert.match(html, /data-triage="urgent"/);
   assert.match(html, /data-triage="normal"/);
-  assert.match(js, /Duyệt và gửi phản hồi/);
+  assert.match(js, /Duyệt & Gửi/);
   assert.match(js, /Thời gian hẹn giao/);
   assert.match(js, /PROVINCE_ID/);
   assert.match(js, /Không tự hoàn/);
