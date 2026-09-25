@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#0f5a35">
+<title>Hóa đơn — {{PRODUCT_NAME}}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/admin/invoices.css">
+</head>
+<body>
+<header class="bar">
+  <a class="back" href="/admin">← Hàng chờ</a>
+  <h1>Hóa đơn</h1>
+</header>
+<form id="filters" class="filters">
+  <label>Tìm mã HĐ, mã KH, khách, số điện thoại
+    <input id="q" name="q" type="search" placeholder="HD011637, KH000123 hoặc 090…" autocomplete="off">
+  </label>
+  <div class="dates">
+    <label>Từ <input id="from" name="from" type="date"></label>
+    <label>Đến <input id="to" name="to" type="date"></label>
+  </div>
+  <div class="filter-actions">
+    <button type="submit" class="btn primary">Lọc</button>
+    <a id="csv" class="btn" href="/admin/api/invoices.csv">Tải CSV</a>
+  </div>
+</form>
+<p id="note" class="note" role="status"></p>
+<div id="list" class="list"></div>
+<script src="/admin/invoices.js"></script>
+</body>
+</html>

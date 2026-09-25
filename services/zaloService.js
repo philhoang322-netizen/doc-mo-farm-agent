@@ -185,6 +185,61 @@ async function sendTextMessage(recipientId, message) {
   return last;
 }
 
+/**
+ * Upload a PNG to the OA, then send it as an image attachment.
+ * source.buffer is preferred. source.url is fetched only when there is no buffer.
+ */
+async function sendImageMessage(recipientId, source) {
+  if (!accessToken) {
+    lastError = { message: 'Chưa có token Zalo OA' };
+    return null;
+  }
+  const uid = String(recipientId || '').trim();
+  if (!uid) return null;
+  let buffer = source && source.buffer ? source.buffer : null;
+  if (!buffer && source && source.url) {
+    try {
+      const got = await axios.get(source.url, { responseType: 'arraybuffer', timeout: 15000 });
+      buffer = Buffer.from(got.data);
+    } catch (err) {
+      lastError = { message: err.message || 'Không tải được ảnh hoá đơn' };
+      return null;
+    }
+  }
+  if (!buffer || !buffer.length) {
+    lastError = { message: 'Không có ảnh để gửi' };
+    return null;
+  }
+  try {
+    const form = new FormData();
+    form.append('file', new Blob([buffer], { type: 'image/png' }), 'hoadon.png');
+    const uploaded = await axios.post('https://openapi.zalo.me/v2.0/oa/upload/image', form, {
+      headers: { access_token: accessToken },
+      timeout: 20000,
+    });
+    const attachmentId = uploaded.data && uploaded.data.data && uploaded.data.data.attachment_id;
+    if (!attachmentId) {
+      lastError = uploaded.data || { message: 'Zalo OA không trả mã ảnh' };
+      return null;
+    }
+    return postMessage({
+      recipient: { user_id: uid },
+      message: {
+        attachment: {
+          type: 'template',
+          payload: {
+            template_type: 'media',
+            elements: [{ media_type: 'image', attachment_id: attachmentId }],
+          },
+        },
+      },
+    });
+  } catch (err) {
+    lastError = { message: (err.response && err.response.data && JSON.stringify(err.response.data)) || err.message };
+    return null;
+  }
+}
+
 // Send quick reply message
 async function sendQuickReply(recipientId, message, quickReplies) {
   return postMessage({
@@ -217,6 +272,7 @@ async function getUserProfile(userId) {
 module.exports = {
   verifyWebhookSignature,
   sendTextMessage,
+  sendImageMessage,
   sendQuickReply,
   getUserProfile,
   refreshAccessToken,
