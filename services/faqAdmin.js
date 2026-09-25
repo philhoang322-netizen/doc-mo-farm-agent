@@ -81,15 +81,46 @@ async function getRules(req, res) {
   res.json(await store.currentRules());
 }
 
+/**
+ * POST /admin/api/faq/rules
+ * Manager session, Content-Type: application/json.
+ *
+ * Load the two private files after deploy (neither file is in git):
+ *   { "rules": "<bot_rules.md>", "system_prompt": "<system_prompt.txt>" }
+ * Non-empty rules and system_prompt are stored as one version, rules first,
+ * then a line containing only ---, then the system prompt. `body` is ignored
+ * when either of those fields is non-empty. Either field may be omitted.
+ *
+ * The rules editor sends the single-string form:
+ *   { "body": "<one string>" }
+ *
+ * Version 0 is the placeholder in faqPersona and is not written until POST.
+ */
+function combineRuleParts(input) {
+  const body = input && typeof input === 'object' ? input : {};
+  const rules = typeof body.rules === 'string' ? body.rules.replace(/\0/g, '').trim() : '';
+  const systemPrompt = typeof body.system_prompt === 'string'
+    ? body.system_prompt.replace(/\0/g, '').trim()
+    : '';
+  if (rules || systemPrompt) {
+    const parts = [];
+    if (rules) parts.push(rules);
+    if (systemPrompt) parts.push(systemPrompt);
+    return parts.join('\n\n---\n\n');
+  }
+  if (typeof body.body === 'string') return body.body;
+  return '';
+}
+
 async function saveRules(req, res) {
   const principal = await manager(req, res);
   if (!principal) return;
   try {
-    const saved = await store.saveRules(req.body && req.body.body, access.actor(principal));
+    const saved = await store.saveRules(combineRuleParts(req.body), access.actor(principal));
     res.json(saved);
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message || 'Không lưu được quy tắc' });
   }
 }
 
-module.exports = { page, list, update, importCsv, getRules, saveRules };
+module.exports = { page, list, update, importCsv, getRules, saveRules, combineRuleParts };

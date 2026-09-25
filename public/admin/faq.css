@@ -10,6 +10,7 @@ textarea {
   background: #fff;
   color: var(--ink);
 }
+.btn:disabled { opacity: 0.45; cursor: default; }
 .file-btn { position: relative; overflow: hidden; cursor: pointer; }
 .file-btn input {
   position: absolute;

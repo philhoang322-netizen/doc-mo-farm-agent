@@ -5,6 +5,9 @@
  */
 const db = require('./database');
 const { DEFAULT_RULES } = require('./faqPersona');
+const { packExtra } = require('./faqCsv');
+
+const RULES_MAX = 100000;
 
 const memory = new Map();
 let ruleVersions = [];
@@ -23,8 +26,10 @@ const SCHEMA = [
     verify_status  TEXT NOT NULL,
     source         TEXT NOT NULL DEFAULT '',
     enabled        BOOLEAN NOT NULL DEFAULT TRUE,
+    extra          JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
+  `ALTER TABLE faq_items ADD COLUMN IF NOT EXISTS extra JSONB NOT NULL DEFAULT '{}'::jsonb`,
   `CREATE INDEX IF NOT EXISTS idx_faq_items_enabled ON faq_items (enabled)`,
   `CREATE TABLE IF NOT EXISTS bot_rule_versions (
     version     INTEGER PRIMARY KEY,
@@ -55,6 +60,7 @@ function shape(row) {
     verify_status: row.verify_status,
     source: row.source || '',
     enabled,
+    extra: packExtra(row.extra),
     updated_at: toIso(row.updated_at),
   };
 }
@@ -131,13 +137,13 @@ async function replaceAll(items) {
       await client.query(
         `INSERT INTO faq_items (
           code, item_group, product, question, variants, answer, conditions,
-          action_flag, verify_status, source, enabled, updated_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          action_flag, verify_status, source, enabled, extra, updated_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13)`,
         [
           item.code, item.group || '', item.product || '', item.question,
           item.variants || '', item.answer || '', item.conditions || '',
           item.action_flag, item.verify_status, item.source || '',
-          item.enabled !== false, now,
+          item.enabled !== false, JSON.stringify(packExtra(item.extra)), now,
         ]
       );
     }
@@ -202,7 +208,7 @@ async function saveRules(body, actor) {
     err.status = 400;
     throw err;
   }
-  if (text.length > 20000) {
+  if (text.length > RULES_MAX) {
     const err = new Error('Quy tắc quá dài');
     err.status = 400;
     throw err;

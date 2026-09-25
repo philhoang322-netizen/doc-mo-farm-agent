@@ -21,6 +21,8 @@ const express = require('express');
 
 const store = require('../services/faqStore');
 const csv = require('../services/faqCsv');
+const persona = require('../services/faqPersona');
+const faqAdmin = require('../services/faqAdmin');
 const faqDraft = require('../services/faqDraft');
 const faqPrompt = require('../services/faqPrompt');
 const faqText = require('../services/faqText');
@@ -174,6 +176,36 @@ test('reviewer block is stripped from the customer body', async () => {
   assert.equal(drafts.customerFacingReply(draft).includes('Người duyệt'), false);
 });
 
+test('live lookup still runs when the stored row is not a verified static answer', async () => {
+  await seed([item({
+    code: 'FAQ-LIVE',
+    product: 'Sản phẩm mẫu A',
+    question: 'Giá sản phẩm mẫu A là bao nhiêu',
+    answer: 'KHONG-DOC-CAU-NAY',
+    action_flag: 'LIVE',
+    verify_status: 'needs_verification',
+  })]);
+  faqDraft.setKiotSearchForTests(async () => [{ name: 'Sản phẩm mẫu A', price: 222000 }]);
+  const result = await faqDraft.compose('Giá sản phẩm mẫu A là bao nhiêu');
+  assert.equal(result.reviewer.handoff, false);
+  assert.match(result.text, /222\.000đ/);
+  assert.equal(result.text.includes('KHONG-DOC-CAU-NAY'), false);
+});
+
+test('handoff flag keeps its reason when the row is not verified', async () => {
+  await seed([item({
+    code: 'FAQ-CN',
+    question: 'Câu chuyển mẫu',
+    answer: 'TOKEN-AN',
+    action_flag: 'CHUYEN_NGUOI',
+    verify_status: 'needs_verification',
+  })]);
+  const result = await faqDraft.compose('Câu chuyển mẫu');
+  assert.equal(result.reviewer.handoff, true);
+  assert.match(result.reviewer.reason, /chuyển người/);
+  assert.equal(result.text.includes('TOKEN-AN'), false);
+});
+
 test('KiotViet price overrides the FAQ snapshot', async () => {
   await seed([item({
     code: 'FAQ-GIA',
@@ -226,7 +258,38 @@ test('import validates CSV headers and previews a replace', async () => {
   assert.equal(csv.normalizeAction('tra cứu live hoặc chuyển người'), 'LIVE');
   assert.equal(csv.normalizeAction('chưa bật'), 'CHUA_BAT');
   assert.equal(csv.normalizeAction('chuyển người'), 'CHUYEN_NGUOI');
+  assert.equal(csv.normalizeAction('TU_DONG'), 'TU_DONG');
+  assert.equal(csv.normalizeAction('CHUYEN_NGUOI'), 'CHUYEN_NGUOI');
+  assert.equal(csv.normalizeAction('TRA_CUU_LIVE_HOAC_CHUYEN_NGUOI'), 'LIVE');
+  assert.equal(csv.normalizeAction('CHUA_BAT_BOT'), 'CHUA_BAT');
+  assert.equal(csv.normalizeAction('LAM_GI_DO'), null);
+  assert.equal(csv.normalizeAction(''), null);
   assert.equal(csv.normalizeVerify('cần xác minh'), 'needs_verification');
+  assert.equal(csv.normalizeVerify('ĐÃ XÁC MINH'), 'verified');
+  assert.equal(csv.normalizeVerify('CẦN XÁC MINH'), 'needs_verification');
+  assert.equal(csv.normalizeVerify('DỮ LIỆU ĐỘNG (tra live/chuyển người)'), 'needs_verification');
+  assert.equal(csv.normalizeVerify('CHUYỂN NGƯỜI (theo quy tắc)'), 'needs_verification');
+  assert.equal(csv.normalizeVerify('CHƯA BẬT BOT'), 'needs_verification');
+  assert.equal(csv.normalizeVerify('KHONG_RO'), null);
+
+  const english = csv.parseFaqCsv(
+    'code,group,product,question,answer,action_flag,verify_status\nEN-1,Nhóm,Món,Hỏi mẫu,Trả lời mẫu,auto,ok\n'
+  );
+  assert.deepEqual(english.errors, []);
+  assert.equal(english.items[0].action_flag, 'TU_DONG');
+  assert.equal(english.items[0].verify_status, 'verified');
+  assert.equal(english.items[0].extra.notes, '');
+
+  const rejected = csv.parseFaqCsv(
+    'code,group,product,question,answer,action_flag,verify_status\nEN-2,Nhóm,Món,Hỏi mẫu,Trả lời mẫu,LAM_GI_DO,ĐÃ XÁC MINH\n'
+  );
+  assert.equal(rejected.items.length, 0);
+  assert.match(rejected.errors[0], /Không gán TU_DONG/);
+  const rejectedVerify = csv.parseFaqCsv(
+    'code,group,product,question,answer,action_flag,verify_status\nEN-3,Nhóm,Món,Hỏi mẫu,Trả lời mẫu,TU_DONG,KHONG_RO\n'
+  );
+  assert.equal(rejectedVerify.items.length, 0);
+  assert.match(rejectedVerify.errors[0], /Không gán verified/);
 
   const file = fs.readFileSync(path.join(__dirname, 'fixtures', 'faq-synthetic.csv'), 'utf8');
   const app = express();
@@ -279,7 +342,7 @@ test('import validates CSV headers and previews a replace', async () => {
     assert.equal(preview.status, 200);
     const previewBody = await preview.json();
     assert.equal(previewBody.preview, true);
-    assert.equal(previewBody.added, 1);
+    assert.equal(previewBody.added, 6);
     assert.equal((await store.all()).length, 0);
 
     const saved = await fetch(base + '/admin/api/faq/import', {
@@ -288,11 +351,83 @@ test('import validates CSV headers and previews a replace', async () => {
       body: JSON.stringify({ csv: file, confirm: true }),
     });
     assert.equal(saved.status, 200);
-    assert.equal((await store.all()).length, 1);
+    const rows = await store.all();
+    assert.equal(rows.length, 6);
+    const flags = {};
+    const verifies = {};
+    for (const row of rows) {
+      flags[row.action_flag] = (flags[row.action_flag] || 0) + 1;
+      verifies[row.verify_status] = (verifies[row.verify_status] || 0) + 1;
+    }
+    assert.deepEqual(flags, { TU_DONG: 1, CHUYEN_NGUOI: 2, LIVE: 2, CHUA_BAT: 1 });
+    assert.deepEqual(verifies, { verified: 1, needs_verification: 5 });
+    const first = rows.find(row => row.code === 'MAU-1');
+    assert.equal(first.group, 'Nhóm mẫu');
+    assert.equal(first.product, 'Sản phẩm mẫu');
+    assert.equal(first.extra.question_group, 'Nhóm câu mẫu');
+    assert.equal(first.extra.intent, 'ý định mẫu');
+    assert.equal(first.extra.confidence_label, 'Cao');
+    assert.equal(first.extra.notes, 'ghi chú mẫu');
+    assert.equal(first.extra.source_as_of, '01/01/2026');
+    assert.equal(first.extra.action_label, 'TU_DONG');
+    assert.equal(first.extra.verify_label, 'ĐÃ XÁC MINH');
+    assert.equal(first.conditions, 'điều kiện mẫu');
+    assert.equal(first.source, 'nguồn mẫu, bản A');
+    assert.equal(first.action_flag, 'TU_DONG');
+    assert.equal(first.verify_status, 'verified');
 
     const page = await fetch(base + '/admin/faq', { headers: { Authorization: basic } });
     assert.equal(page.status, 200);
     assert.match(await page.text(), /Kiến thức FAQ/);
+  } finally {
+    server.close();
+  }
+});
+
+test('rules import stores both files and leaves the placeholder until then', async () => {
+  assert.equal((await store.currentRules()).version, 0);
+  assert.equal((await store.currentRules()).body, persona.DEFAULT_RULES);
+  assert.equal(
+    faqAdmin.combineRuleParts({ rules: 'QUY-TAC-MAU', system_prompt: 'PROMPT-MAU' }),
+    'QUY-TAC-MAU\n\n---\n\nPROMPT-MAU'
+  );
+  assert.equal(faqAdmin.combineRuleParts({ body: 'MOT-CHUOI' }), 'MOT-CHUOI');
+  assert.equal(
+    faqAdmin.combineRuleParts({ rules: 'QUY-TAC-MAU', body: 'BO-QUA' }),
+    'QUY-TAC-MAU'
+  );
+
+  const app = express();
+  app.use(express.json({ limit: '1mb' }));
+  hitlAdmin.mount(app);
+  const server = await new Promise(resolve => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const base = 'http://127.0.0.1:' + server.address().port;
+  try {
+    const headers = { Authorization: basic, 'Content-Type': 'application/json' };
+    const saved = await fetch(base + '/admin/api/faq/rules', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ rules: 'QUY-TAC-MAU', system_prompt: 'PROMPT-MAU' }),
+    });
+    assert.equal(saved.status, 200);
+    const body = await saved.json();
+    assert.equal(body.version, 1);
+    assert.equal(body.body, 'QUY-TAC-MAU\n\n---\n\nPROMPT-MAU');
+    const editor = await fetch(base + '/admin/api/faq/rules', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ body: 'MOT-CHUOI' }),
+    });
+    assert.equal(editor.status, 200);
+    assert.equal((await editor.json()).version, 2);
+    const empty = await fetch(base + '/admin/api/faq/rules', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ rules: ' ', system_prompt: '' }),
+    });
+    assert.equal(empty.status, 400);
   } finally {
     server.close();
   }

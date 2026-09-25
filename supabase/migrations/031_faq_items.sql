@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS faq_items (
   verify_status  TEXT NOT NULL,
   source         TEXT NOT NULL DEFAULT '',
   enabled        BOOLEAN NOT NULL DEFAULT TRUE,
+  extra          JSONB NOT NULL DEFAULT '{}'::jsonb,
   updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

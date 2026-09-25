@@ -41,12 +41,18 @@ function synonymGroups(items) {
   return groups;
 }
 
+function extraBit(item, key) {
+  return item && item.extra && item.extra[key] ? item.extra[key] : '';
+}
+
 function indexDoc(item) {
   const parts = [
     [item.question, 3],
     [item.variants, 2],
     [item.product, 2],
     [item.group, 1],
+    [extraBit(item, 'question_group'), 1],
+    [extraBit(item, 'intent'), 1],
   ];
   const tf = new Map();
   const original = new Set();

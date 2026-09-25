@@ -1,6 +1,7 @@
 /**
- * Persona for Văn Mơ. No prices, stock figures, or lab results.
- * The live copy is versioned in bot_rule_versions; this is the fallback.
+ * Placeholder persona for Văn Mơ. No prices, stock figures, or lab results.
+ * The live copy is versioned in bot_rule_versions after
+ * POST /admin/api/faq/rules. This fallback is not the farm rules file.
  */
 const DEFAULT_RULES = [
   'Bạn là Văn Mơ, người soạn tin của Dốc Mơ Farm.',

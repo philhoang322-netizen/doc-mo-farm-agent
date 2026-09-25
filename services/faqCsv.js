@@ -1,27 +1,92 @@
 /**
  * CSV contract for the private FAQ file. The file itself stays out of git.
  *
- * Required headers (English or Vietnamese aliases):
- *   code, group, product, question, answer, action_flag, verify_status
- * Optional:
- *   variants, conditions, source, enabled
+ * The farm export (16 columns) and the short English contract both work.
+ * Extra columns are kept on `extra`. Unknown action or verification labels
+ * fail the row. They are never treated as TU_DONG or verified.
+ *
+ * Farm headers:
+ *   id, nhom_san_pham, san_pham, nhom_cau_hoi, cau_hoi, bien_the_tu_khoa,
+ *   y_dinh_khach, cau_tra_loi_chuan, gia_dieu_kien, hanh_dong, do_tin_cay,
+ *   trang_thai_xac_minh, ly_do_can_xac_minh, nguon_chinh, moc_nguon, ghi_chu_noi_bo
  */
 const REQUIRED = ['code', 'group', 'product', 'question', 'answer', 'action_flag', 'verify_status'];
 const OPTIONAL = ['variants', 'conditions', 'source', 'enabled'];
-const EXPECTED = REQUIRED.concat(OPTIONAL);
+const EXTRA_KEYS = [
+  'question_group',
+  'intent',
+  'confidence_label',
+  'verify_reason',
+  'source_as_of',
+  'notes',
+  'action_label',
+  'verify_label',
+];
+const EXPECTED = REQUIRED.concat(OPTIONAL, EXTRA_KEYS);
 
 const ALIASES = {
   code: ['code', 'id', 'ma', 'mafaq', 'faqcode'],
-  group: ['group', 'nhom'],
+  group: ['group', 'nhom', 'nhomsanpham'],
   product: ['product', 'sanpham'],
   question: ['question', 'cauhoi'],
-  variants: ['variants', 'bienthe', 'cauhoituongtu', 'cauhoiphu'],
-  answer: ['answer', 'cautraloi', 'traloi'],
-  conditions: ['conditions', 'dieukien'],
+  variants: ['variants', 'bienthe', 'bienthetukhoa', 'cauhoituongtu', 'cauhoiphu'],
+  answer: ['answer', 'cautraloi', 'cautraloichuan', 'traloi'],
+  conditions: ['conditions', 'dieukien', 'giadieukien'],
   action_flag: ['actionflag', 'action', 'hanhdong', 'cohanhdong'],
   verify_status: ['verifystatus', 'verify', 'xacminh', 'trangthaixacminh', 'trangthai'],
-  source: ['source', 'nguon'],
+  source: ['source', 'nguon', 'nguonchinh'],
   enabled: ['enabled', 'bat', 'kichhoat'],
+  question_group: ['questiongroup', 'nhomcauhoi'],
+  intent: ['intent', 'ydinhkhach', 'ydinh'],
+  confidence_label: ['confidencelabel', 'dotincay', 'dotincaylabel'],
+  verify_reason: ['verifyreason', 'lydocanxacminh', 'lydo'],
+  source_as_of: ['sourceasof', 'mocnguon', 'moc'],
+  notes: ['notes', 'ghichu', 'ghichunoibo', 'note'],
+};
+
+/**
+ * Folded label → internal action_flag.
+ * TRA_CUU_LIVE_HOAC_CHUYEN_NGUOI is LIVE (live lookup, otherwise handoff).
+ * CHUA_BAT_BOT is CHUA_BAT.
+ */
+const ACTION_BY_LABEL = {
+  tudong: 'TU_DONG',
+  auto: 'TU_DONG',
+  chuyennguoi: 'CHUYEN_NGUOI',
+  handoff: 'CHUYEN_NGUOI',
+  nguoi: 'CHUYEN_NGUOI',
+  tracuulivehoacchuyennguoi: 'LIVE',
+  tracuulivechuyennguoi: 'LIVE',
+  tracuulive: 'LIVE',
+  tracuu: 'LIVE',
+  live: 'LIVE',
+  chuabatbot: 'CHUA_BAT',
+  chuabat: 'CHUA_BAT',
+  tat: 'CHUA_BAT',
+  off: 'CHUA_BAT',
+};
+
+/**
+ * Folded label → internal verify_status.
+ * Only an approved static answer is verified. Routing labels stay
+ * needs_verification so they cannot be quoted as a TU_DONG answer.
+ */
+const VERIFY_BY_LABEL = {
+  daxacminh: 'verified',
+  verified: 'verified',
+  xacminh: 'verified',
+  daduyet: 'verified',
+  ok: 'verified',
+  yes: 'verified',
+  canxacminh: 'needs_verification',
+  chuaxacminh: 'needs_verification',
+  needsverification: 'needs_verification',
+  unverified: 'needs_verification',
+  chua: 'needs_verification',
+  no: 'needs_verification',
+  dulieudongtralivechuyennguoi: 'needs_verification',
+  chuyennguoitheoquytac: 'needs_verification',
+  chuabatbot: 'needs_verification',
 };
 
 function foldHeader(s) {
@@ -35,6 +100,7 @@ function foldHeader(s) {
 
 function canonicalHeader(cell) {
   const key = foldHeader(cell);
+  if (!key) return null;
   for (const [name, list] of Object.entries(ALIASES)) {
     if (list.includes(key)) return name;
   }
@@ -90,35 +156,15 @@ function parseRows(text, delimiter) {
 }
 
 function normalizeAction(raw) {
-  const s = foldHeader(raw).replace(/hoac/g, '');
+  const s = foldHeader(raw);
   if (!s) return null;
-  if (s === 'tudong' || s === 'auto') return 'TU_DONG';
-  if (s.includes('chuabat') || s === 'tat' || s === 'off') return 'CHUA_BAT';
-  if (s.includes('tracuu') || s.includes('live')) return 'LIVE';
-  if (s.includes('chuyennguoi') || s.includes('handoff') || s === 'nguoi') return 'CHUYEN_NGUOI';
-  return null;
+  return ACTION_BY_LABEL[s] || null;
 }
 
 function normalizeVerify(raw) {
   const s = foldHeader(raw);
   if (!s) return null;
-  if (
-    s.includes('canxacminh')
-    || s.includes('chuaxacminh')
-    || s.includes('needsverification')
-    || s.includes('unverified')
-    || s === 'chua'
-    || s === 'no'
-  ) return 'needs_verification';
-  if (
-    s.includes('daxacminh')
-    || s.includes('verified')
-    || s === 'xacminh'
-    || s === 'daduyet'
-    || s === 'ok'
-    || s === 'yes'
-  ) return 'verified';
-  return null;
+  return VERIFY_BY_LABEL[s] || null;
 }
 
 function normalizeEnabled(raw) {
@@ -131,6 +177,22 @@ function normalizeEnabled(raw) {
 
 function cleanCell(value, max) {
   return String(value ?? '').replace(/\0/g, '').trim().slice(0, max);
+}
+
+function blankExtra() {
+  const extra = {};
+  for (const key of EXTRA_KEYS) extra[key] = '';
+  return extra;
+}
+
+function packExtra(value) {
+  const extra = blankExtra();
+  const src = value && typeof value === 'object' ? value : {};
+  for (const key of EXTRA_KEYS) {
+    const max = key === 'notes' || key === 'verify_reason' ? 4000 : 500;
+    extra[key] = cleanCell(src[key], max);
+  }
+  return extra;
 }
 
 /**
@@ -153,7 +215,7 @@ function parseFaqCsv(text) {
     return {
       items: [],
       errors: [
-        `Thiếu cột: ${missing.join(', ')}. Cần các cột ${EXPECTED.join(', ')} (tiếng Việt cũng được).`,
+        `Thiếu cột: ${missing.join(', ')}. Cần mã, nhóm, sản phẩm, câu hỏi, câu trả lời, hành động và trạng thái xác minh.`,
       ],
       headers,
     };
@@ -164,7 +226,15 @@ function parseFaqCsv(text) {
   if (unknown.length) {
     return {
       items: [],
-      errors: [`Cột không nhận ra: ${unknown.join(', ')}. Cần ${EXPECTED.join(', ')}.`],
+      errors: [`Cột không nhận ra: ${unknown.join(', ')}.`],
+      headers,
+    };
+  }
+  const dupes = headers.filter((name, i) => headers.indexOf(name) !== i);
+  if (dupes.length) {
+    return {
+      items: [],
+      errors: [`Cột bị trùng: ${[...new Set(dupes)].join(', ')}.`],
       headers,
     };
   }
@@ -186,19 +256,25 @@ function parseFaqCsv(text) {
       errors.push(`Dòng ${r + 1}: mã ${code} bị trùng.`);
       continue;
     }
+    const actionShown = cleanCell(record.action_flag, 80);
     const action = normalizeAction(record.action_flag);
     if (!action) {
-      errors.push(`Dòng ${r + 1}: action_flag không hợp lệ (${cleanCell(record.action_flag, 80)}).`);
+      errors.push(
+        `Dòng ${r + 1}: hành động không nhận ra (${actionShown || 'trống'}). Không gán TU_DONG.`
+      );
       continue;
     }
+    const verifyShown = cleanCell(record.verify_status, 80);
     const verify = normalizeVerify(record.verify_status);
     if (!verify) {
-      errors.push(`Dòng ${r + 1}: verify_status không hợp lệ (${cleanCell(record.verify_status, 80)}).`);
+      errors.push(
+        `Dòng ${r + 1}: trạng thái xác minh không nhận ra (${verifyShown || 'trống'}). Không gán verified.`
+      );
       continue;
     }
     const enabled = normalizeEnabled(record.enabled);
     if (enabled == null) {
-      errors.push(`Dòng ${r + 1}: enabled không hợp lệ.`);
+      errors.push(`Dòng ${r + 1}: cột bật/tắt không hợp lệ. Không gán tự động.`);
       continue;
     }
     const question = cleanCell(record.question, 2000);
@@ -208,6 +284,16 @@ function parseFaqCsv(text) {
       continue;
     }
     seen.add(code);
+    const extra = packExtra({
+      question_group: record.question_group,
+      intent: record.intent,
+      confidence_label: record.confidence_label,
+      verify_reason: record.verify_reason,
+      source_as_of: record.source_as_of,
+      notes: record.notes,
+      action_label: actionShown,
+      verify_label: verifyShown,
+    });
     items.push({
       code,
       group: cleanCell(record.group, 200),
@@ -218,18 +304,22 @@ function parseFaqCsv(text) {
       conditions: cleanCell(record.conditions, 2000),
       action_flag: action,
       verify_status: verify,
-      source: cleanCell(record.source, 200),
+      source: cleanCell(record.source, 500),
       enabled,
+      extra,
     });
   }
   return { items, errors, headers };
 }
 
 function sameItem(a, b) {
-  return REQUIRED.concat(['variants', 'conditions', 'source', 'enabled']).every(key => {
-    if (key === 'enabled') return !!a.enabled === !!b.enabled;
-    return String(a[key] || '') === String(b[key] || '');
-  });
+  const keys = REQUIRED.concat(['variants', 'conditions', 'source', 'enabled']);
+  for (const key of keys) {
+    if (key === 'enabled') {
+      if (!!a.enabled !== !!b.enabled) return false;
+    } else if (String(a[key] || '') !== String(b[key] || '')) return false;
+  }
+  return JSON.stringify(packExtra(a.extra)) === JSON.stringify(packExtra(b.extra));
 }
 
 function diffItems(existing, incoming) {
@@ -255,8 +345,13 @@ function diffItems(existing, incoming) {
 module.exports = {
   EXPECTED,
   REQUIRED,
+  EXTRA_KEYS,
+  ACTION_BY_LABEL,
+  VERIFY_BY_LABEL,
   parseFaqCsv,
   diffItems,
   normalizeAction,
   normalizeVerify,
+  packExtra,
+  blankExtra,
 };

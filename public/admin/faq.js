@@ -168,6 +168,38 @@
     }
   });
 
+  const rulesFileEl = document.getElementById('rules-file');
+  const promptFileEl = document.getElementById('prompt-file');
+  const importRulesBtn = document.getElementById('import-rules');
+
+  function rulesFilesReady() {
+    const rulesPicked = rulesFileEl.files && rulesFileEl.files.length;
+    const promptPicked = promptFileEl.files && promptFileEl.files.length;
+    importRulesBtn.disabled = !rulesPicked && !promptPicked;
+  }
+
+  rulesFileEl.addEventListener('change', rulesFilesReady);
+  promptFileEl.addEventListener('change', rulesFilesReady);
+
+  importRulesBtn.addEventListener('click', async () => {
+    try {
+      const rulesFile = rulesFileEl.files && rulesFileEl.files[0];
+      const promptFile = promptFileEl.files && promptFileEl.files[0];
+      const rules = rulesFile ? await rulesFile.text() : '';
+      const systemPrompt = promptFile ? await promptFile.text() : '';
+      const data = await api('/admin/api/faq/rules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rules, system_prompt: systemPrompt }),
+      });
+      rulesEl.value = data.body || '';
+      rulesMeta.textContent = 'Phiên bản ' + data.version;
+      note('Đã nạp quy tắc.');
+    } catch (err) {
+      note(err.message);
+    }
+  });
+
   document.getElementById('save-answer').addEventListener('click', async () => {
     if (!editing) return;
     try {

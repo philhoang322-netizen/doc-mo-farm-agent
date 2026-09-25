@@ -116,9 +116,6 @@ function decide(query, hits) {
   if (item.action_flag === 'CHUA_BAT') {
     return handoff(query, codes, confidenceValue, 'mục FAQ chưa bật', HOLD);
   }
-  if (item.verify_status !== 'verified') {
-    return handoff(query, codes, confidenceValue, 'FAQ chưa được xác minh', HOLD);
-  }
   if (item.action_flag === 'CHUYEN_NGUOI') {
     return handoff(query, codes, confidenceValue, 'FAQ yêu cầu chuyển người', HOLD);
   }
@@ -127,6 +124,8 @@ function decide(query, hits) {
   if (isOrderTaking(query, item)) {
     return handoff(query, codes, confidenceValue, 'câu đặt hàng chuyển người', HOLD);
   }
+  // LIVE may be needs_verification: the stored sentence is not quoted.
+  // KiotViet supplies the live figure, or the draft hands off.
   if (item.action_flag === 'LIVE') {
     return {
       mode: 'live',
@@ -138,6 +137,9 @@ function decide(query, hits) {
       confidence: confidenceValue,
       triage: triageFor(query, false),
     };
+  }
+  if (item.verify_status !== 'verified') {
+    return handoff(query, codes, confidenceValue, 'FAQ chưa được xác minh', HOLD);
   }
   if (item.action_flag === 'TU_DONG') {
     return {

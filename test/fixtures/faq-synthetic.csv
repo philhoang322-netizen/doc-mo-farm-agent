@@ -1,2 +1,7 @@
-code,group,product,question,variants,answer,conditions,action_flag,verify_status,source
-FAQ-MAU-1,Nhóm mẫu,Sản phẩm mẫu,Câu hỏi mẫu,,Câu trả lời mẫu không có số liệu thật,,TU_DONG,verified,test
+id,nhom_san_pham,san_pham,nhom_cau_hoi,cau_hoi,bien_the_tu_khoa,y_dinh_khach,cau_tra_loi_chuan,gia_dieu_kien,hanh_dong,do_tin_cay,trang_thai_xac_minh,ly_do_can_xac_minh,nguon_chinh,moc_nguon,ghi_chu_noi_bo
+MAU-1,Nhóm mẫu,Sản phẩm mẫu,Nhóm câu mẫu,Câu hỏi mẫu một,từ khóa mẫu,ý định mẫu,Câu trả lời mẫu một.,điều kiện mẫu,TU_DONG,Cao,ĐÃ XÁC MINH,,"nguồn mẫu, bản A",01/01/2026,ghi chú mẫu
+MAU-2,Nhóm mẫu,Sản phẩm mẫu,Nhóm câu mẫu,Câu hỏi mẫu hai,từ khóa hai,ý định hai,Câu trả lời mẫu hai.,,CHUYEN_NGUOI,Trung bình,CẦN XÁC MINH,lý do mẫu,nguồn mẫu,01/01/2026,
+MAU-3,Nhóm mẫu,Sản phẩm mẫu,Nhóm câu mẫu,Câu hỏi mẫu ba,từ khóa ba,ý định ba,Câu trả lời mẫu ba.,,TRA_CUU_LIVE_HOAC_CHUYEN_NGUOI,Cao,DỮ LIỆU ĐỘNG (tra live/chuyển người),,nguồn mẫu,01/01/2026,
+MAU-4,Nhóm mẫu,Sản phẩm mẫu,Nhóm câu mẫu,Câu hỏi mẫu bốn,từ khóa bốn,ý định bốn,Câu trả lời mẫu bốn.,,CHUA_BAT_BOT,Cao,CHƯA BẬT BOT,,nguồn mẫu,01/01/2026,
+MAU-5,Nhóm mẫu,Sản phẩm mẫu,Nhóm câu mẫu,Câu hỏi mẫu năm,từ khóa năm,ý định năm,Câu trả lời mẫu năm.,,CHUYEN_NGUOI,Cao,CHUYỂN NGƯỜI (theo quy tắc),,nguồn mẫu,01/01/2026,
+MAU-6,Nhóm mẫu,Sản phẩm mẫu,Nhóm câu mẫu,Câu hỏi mẫu sáu,từ khóa sáu,ý định sáu,Câu trả lời mẫu sáu.,,TRA_CUU_LIVE_HOAC_CHUYEN_NGUOI,Cao,CẦN XÁC MINH,chưa chốt mẫu,nguồn mẫu,01/01/2026,
