@@ -496,6 +496,22 @@ async function fbLabelStats(req, res) {
   }
 }
 
+async function fbLabelSample(req, res) {
+  try {
+    if (!access.canManageUsers(await who(req))) return deny(res);
+    const sample = require('./labelSample');
+    res.json(await sample.build({
+      label: req.query && req.query.label,
+      reason: req.query && req.query.reason,
+      limit: req.query && req.query.limit,
+    }));
+  } catch (e) {
+    const status = e.status || 500;
+    console.error('FB label sample failed:', e.message);
+    res.status(status).json({ error: e.status ? e.message : 'Không đọc được mẫu nhãn' });
+  }
+}
+
 async function syncInbox(req, res) {
   try {
     if (!access.canManageUsers(await who(req))) return deny(res);
@@ -1123,6 +1139,7 @@ function mount(app) {
   app.get('/admin/api/fb/backfill/status', requireApi, fbBackfillStatus);
   app.post('/admin/api/fb/relabel', requireApi, fbRelabel);
   app.get('/admin/api/fb/labels/stats', requireApi, fbLabelStats);
+  app.get('/admin/api/fb/labels/sample', requireApi, fbLabelSample);
   app.post('/admin/api/drafts/:id/folder', requireApi, setFolder);
   app.get('/admin/api/kiotviet/products', requireApi, kiotSearch);
   app.get('/admin/api/kiotviet/customer', requireApi, kiotCustomer);
