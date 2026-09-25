@@ -559,17 +559,28 @@
       ]));
       btn.appendChild(el('div', { class: 'msg-preview', text: snippet(d) }));
       btn.appendChild(tags);
-      btn.addEventListener('click', () => {
-        if (dirty && selectedId !== d.id && !confirm('Bạn đang sửa dở. Chuyển tin khác sẽ bỏ phần chưa lưu?')) return;
-        dirty = false;
-        selectedId = d.id;
-        detailStamp = JSON.stringify(d);
-        rememberUrl();
-        document.body.classList.add('show-detail');
-        renderList();
-        renderDetail();
+      btn.addEventListener('click', () => openDraft(d.id));
+      const card = el('div', { class: 'msg-card' + (d.id === selectedId ? ' selected' : '') });
+      card.appendChild(btn);
+      const under = el('div', { class: 'msg-under' });
+      const mark = kiotMark(d);
+      if (mark) {
+        const bits = mark.code + (mark.total != null && mark.total !== '' ? ' · ' + vnd(mark.total) : '');
+        under.appendChild(el('span', { class: 'kiot-badge', text: bits }));
+      }
+      const launch = el('button', {
+        type: 'button',
+        class: 'kiot-launch',
+        text: mark ? 'Đơn KiotViet' : 'Tạo đơn KiotViet',
       });
-      listEl.appendChild(btn);
+      launch.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openDraft(d.id, { focusKiot: true });
+      });
+      under.appendChild(launch);
+      card.appendChild(under);
+      listEl.appendChild(card);
     });
     if (!selectedId) showPlaceholder();
   }
@@ -662,6 +673,7 @@
       el('span', { text: 'Khách đang muốn' }),
       el('div', { text: snippet(d) || '—' }),
     ]));
+    body.appendChild(kiotPanel(d));
 
     if (needsHumanTicket(d) && !refund) {
       body.appendChild(el('p', {
@@ -929,6 +941,9 @@
       ward_name: selectedName(detailEl.querySelector('#d-ward')) || null,
       address_detail: data.address_detail || null,
       delivery_slot: data.delivery_slot || null,
+      kiot_code: (formOf(currentDraft()).kiot_code) || null,
+      kiot_total: (formOf(currentDraft()).kiot_total) || null,
+      kiot_kind: (formOf(currentDraft()).kiot_kind) || null,
     };
   }
 
@@ -1013,6 +1028,528 @@
     }
     if (!confirm(msg)) return;
     return patch(payload({ approval_status: 'APPROVED', send: true }), 'Đã duyệt.');
+  }
+
+  function vnd(n) {
+    const x = Number(n);
+    if (!Number.isFinite(x)) return '—';
+    return Math.round(x).toLocaleString('vi-VN') + 'đ';
+  }
+
+  function kiotMark(d) {
+    if (!d) return null;
+    const f = formOf(d);
+    if (f.kiot_code) return { code: f.kiot_code, total: f.kiot_total };
+    const code = String(d.invoice_code || '').trim();
+    if (/^(HD|DH)/i.test(code)) return { code, total: null };
+    return null;
+  }
+
+  function openDraft(id, opts) {
+    if (dirty && selectedId !== id && !confirm('Bạn đang sửa dở. Chuyển tin khác sẽ bỏ phần chưa lưu?')) return;
+    dirty = false;
+    selectedId = id;
+    const row = drafts.find(item => item.id === id);
+    detailStamp = row ? JSON.stringify(row) : '';
+    rememberUrl();
+    document.body.classList.add('show-detail');
+    renderList();
+    renderDetail();
+    if (opts && opts.focusKiot) {
+      const panel = detailEl.querySelector('.kiot-panel');
+      if (panel && panel.scrollIntoView) panel.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function addressText(d) {
+    const f = formOf(d);
+    return [f.address_detail, f.ward_name, f.district_name, f.province_name]
+      .map(part => String(part || '').trim())
+      .filter(Boolean)
+      .join(', ');
+  }
+
+  function stockText(stock) {
+    if (!stock || stock.level == null || stock.level === 'unknown') return 'Chưa rõ tồn';
+    if (stock.level === 'blocked') {
+      if (Number(stock.available) === 0) return 'Hết hàng';
+      return 'Không đủ (còn ' + stock.available + ')';
+    }
+    if (stock.level === 'low') return 'Sắp hết (còn ' + stock.available + ')';
+    return 'Còn ' + stock.available;
+  }
+
+  function kiotPanel(d) {
+    const state = {
+      document: 'invoice',
+      lines: [blankKiotLine()],
+      quote: null,
+      submitting: false,
+      touched: {},
+      existing: kiotMark(d),
+      acknowledge: false,
+    };
+    const panel = el('section', { class: 'kiot-panel', id: 'kiot-panel' });
+    panel.appendChild(el('h4', { text: 'Tạo đơn KiotViet' }));
+    panel.appendChild(el('p', {
+      class: 'kiot-lead',
+      text: 'Điền nhanh hoặc chọn từng món. Chưa tạo trên KiotViet cho đến khi bạn bấm xác nhận. Tin khách không tự gửi.',
+    }));
+
+    const quick = el('textarea', {
+      class: 'kiot-quick',
+      rows: '2',
+      placeholder: '1 xuc xich, 2 nước nghệ lên men',
+      'aria-label': 'Nhập nhanh sản phẩm và số lượng',
+    });
+    quick.addEventListener('input', () => { state.touched.quick = true; dirty = true; state.quote = null; });
+    const quickBtn = el('button', { type: 'button', class: 'btn btn-sm', text: 'Điền vào đơn' });
+    quickBtn.addEventListener('click', () => runQuick());
+    panel.appendChild(el('div', { class: 'kiot-quick-row' }, [quick, quickBtn]));
+    const quickMsg = el('p', { class: 'kiot-msg', hidden: 'hidden' });
+    panel.appendChild(quickMsg);
+
+    const exist = el('p', { class: 'banner warn', hidden: 'hidden' });
+    const ackLabel = el('label', { class: 'kiot-ack', hidden: 'hidden' });
+    const ack = el('input', { type: 'checkbox' });
+    ack.addEventListener('change', () => { state.acknowledge = ack.checked; });
+    ackLabel.appendChild(ack);
+    ackLabel.appendChild(document.createTextNode(' Vẫn tạo thêm một chứng từ'));
+    function showExisting(mark) {
+      if (!mark) return;
+      state.existing = mark;
+      exist.hidden = false;
+      exist.textContent = 'Nháp này đã có ' + mark.code + (mark.total != null && mark.total !== '' ? ' · ' + vnd(mark.total) : '') + '. Tạo thêm dễ bị trùng.';
+      ackLabel.hidden = false;
+    }
+    if (state.existing) showExisting(state.existing);
+    panel.appendChild(exist);
+    panel.appendChild(ackLabel);
+
+    const docRow = el('div', { class: 'kiot-docs', role: 'group', 'aria-label': 'Loại chứng từ' });
+    const invoiceBtn = el('button', { type: 'button', class: 'chip active', text: 'Hoá đơn (HĐ)' });
+    const orderBtn = el('button', { type: 'button', class: 'chip', text: 'Đặt hàng (ĐH)' });
+    function setDoc(kind) {
+      state.document = kind;
+      state.quote = null;
+      invoiceBtn.classList.toggle('active', kind === 'invoice');
+      orderBtn.classList.toggle('active', kind === 'order');
+      paintSummary();
+    }
+    invoiceBtn.addEventListener('click', () => setDoc('invoice'));
+    orderBtn.addEventListener('click', () => setDoc('order'));
+    docRow.appendChild(invoiceBtn);
+    docRow.appendChild(orderBtn);
+    panel.appendChild(docRow);
+
+    const grid = el('div', { class: 'kiot-grid' });
+    const nameInput = kiotInput('Tên khách', d.customer_name || '', 'kiot-name');
+    const phoneInput = kiotInput('Số điện thoại', d.customer_phone || '', 'kiot-phone');
+    const addrInput = kiotInput('Địa chỉ giao', addressText(d), 'kiot-address');
+    nameInput.input.addEventListener('input', () => { state.touched.name = true; dirty = true; });
+    phoneInput.input.addEventListener('input', () => { state.touched.phone = true; dirty = true; state.quote = null; });
+    addrInput.input.addEventListener('input', () => { state.touched.address = true; dirty = true; });
+    grid.appendChild(nameInput.wrap);
+    grid.appendChild(phoneInput.wrap);
+    grid.appendChild(addrInput.wrap);
+    panel.appendChild(grid);
+
+    const linesEl = el('div', { class: 'kiot-lines' });
+    panel.appendChild(linesEl);
+    const addBtn = el('button', { type: 'button', class: 'btn btn-sm', text: 'Thêm dòng' });
+    addBtn.addEventListener('click', () => {
+      state.lines.push(blankKiotLine());
+      state.quote = null;
+      paintLines();
+    });
+    panel.appendChild(addBtn);
+
+    const moneyRow = el('div', { class: 'kiot-money' });
+    const discountInput = kiotInput('Giảm giá (đ)', '0', 'kiot-discount');
+    const shipInput = kiotInput('Phí ship (đ)', '0', 'kiot-ship');
+    const noteInput = kiotInput('Ghi chú', '', 'kiot-note');
+    discountInput.input.addEventListener('input', () => { state.quote = null; paintTotals(); });
+    shipInput.input.addEventListener('input', () => { state.touched.ship = true; state.quote = null; paintTotals(); });
+    noteInput.input.addEventListener('input', () => { dirty = true; });
+    moneyRow.appendChild(discountInput.wrap);
+    moneyRow.appendChild(shipInput.wrap);
+    panel.appendChild(moneyRow);
+    panel.appendChild(noteInput.wrap);
+
+    const totals = el('p', { class: 'kiot-total', text: '' });
+    panel.appendChild(totals);
+    const summary = el('div', { class: 'kiot-summary hidden' });
+    panel.appendChild(summary);
+    const err = el('p', { class: 'banner bad hidden' });
+    panel.appendChild(err);
+
+    const actions = el('div', { class: 'kiot-actions' });
+    const quoteBtn = el('button', { type: 'button', class: 'btn', text: 'Kiểm kho và xem lại' });
+    const confirmBtn = el('button', { type: 'button', class: 'btn btn-primary', text: 'Xác nhận tạo hoá đơn' });
+    confirmBtn.disabled = true;
+    quoteBtn.addEventListener('click', () => runQuote(false));
+    confirmBtn.addEventListener('click', () => runQuote(true));
+    actions.appendChild(quoteBtn);
+    actions.appendChild(confirmBtn);
+    panel.appendChild(actions);
+
+    function showError(text) {
+      if (!text) {
+        err.classList.add('hidden');
+        err.textContent = '';
+        return;
+      }
+      err.classList.remove('hidden');
+      err.textContent = text;
+    }
+
+    function payloadLines() {
+      return state.lines.filter(line => line.sku || line.name || line.phrase).map(line => ({
+        sku: line.sku || '',
+        product_name: line.name || line.phrase || '',
+        quantity: Number(line.quantity) || 0,
+      }));
+    }
+
+    function moneyVal(input) {
+      const raw = String(input.value || '').trim();
+      if (!raw) return 0;
+      const n = Number(raw.replace(/\./g, '').replace(',', '.'));
+      return Number.isFinite(n) ? n : 0;
+    }
+
+    function localTotal() {
+      const sub = state.lines.reduce((sum, line) => {
+        const price = Number(line.price);
+        const qty = Number(line.quantity);
+        if (!Number.isFinite(price) || !Number.isFinite(qty)) return sum;
+        return sum + price * qty;
+      }, 0);
+      return Math.max(0, sub - moneyVal(discountInput.input) + moneyVal(shipInput.input));
+    }
+
+    function paintTotals() {
+      const ready = state.lines.some(line => line.sku && line.price != null);
+      totals.textContent = ready ? 'Tổng tạm tính: ' + vnd(localTotal()) : 'Chọn sản phẩm để thấy giá KiotViet.';
+    }
+
+    function paintSummary() {
+      const q = state.quote;
+      confirmBtn.textContent = state.document === 'order' ? 'Xác nhận tạo đơn đặt hàng' : 'Xác nhận tạo hoá đơn';
+      if (!q || q.created) {
+        summary.classList.add('hidden');
+        confirmBtn.disabled = true;
+        return;
+      }
+      summary.classList.remove('hidden');
+      summary.textContent = '';
+      const title = state.document === 'order' ? 'Xem lại đơn đặt hàng' : 'Xem lại hoá đơn';
+      summary.appendChild(el('strong', { text: title }));
+      const who = [nameInput.input.value.trim() || 'Khách', phoneInput.input.value.trim()].filter(Boolean).join(' · ');
+      summary.appendChild(el('p', { text: who }));
+      if (addrInput.input.value.trim()) summary.appendChild(el('p', { text: 'Giao: ' + addrInput.input.value.trim() }));
+      (q.lines || []).forEach(line => {
+        const stock = line.stock ? ' — ' + stockText(line.stock) : '';
+        summary.appendChild(el('p', {
+          text: (line.name || line.sku) + ' × ' + line.quantity + ' · ' + vnd(line.line_total) + stock,
+        }));
+      });
+      summary.appendChild(el('p', { text: 'Giảm ' + vnd(q.discount) + ' · Ship ' + vnd(q.shipping_fee) }));
+      summary.appendChild(el('p', { class: 'kiot-grand', text: 'Tổng ' + vnd(q.total) }));
+      if (q.stock && q.stock.decision === 'low') {
+        summary.appendChild(el('p', { class: 'kiot-warn', text: q.stock.summary || 'Sắp hết hàng.' }));
+      }
+      const blocked = q.stock && (q.stock.decision === 'blocked' || q.stock.decision === 'skipped');
+      const missing = (q.lines || []).some(line => line.missing || !line.sku);
+      confirmBtn.disabled = state.submitting || blocked || missing || !q.can_confirm;
+    }
+
+    function paintLines() {
+      linesEl.textContent = '';
+      state.lines.forEach((line, index) => linesEl.appendChild(lineRow(line, index)));
+      paintTotals();
+      paintSummary();
+    }
+
+    function lineRow(line, index) {
+      const row = el('div', { class: 'kiot-line' + (line.status === 'unmatched' ? ' unmatched' : line.status === 'ambiguous' ? ' ambiguous' : '') });
+      const head = el('div', { class: 'kiot-line-head' });
+      if (line.sku) {
+        head.appendChild(el('strong', { text: line.name || line.sku }));
+        head.appendChild(el('span', { class: 'kiot-code', text: line.sku + (line.unit ? ' · ' + line.unit : '') }));
+      } else if (line.status === 'unmatched') {
+        head.appendChild(el('strong', { text: 'Chưa khớp: ' + (line.phrase || 'dòng này') }));
+      } else if (line.status === 'ambiguous') {
+        head.appendChild(el('strong', { text: 'Chọn giúp: ' + (line.phrase || 'dòng này') }));
+      } else {
+        head.appendChild(el('strong', { text: 'Sản phẩm' }));
+      }
+      const remove = el('button', { type: 'button', class: 'kiot-remove', text: 'Xoá' });
+      remove.addEventListener('click', () => {
+        state.lines.splice(index, 1);
+        if (!state.lines.length) state.lines.push(blankKiotLine());
+        state.quote = null;
+        dirty = true;
+        paintLines();
+      });
+      head.appendChild(remove);
+      row.appendChild(head);
+
+      if (!line.sku) {
+        if (line.status === 'ambiguous' && line.candidates && line.candidates.length) {
+          const pick = el('select', { 'aria-label': 'Chọn sản phẩm cho ' + (line.phrase || 'dòng') });
+          pick.appendChild(el('option', { value: '', text: 'Có vài món khớp — chọn một' }));
+          line.candidates.forEach((cand, i) => {
+            const label = (cand.sku ? cand.sku + ' · ' : '') + (cand.name || '') + (cand.price != null ? ' · ' + vnd(cand.price) : '');
+            pick.appendChild(el('option', { value: String(i), text: label }));
+          });
+          pick.addEventListener('change', () => {
+            const cand = line.candidates[Number(pick.value)];
+            if (!cand) return;
+            applyProduct(line, cand);
+            state.quote = null;
+            dirty = true;
+            paintLines();
+          });
+          row.appendChild(pick);
+        }
+        const search = el('input', { type: 'search', placeholder: 'Tìm tên hoặc mã KiotViet', 'aria-label': 'Tìm sản phẩm' });
+        search.value = line.query || '';
+        const results = el('div', { class: 'kiot-results' });
+        search.addEventListener('input', () => {
+          line.query = search.value;
+          dirty = true;
+          clearTimeout(line._timer);
+          line._timer = setTimeout(() => fillSearch(search.value, results, line), 250);
+        });
+        row.appendChild(search);
+        row.appendChild(results);
+      }
+
+      const qtyWrap = el('label', { class: 'kiot-qty' });
+      qtyWrap.appendChild(document.createTextNode('SL / KL'));
+      const qty = el('input', { type: 'number', min: '0.001', step: '0.001', 'aria-label': 'Số lượng hoặc khối lượng' });
+      qty.value = line.quantity == null ? '1' : String(line.quantity);
+      qty.addEventListener('input', () => {
+        line.quantity = Number(qty.value);
+        state.quote = null;
+        dirty = true;
+        paintTotals();
+        const totalEl = row.querySelector('.kiot-line-total');
+        if (totalEl) totalEl.textContent = line.price != null && Number.isFinite(line.quantity) ? vnd(line.price * line.quantity) : '—';
+        confirmBtn.disabled = true;
+      });
+      qtyWrap.appendChild(qty);
+      row.appendChild(qtyWrap);
+
+      const meta = el('div', { class: 'kiot-meta' });
+      meta.appendChild(el('span', { text: line.price != null ? vnd(line.price) : 'Giá —' }));
+      meta.appendChild(el('span', {
+        class: 'kiot-line-total',
+        text: line.price != null && Number.isFinite(Number(line.quantity)) ? vnd(line.price * line.quantity) : '—',
+      }));
+      const stockCls = line.stock && line.stock.level === 'blocked' ? 'bad' : line.stock && line.stock.level === 'low' ? 'warn' : '';
+      meta.appendChild(el('span', { class: 'kiot-stock ' + stockCls, text: line.sku ? stockText(line.stock) : '' }));
+      row.appendChild(meta);
+      if (line.warning) row.appendChild(el('p', { class: 'kiot-warn', text: line.warning }));
+      return row;
+    }
+
+    function applyProduct(line, product) {
+      line.sku = product.sku || product.code || '';
+      line.name = product.name || '';
+      line.unit = product.unit || '';
+      line.price = product.price != null ? Number(product.price) : null;
+      line.status = 'matched';
+      line.candidates = [];
+      line.stock = product.available != null ? { level: null, available: product.available } : line.stock;
+      if (product.stock) line.stock = product.stock;
+    }
+
+    async function fillSearch(q, box, line) {
+      box.textContent = '';
+      const query = String(q || '').trim();
+      if (query.length < 2) return;
+      try {
+        const data = await api('/admin/api/kiotviet/products?q=' + encodeURIComponent(query));
+        (data.products || []).forEach(product => {
+          const btn = el('button', {
+            type: 'button',
+            class: 'kiot-hit',
+            text: (product.code || '') + ' · ' + (product.name || '') + ' · ' + vnd(product.price),
+          });
+          btn.addEventListener('click', () => {
+            applyProduct(line, product);
+            state.quote = null;
+            dirty = true;
+            paintLines();
+          });
+          box.appendChild(btn);
+        });
+        if (!(data.products || []).length) box.appendChild(el('p', { class: 'kiot-warn', text: 'Không thấy món này trên KiotViet.' }));
+      } catch (e) {
+        box.appendChild(el('p', { class: 'kiot-warn', text: e.message }));
+      }
+    }
+
+    async function runQuick() {
+      showError('');
+      quickMsg.hidden = true;
+      quickBtn.disabled = true;
+      try {
+        const data = await api('/admin/api/kiotviet/quick-entry', {
+          method: 'POST',
+          body: JSON.stringify({ text: quick.value }),
+        });
+        const rows = data.lines || [];
+        state.lines = rows.length ? rows.map(row => ({
+          sku: row.sku || '',
+          name: row.name || '',
+          unit: row.unit || '',
+          price: row.price,
+          quantity: row.quantity || 1,
+          phrase: row.phrase || '',
+          status: row.status || 'unmatched',
+          warning: row.warning || '',
+          stock: row.stock || null,
+          candidates: row.candidates || [],
+          query: row.status === 'unmatched' ? (row.phrase || '') : '',
+        })) : [blankKiotLine()];
+        state.quote = null;
+        dirty = true;
+        const ambiguous = state.lines.filter(line => line.status === 'ambiguous').length;
+        const missed = state.lines.filter(line => line.status === 'unmatched').length;
+        const notes = [];
+        if (ambiguous) notes.push(ambiguous + ' dòng cần chọn trong danh sách');
+        if (missed) notes.push(missed + ' dòng chưa khớp');
+        if (notes.length) {
+          quickMsg.hidden = false;
+          quickMsg.textContent = notes.join('. ') + '.';
+        }
+        paintLines();
+      } catch (e) {
+        if (e.message !== 'unauthorized') showError(e.message);
+      } finally {
+        quickBtn.disabled = false;
+      }
+    }
+
+    async function runQuote(confirm) {
+      showError('');
+      if (state.submitting) return;
+      const lines = payloadLines();
+      if (!lines.length) {
+        showError('Cần ít nhất một dòng hàng.');
+        return;
+      }
+      if (confirm && lines.some(line => !line.sku)) {
+        showError('Còn dòng chưa chọn mã KiotViet.');
+        return;
+      }
+      if (confirm && state.existing && !state.acknowledge) {
+        showError('Nháp đã có chứng từ. Chỉ tạo thêm khi bạn tick xác nhận.');
+        return;
+      }
+      state.submitting = true;
+      quoteBtn.disabled = true;
+      confirmBtn.disabled = true;
+      const body = {
+        confirm: confirm === true,
+        document: state.document,
+        customer_name: nameInput.input.value.trim(),
+        phone: phoneInput.input.value.trim(),
+        address: addrInput.input.value.trim(),
+        note: noteInput.input.value.trim(),
+        discount: moneyVal(discountInput.input),
+        shipping_fee: moneyVal(shipInput.input),
+        lines,
+        actor_name: actorName(),
+        acknowledge_existing: state.acknowledge === true,
+      };
+      if (confirm && state.quote && state.quote.total != null) body.expected_total = state.quote.total;
+      try {
+        const data = await api('/admin/api/drafts/' + d.id + '/kiotviet', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        if (!confirm) {
+          state.quote = data;
+          (data.lines || []).forEach((row, i) => {
+            const line = state.lines[i];
+            if (!line) return;
+            if (row.price != null) line.price = row.price;
+            if (row.sku) line.sku = row.sku;
+            if (row.name) line.name = row.name;
+            if (row.unit) line.unit = row.unit;
+            if (row.stock) line.stock = row.stock;
+            if (row.missing) line.status = 'unmatched';
+          });
+          paintLines();
+          if (data.error) showError(data.error);
+          return;
+        }
+        const code = data.code;
+        const reply = detailEl.querySelector('#draft-reply');
+        if (reply && data.draft && data.draft.draft_reply && d.approval_status !== 'SENT') {
+          reply.value = data.draft.draft_reply;
+        }
+        if (data.draft) {
+          const idx = drafts.findIndex(item => item.id === d.id);
+          if (idx >= 0) drafts[idx] = data.draft;
+        }
+        showExisting({ code, total: data.total });
+        toast(data.saved === false
+          ? (data.error || ('Đã tạo ' + code + ' nhưng chưa ghi vào nháp.'))
+          : ('Đã tạo ' + code + ' · ' + vnd(data.total) + '. Tin vẫn chờ duyệt, chưa gửi.'));
+        dirty = false;
+        detailStamp = '';
+        listStamp = '';
+        await load();
+      } catch (e) {
+        if (e.message !== 'unauthorized') showError(e.message);
+        state.submitting = false;
+        quoteBtn.disabled = false;
+        paintSummary();
+      }
+    }
+
+    paintLines();
+    api('/admin/api/drafts/' + d.id + '/kiotviet').then(data => {
+      if (!panel.isConnected) return;
+      if (!state.touched.name && data.customer_name) nameInput.input.value = data.customer_name;
+      if (!state.touched.phone && data.phone) phoneInput.input.value = data.phone;
+      if (!state.touched.address && data.address) addrInput.input.value = data.address;
+      if (!state.touched.quick && data.quick_text) quick.value = data.quick_text;
+      if (!state.touched.ship && data.shipping_fee != null) shipInput.input.value = String(data.shipping_fee);
+      if (data.existing) showExisting(data.existing);
+    }).catch(() => {});
+    return panel;
+  }
+
+  function blankKiotLine() {
+    return {
+      sku: '',
+      name: '',
+      unit: '',
+      price: null,
+      quantity: 1,
+      phrase: '',
+      status: 'empty',
+      warning: '',
+      stock: null,
+      candidates: [],
+      query: '',
+    };
+  }
+
+  function kiotInput(label, value, id) {
+    const input = el('input', { type: 'text', id: id });
+    input.value = value || '';
+    const wrap = el('div', { class: 'field-block' }, [
+      el('label', { for: id, text: label }),
+      input,
+    ]);
+    return { wrap, input };
   }
 
   document.addEventListener('visibilitychange', () => {

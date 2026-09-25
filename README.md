@@ -104,6 +104,12 @@ Returns, exchanges, and refunds do not go to the model. The canned draft only sa
 
 A low or zero result is flagged for Sales (`PENDING_REVIEW`, ticket “Cần đối soát kho”) and is not sent to Zalo, including when `HITL_REQUIRE_APPROVAL` is off. Pushing the order checks stock again and refuses when the gate is not `ok`.
 
+## Tạo đơn KiotViet trên /admin
+
+Each Zalo and Messenger draft has **Tạo đơn KiotViet** under the message card. The manager types a basket (`1 xuc xich, 2 nước nghệ lên men` or `0.5kg ba rọi`) or picks products. Nothing is posted to KiotViet until **Xác nhận tạo hoá đơn** (or **Xác nhận tạo đơn đặt hàng**). The reply is prefilled with the code, total, and `HTX Nong Trai Doc Mo` / `VCB 1058 43 7590`, and stays `PENDING_REVIEW`.
+
+The admin sale uses `KIOTVIET_BRANCH_ID` when set, otherwise branch `26947` and retailer `KIOTVIET_RETAILER` (`nongsansachdn`). Default document is an invoice (`POST /invoices`, unpaid). The order toggle uses the existing `POST /orders` shape with `makeInvoice: false`. The chatbot `pushOrder` path is unchanged. No new environment variables. Client id and secret stay in `KIOTVIET_CLIENT_ID` and `KIOTVIET_CLIENT_SECRET`.
+
 ## Low confidence and non-text
 
 Stickers, unclear photos, empty messages, jokes, and any turn whose intent confidence is below `AI_CONFIDENCE_MIN` do not become a normal sales draft. The pipeline notifies the farm on the existing handoff card and holds one short waiting line for staff. It does not set `bot_paused`. Only an explicit “gặp người thật” / stop phrase (`ops.wantsHuman`), or the owner `/dung` command, pauses the bot. While paused, later messages still become `PENDING_REVIEW` cards and are not auto-sent. `POST /admin/api/customers/resume` with `{ "external_key": "fb_…" }` is the `/mo` equivalent.

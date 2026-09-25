@@ -420,6 +420,9 @@ function emptyReviewForm() {
     ward_name: null,
     address_detail: null,
     delivery_slot: null,
+    kiot_code: null,
+    kiot_total: null,
+    kiot_kind: null,
   };
 }
 
@@ -461,6 +464,17 @@ function cleanReviewForm(value) {
   out.ward_id = cleanShort('ward_id', src.ward_id, 32);
   out.ward_name = cleanShort('ward_name', src.ward_name, 80);
   out.address_detail = cleanShort('address_detail', src.address_detail, 200);
+  const kiotCode = cleanShort('kiot_code', src.kiot_code, 40);
+  if (kiotCode && !/^[A-Za-z0-9._-]+$/.test(kiotCode)) {
+    throw new DraftError(400, 'Mã KiotViet không hợp lệ');
+  }
+  out.kiot_code = kiotCode;
+  out.kiot_total = cleanShort('kiot_total', src.kiot_total, 20);
+  if (src.kiot_kind != null && String(src.kiot_kind).trim() !== '') {
+    const kind = String(src.kiot_kind).trim();
+    if (kind !== 'invoice' && kind !== 'order') throw new DraftError(400, 'Loại chứng từ KiotViet không hợp lệ');
+    out.kiot_kind = kind;
+  }
   return out;
 }
 
