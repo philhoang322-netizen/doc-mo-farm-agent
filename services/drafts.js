@@ -940,6 +940,25 @@ async function listDrafts(query) {
     else if (g === 'fb-sale') groupCounts.fbSale += 1;
     else if (g === 'fb-dv') groupCounts.fbDv += 1;
   }
+  const pendingGroupCounts = { zalo: 0, fbSale: 0, fbDv: 0 };
+  const pendingGroupQuery = {
+    ...q,
+    nhom: null,
+    zline: null,
+    triage: null,
+    type: null,
+    platform: null,
+    hop: 'pending',
+    ops: 'pending',
+    status: null,
+  };
+  for (const d of all) {
+    if (!passesList(d, pendingGroupQuery)) continue;
+    const g = groupKey(d);
+    if (g === 'zalo') pendingGroupCounts.zalo += 1;
+    else if (g === 'fb-sale') pendingGroupCounts.fbSale += 1;
+    else if (g === 'fb-dv') pendingGroupCounts.fbDv += 1;
+  }
   const folderCounts = { pending: 0, sent: 0, bought: 0, hesitant: 0, declined: 0, deleted: 0 };
   const pendingIds = [];
   for (const d of all) {
@@ -963,6 +982,7 @@ async function listDrafts(query) {
     triageCounts,
     platformCounts,
     groupCounts,
+    pendingGroupCounts,
     folderCounts,
     pendingIds,
     storage: db.DB_ENABLED ? 'postgres' : 'memory',

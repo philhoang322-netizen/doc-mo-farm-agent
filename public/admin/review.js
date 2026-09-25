@@ -202,7 +202,8 @@
 
   triageTabs.forEach(btn => {
     btn.addEventListener('click', () => {
-      const next = btn.dataset.triage || '';
+      let next = btn.dataset.triage || '';
+      if (btn.id === 'hot-chip' && triage === 'hot') next = '';
       if (next === triage) return;
       guardSwitch(() => { triage = next; });
     });
@@ -232,9 +233,34 @@
     });
   });
 
-  document.getElementById('more-filters').addEventListener('click', () => {
-    document.getElementById('extra-filters').classList.toggle('hidden');
-  });
+  const filterPanel = document.getElementById('filter-panel');
+  const filterToggle = document.getElementById('filter-toggle');
+  if (filterToggle && filterPanel) {
+    filterToggle.addEventListener('click', () => {
+      const open = filterPanel.hidden;
+      filterPanel.hidden = !open;
+      filterToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    document.addEventListener('click', (e) => {
+      if (filterPanel.hidden) return;
+      if (e.target.closest('#filter-panel') || e.target.closest('#filter-toggle')) return;
+      filterPanel.hidden = true;
+      filterToggle.setAttribute('aria-expanded', 'false');
+    });
+  }
+
+  function clearFilter(key) {
+    guardSwitch(() => {
+      if (key === 'triage' || key === 'all') triage = '';
+      if (key === 'type' || key === 'all') messageType = '';
+      if (key === 'zline' || key === 'all') zline = '';
+      if (key === 'ops' || key === 'all') ops = 'pending';
+      if (key === 'kenh' || key === 'all') {
+        salesChannel = 'farm';
+        renderChannels();
+      }
+    });
+  }
 
   document.getElementById('channel-settings-toggle').addEventListener('click', () => {
     document.getElementById('channel-panel').classList.toggle('hidden');
@@ -336,8 +362,13 @@
         b.textContent = String(n);
       }
     });
+    const hotChip = document.getElementById('hot-chip');
+    if (hotChip) hotChip.hidden = !(triageCounts.hot > 0);
+    const typeRow = document.getElementById('types');
+    if (typeRow) typeRow.hidden = nhom !== 'zalo';
     const zaloLine = document.getElementById('zalo-line');
     if (zaloLine) zaloLine.hidden = nhom !== 'zalo';
+    paintActiveFilters();
     zlineTabs.forEach(btn => {
       const on = (btn.dataset.zline || '') === zline;
       btn.setAttribute('aria-selected', on ? 'true' : 'false');
@@ -350,6 +381,36 @@
       const b = btn.querySelector('.count');
       if (b) b.textContent = String(folderCounts[btn.dataset.folder] || 0);
     });
+  }
+
+  function paintActiveFilters() {
+    const box = document.getElementById('active-filters');
+    if (!box) return;
+    box.textContent = '';
+    const items = [];
+    if (TRIAGE_LABEL[triage]) items.push({ key: 'triage', label: TRIAGE_LABEL[triage] });
+    if (TYPE_LABEL[messageType]) items.push({ key: 'type', label: TYPE_LABEL[messageType] });
+    if (nhom === 'zalo' && (zline === 'sale' || zline === 'dv')) {
+      items.push({ key: 'zline', label: zline === 'dv' ? 'DV' : 'Sale' });
+    }
+    if (ops && ops !== 'pending' && OPS_LABEL[ops]) items.push({ key: 'ops', label: OPS_LABEL[ops] });
+    if (salesChannel && salesChannel !== 'farm') {
+      const ch = channels.find(c => c.id === salesChannel);
+      items.push({ key: 'kenh', label: ch ? ch.name : salesChannel });
+    }
+    if (!items.length) {
+      box.hidden = true;
+      return;
+    }
+    box.hidden = false;
+    items.forEach(item => {
+      const btn = el('button', { type: 'button', class: 'active-chip', text: item.label + ' ×' });
+      btn.addEventListener('click', () => clearFilter(item.key));
+      box.appendChild(btn);
+    });
+    const clear = el('button', { type: 'button', class: 'clear-filters', text: 'Xóa lọc' });
+    clear.addEventListener('click', () => clearFilter('all'));
+    box.appendChild(clear);
   }
 
   function ictClock(date) {
@@ -462,7 +523,7 @@
 
   function renderChannels() {
     channelEl.textContent = '';
-    channels.forEach(c => {
+    channels.filter(c => !window.inboxOrder || window.inboxOrder.showChannelChip(c)).forEach(c => {
       const on = c.id === salesChannel;
       const btn = el('button', {
         type: 'button',
@@ -635,7 +696,7 @@
       const incoming = window.inboxOrder ? window.inboxOrder.sort(data.drafts || []) : (data.drafts || []);
       counts = data.counts || {};
       triageCounts = data.triageCounts || triageCounts;
-      groupCounts = data.groupCounts || groupCounts;
+      groupCounts = data.pendingGroupCounts || data.groupCounts || groupCounts;
       folderCounts = data.folderCounts || folderCounts;
       loadedOnce = true;
       if (chooseNhom) {

@@ -77,6 +77,16 @@ test('admin queue exposes inbox groups above Mức', () => {
   const muc = html.indexOf('>Mức<');
   assert.ok(nhom > 0 && muc > nhom);
   assert.match(html, /Kênh bán/);
+  assert.match(html, /id="channel-panel"/);
+  assert.doesNotMatch(html, /class="channel-row"/);
+  assert.match(html, /id="hot-chip"/);
+  assert.match(html, /Bộ lọc/);
+  assert.match(html, /<details class="queue-stats">/);
+  assert.doesNotMatch(html, /<details class="queue-stats" open>/);
+  assert.match(html, /id="folder-nav"/);
+  assert.match(js, /pendingGroupCounts/);
+  assert.match(js, /Xóa lọc/);
+  assert.match(js, /showChannelChip/);
   assert.match(html, /data-nhom="zalo"/);
   assert.match(html, /Zalo OA/);
   assert.match(html, /data-nhom="fb-sale"/);

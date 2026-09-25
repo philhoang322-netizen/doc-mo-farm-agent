@@ -33,6 +33,13 @@
     return (Array.isArray(list) ? list : []).slice().sort(compare);
   }
 
+  /** A sales channel named zalo is the Zalo OA tab, not another chip. */
+  function showChannelChip(channel) {
+    const id = String(channel && channel.id != null ? channel.id : channel || '').trim().toLowerCase();
+    const name = String(channel && channel.name || '').trim().toLowerCase();
+    return id !== 'zalo' && name !== 'zalo';
+  }
+
   /** First group in tab order that has messages. Hidden tabs are skipped. */
   function defaultGroup(counts, hidden) {
     const order = ['zalo', 'fb-sale', 'fb-dv'].filter(id => !(hidden && hidden[id]));
@@ -40,5 +47,5 @@
     return found || order[0] || 'zalo';
   }
 
-  return { timeOf, stamp, compare, sort, defaultGroup };
+  return { timeOf, stamp, compare, sort, defaultGroup, showChannelChip };
 });

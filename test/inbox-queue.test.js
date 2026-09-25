@@ -111,6 +111,9 @@ test('group counts stay full for every tab and match the list', async () => {
   });
   assert.equal(deleted.drafts.length, deleted.groupCounts.zalo);
   assert.equal(deleted.groupCounts.zalo, 1);
+  assert.deepEqual(asZalo.pendingGroupCounts, { zalo: 1, fbSale: 2, fbDv: 1 });
+  assert.deepEqual(deleted.pendingGroupCounts, asZalo.pendingGroupCounts);
+  assert.deepEqual(pendingFb.pendingGroupCounts, asZalo.pendingGroupCounts);
   assert.equal(deleted.drafts.some(d => d.id === zaloPending.id), false);
   assert.equal(fbDv.biz_line, 'dv');
 });
@@ -147,6 +150,14 @@ test('the queue list uses that same order', async () => {
   assert.deepEqual(ids.filter(id => mine.includes(id)), mine);
   const resorted = order.sort(listed.drafts.slice().reverse());
   assert.deepEqual(resorted.map(d => d.id), ids);
+});
+
+test('a sales channel named zalo is not a second chip', () => {
+  assert.equal(order.showChannelChip({ id: 'farm', name: '@Farm' }), true);
+  assert.equal(order.showChannelChip({ id: 'shopee', name: 'Shopee' }), true);
+  assert.equal(order.showChannelChip({ id: 'zalo', name: 'Zalo' }), false);
+  assert.equal(order.showChannelChip({ id: 'custom', name: 'zalo' }), false);
+  assert.equal(order.showChannelChip({ id: 'Zalo', name: 'OA' }), false);
 });
 
 test('the default tab is the first group that has messages', () => {
