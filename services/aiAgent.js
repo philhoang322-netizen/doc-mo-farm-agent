@@ -18,6 +18,7 @@ const pii = require('./pii');
 const stations = require('./stations');
 const trainingLog = require('./trainingLog');
 const triage = require('./triage');
+const customerLink = require('./customerLink');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -808,7 +809,7 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
   // sit in the uncached block so they are in context before generation
   // without busting the shared cache.
   const systemPrompt = await systemBlocks(
-    customer, memories, recentOrders, preferences, userMessage, 'farm'
+    customer, memories, recentOrders, preferences, userMessage, 'farm', zaloUserId
   );
   const piiReports = [];
   let created = await llm.anthropicCreate(claude, {
@@ -906,18 +907,29 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
   };
 }
 
-async function systemBlocks(customer, memories, recentOrders, preferences, userMessage, salesChannel) {
+async function systemBlocks(customer, memories, recentOrders, preferences, userMessage, salesChannel, externalId) {
   let trainingText = '';
   try {
     trainingText = await trainingLog.promptBlock(userMessage, salesChannel || 'farm');
   } catch (e) {
     console.error('Training examples skipped:', e.message);
   }
+  let purchase = '';
+  try {
+    purchase = await customerLink.promptContext({
+      externalId: externalId || (customer && customer.zalo_user_id) || null,
+      name: customer && (customer.full_name || customer.display_name),
+      knownPhone: customer && customer.phone,
+      text: userMessage,
+    });
+  } catch (e) {
+    console.error('Purchase history skipped:', e.message);
+  }
   return [
     { type: 'text', text: buildStaticPrompt(), cache_control: { type: 'ephemeral' } },
     {
       type: 'text',
-      text: buildCustomerPrompt(customer, memories, recentOrders, preferences) + trainingText,
+      text: buildCustomerPrompt(customer, memories, recentOrders, preferences) + purchase + trainingText,
     },
   ];
 }

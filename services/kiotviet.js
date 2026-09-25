@@ -166,6 +166,21 @@ async function findCustomerByPhone(phone) {
   return found?.data?.[0] || null;
 }
 
+/** Recent invoices for one KiotViet customer id. Newest first when the API sorts. */
+async function listInvoicesByCustomer(customerId, pageSize = 10) {
+  if (!customerId || !enabled()) return [];
+  const size = Math.min(20, Math.max(1, Number(pageSize) || 10));
+  const found = await call('get', '/invoices', {
+    params: {
+      customerIds: customerId,
+      pageSize: size,
+      orderBy: 'purchaseDate',
+      orderDirection: 'Desc',
+    },
+  });
+  return found?.data || [];
+}
+
 async function findOrCreateCustomer({ name, phone, comments, customerId, customerCode }) {
   const existingId = Number(customerId);
   if (Number.isFinite(existingId) && existingId > 0) {
@@ -692,5 +707,6 @@ module.exports = {
   enabled, pushOrder, findProduct, loadProducts, ping, getToken,
   getOnHand, sellableFromInventories,
   searchProducts, aliasFor, saleBranchId, salePayload, createSaleDocument,
-  listProductsForMatch, findCustomerByPhone, findOrCreateCustomer, DEFAULT_SALE_BRANCH_ID,
+  listProductsForMatch, findCustomerByPhone, findOrCreateCustomer, listInvoicesByCustomer,
+  DEFAULT_SALE_BRANCH_ID,
 };
