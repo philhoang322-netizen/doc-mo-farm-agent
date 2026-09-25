@@ -21,6 +21,7 @@ const trainingLog = require('./trainingLog');
 const triage = require('./triage');
 const bizLine = require('./bizLine');
 const inboxStatus = require('./inboxStatus');
+const tombstones = require('./tombstones');
 
 const STATUSES = ['PENDING_REVIEW', 'APPROVED', 'REJECTED', 'SENT'];
 const STATUS_SET = new Set(STATUSES);
@@ -302,6 +303,8 @@ async function ensureReady() {
       await loadChannels();
     }
     await trainingLog.ensureReady();
+    await tombstones.ensureReady();
+    await sweepSoftDeleted();
   })().catch((err) => {
     ready = null;
     throw err;
@@ -806,6 +809,11 @@ async function createDraft(body, ctx = {}) {
   fields.biz_line = biz.biz_line;
   fields.biz_sticky = biz.biz_sticky;
   fields.source_msg_id = cleanText('source_msg_id', body && body.source_msg_id);
+  if (fields.source_msg_id && await tombstones.isBlocked(fields.channel, fields.source_msg_id)) {
+    const err = new DraftError(409, 'Tin đã xoá');
+    err.code = 'deleted';
+    throw err;
+  }
   const prevFolder = await conversationFolder(fields.channel, fields.customer_user_id);
   fields.inbox_status = 'pending';
   fields.inbox_prev_status = prevFolder && prevFolder !== 'pending' ? prevFolder : null;
@@ -848,10 +856,8 @@ function normalizeListQuery(query) {
 }
 
 function matchesScope(d, q) {
-  if (q.hop === 'deleted') {
-    if (!d.deleted_at) return false;
-  } else if (d.deleted_at) return false;
-  if (q.hop && q.hop !== 'deleted' && inboxStatus.inferFolder(d) !== q.hop) return false;
+  if (d.deleted_at) return false;
+  if (q.hop && inboxStatus.inferFolder(d) !== q.hop) return false;
   const sales = d.sales_channel || 'farm';
   if (q.salesChannel && sales !== q.salesChannel) return false;
   if (q.type && d.message_type !== q.type) return false;
@@ -877,7 +883,7 @@ async function listDrafts(query) {
   if (q.platform && !PLATFORM_SET.has(q.platform)) throw new DraftError(400, 'Nền tảng không hợp lệ');
   if (q.nhom && !GROUP_SET.has(q.nhom)) throw new DraftError(400, 'Nhóm không hợp lệ');
   if (q.zline && q.zline !== 'sale' && q.zline !== 'dv') throw new DraftError(400, 'Nhãn không hợp lệ');
-  if (q.hop && q.hop !== 'deleted' && !inboxStatus.FOLDER_SET.has(q.hop)) {
+  if (q.hop && !inboxStatus.FOLDER_SET.has(q.hop)) {
     throw new DraftError(400, 'Thư mục không hợp lệ');
   }
 
@@ -916,17 +922,14 @@ async function listDrafts(query) {
     if (d.channel === 'zalo' || d.channel === 'messenger') platformCounts[d.channel] += 1;
   }
   const groupCounts = { zalo: 0, fbSale: 0, fbDv: 0 };
-  const folderCounts = { pending: 0, sent: 0, bought: 0, hesitant: 0, declined: 0, deleted: 0 };
+  const folderCounts = { pending: 0, sent: 0, bought: 0, hesitant: 0, declined: 0 };
   const pendingIds = [];
-  const hopFilter = q.hop && q.hop !== 'deleted' ? q.hop : 'pending';
+  const hopFilter = q.hop || 'pending';
   for (const d of all) {
     if (q.salesChannel && (d.sales_channel || 'farm') !== q.salesChannel) continue;
     const g = d.channel === 'zalo' ? 'zalo' : (d.channel === 'messenger' && d.biz_line === 'dv' ? 'fb-dv' : (d.channel === 'messenger' ? 'fb-sale' : null));
     if (q.nhom && g !== q.nhom) continue;
-    if (d.deleted_at) {
-      folderCounts.deleted += 1;
-      continue;
-    }
+    if (d.deleted_at) continue;
     const folder = inboxStatus.inferFolder(d);
     if (folderCounts[folder] != null) folderCounts[folder] += 1;
     if (folder === 'pending') pendingIds.push(d.id);
@@ -981,52 +984,89 @@ async function moveBizLine(id, line, ctx = {}) {
   return decorate(saved);
 }
 
-async function softDelete(id, ctx = {}) {
-  await ensureReady();
-  const existing = await getDraft(id);
-  if (!existing) return null;
-  if (existing.deleted_at) return decorate(existing);
-  const next = {
-    ...existing,
-    deleted_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-  const saved = await saveDraft(next);
-  if (!saved) return null;
-  await audit.record({
-    actor: ctx.actor || 'manager',
-    action: 'draft.deleted',
-    entity_type: 'draft',
-    entity_id: saved.id,
-    before: { deleted_at: null, approval_status: existing.approval_status },
-    after: { deleted_at: saved.deleted_at, approval_status: saved.approval_status },
-    meta: audit.draftMeta(saved),
-  });
-  return decorate(saved);
+async function sweepSoftDeleted() {
+  const rows = db.DB_ENABLED
+    ? (await db.pool.query(
+      'SELECT id, channel, source_msg_id, deleted_at FROM outbound_drafts WHERE deleted_at IS NOT NULL'
+    )).rows
+    : [...memory.values()].filter(d => d && d.deleted_at);
+  for (const row of rows) {
+    if (row.source_msg_id) {
+      await tombstones.record({
+        channel: row.channel,
+        sourceMsgId: row.source_msg_id,
+        deletedBy: null,
+        deletedAt: row.deleted_at,
+      });
+    }
+    await trainingLog.deleteForDraft(row.id);
+    try { await require('./handover').forgetDraft(row.id); } catch (_) { /* handoff table is optional */ }
+    if (db.DB_ENABLED) {
+      await db.pool.query('DELETE FROM outbound_drafts WHERE id = $1', [row.id]);
+    } else {
+      memory.delete(row.id);
+    }
+  }
+  if (!db.DB_ENABLED && rows.length) await persistFile();
 }
 
-async function restoreDraft(id, ctx = {}) {
+/**
+ * Remove the draft row and rows that point at it. The audit log stays.
+ * The returned object has no message body.
+ * Undo lives in the browser for 3 seconds and never calls this until the
+ * timer finishes, so a refresh during that window still has the full row.
+ */
+async function hardDelete(id, ctx = {}) {
   await ensureReady();
   const existing = await getDraft(id);
   if (!existing) return null;
-  if (!existing.deleted_at) return decorate(existing);
-  const next = {
-    ...existing,
-    deleted_at: null,
-    updated_at: new Date().toISOString(),
-  };
-  const saved = await saveDraft(next);
-  if (!saved) return null;
+  const deletedAt = new Date().toISOString();
+  const actor = ctx.actor || 'manager';
+  if (existing.source_msg_id) {
+    await tombstones.record({
+      channel: existing.channel,
+      sourceMsgId: existing.source_msg_id,
+      deletedBy: actor,
+      deletedAt,
+    });
+  }
+  await trainingLog.deleteForDraft(existing.id);
+  try { await require('./handover').forgetDraft(existing.id); } catch (_) { /* handoff table is optional */ }
+  if (!db.DB_ENABLED) {
+    memory.delete(existing.id);
+    await persistFile();
+  } else {
+    await db.pool.query('DELETE FROM outbound_drafts WHERE id = $1', [existing.id]);
+  }
   await audit.record({
-    actor: ctx.actor || 'manager',
-    action: 'draft.restored',
+    actor,
+    action: 'draft.deleted',
     entity_type: 'draft',
-    entity_id: saved.id,
-    before: { deleted_at: existing.deleted_at },
-    after: { deleted_at: null, approval_status: saved.approval_status },
-    meta: audit.draftMeta(saved),
+    entity_id: existing.id,
+    before: { approval_status: existing.approval_status },
+    after: { deleted: true },
+    meta: {
+      channel: existing.channel || null,
+      customer_user_id: existing.customer_user_id || null,
+      conversation_id: existing.customer_user_id || null,
+      deleted_at: deletedAt,
+    },
   });
-  return decorate(saved);
+  return {
+    id: existing.id,
+    deleted: true,
+    deleted_at: deletedAt,
+    channel: existing.channel || null,
+    customer_user_id: existing.customer_user_id || null,
+  };
+}
+
+async function softDelete(id, ctx = {}) {
+  return hardDelete(id, ctx);
+}
+
+async function restoreDraft() {
+  return null;
 }
 
 async function messageStats(salesChannel) {
@@ -1545,6 +1585,7 @@ module.exports = {
   findBySourceMsg,
   moveBizLine,
   softDelete,
+  hardDelete,
   restoreDraft,
   setInboxStatus,
   conversationFolder,

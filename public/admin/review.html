@@ -128,7 +128,6 @@
       <button type="button" class="folder" data-folder="bought">Đã mua <span class="count"></span></button>
       <button type="button" class="folder" data-folder="hesitant">Do dự <span class="count"></span></button>
       <button type="button" class="folder" data-folder="declined">Từ chối <span class="count"></span></button>
-      <button type="button" class="folder folder-deleted" data-folder="deleted">Đã xóa <span class="count"></span></button>
     </nav>
     <aside class="list" id="queue">
       <div id="list" class="list-scroll" aria-live="polite"></div>
@@ -138,9 +137,11 @@
 </section>
 </div>
 <p id="toast" class="toast" role="status" hidden></p>
+<div id="undo-toasts" class="undo-toasts" aria-live="polite"></div>
 <noscript><p class="note warn">Trang này cần JavaScript để duyệt tin.</p></noscript>
 <script>window.OMNI_SALE={{BRAND_JSON}};</script>
 <script src="/admin/inbox-refresh.js"></script>
+<script src="/admin/undo-delete.js"></script>
 <script src="/admin/review.js"></script>
 </body>
 </html>

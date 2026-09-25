@@ -67,20 +67,20 @@ test('manual move sticks for the next message and is audited', async () => {
   assert.equal(logs.logs[0].actor, 'manager:Phước');
 });
 
-test('soft delete hides the card and undo restores it', async () => {
+test('hard delete removes the card and does not restore it', async () => {
   const d = await drafts.createDraft({
     channel: 'zalo',
     customer_user_id: 'zalo_x',
     customer_query: 'alo',
     draft_reply: 'Dạ ạ',
   });
-  await drafts.softDelete(d.id, { actor: 'manager:Phước' });
+  await drafts.hardDelete(d.id, { actor: 'manager:Phước' });
   const list = await drafts.listDrafts({ salesChannel: 'farm', nhom: 'zalo', hop: 'pending' });
   assert.equal(list.drafts.some(item => item.id === d.id), false);
-  assert.equal(list.groupCounts.zalo >= 0, true);
-  await drafts.restoreDraft(d.id, { actor: 'manager:Phước' });
+  assert.equal(await drafts.restoreDraft(d.id, { actor: 'manager:Phước' }), null);
   const back = await drafts.listDrafts({ salesChannel: 'farm', nhom: 'zalo', hop: 'pending' });
-  assert.ok(back.drafts.some(item => item.id === d.id));
+  assert.equal(back.drafts.some(item => item.id === d.id), false);
   const logs = await audit.list({ entity_id: d.id, action: 'draft.deleted' });
   assert.equal(logs.logs.length, 1);
+  assert.equal(logs.logs[0].meta.customer_user_id, 'zalo_x');
 });

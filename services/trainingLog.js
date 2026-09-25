@@ -303,6 +303,26 @@ async function promptBlock(query, salesChannel) {
   );
 }
 
+async function deleteForDraft(draftId) {
+  if (!draftId) return 0;
+  await ensureReady();
+  if (!db.DB_ENABLED) {
+    const before = memory.length;
+    for (let i = memory.length - 1; i >= 0; i -= 1) {
+      if (memory[i] && memory[i].draft_id === draftId) memory.splice(i, 1);
+    }
+    const removed = before - memory.length;
+    if (removed) await persistFile();
+    return removed;
+  }
+  try {
+    const r = await db.pool.query('DELETE FROM training_logs WHERE draft_id = $1', [draftId]);
+    return r.rowCount || 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
 module.exports = {
   ACTION,
   APPROVED_WEIGHT,
@@ -314,4 +334,5 @@ module.exports = {
   relevantExamples,
   promptBlock,
   trainingLog,
+  deleteForDraft,
 };

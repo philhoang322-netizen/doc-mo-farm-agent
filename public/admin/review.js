@@ -87,7 +87,6 @@
     bought: 'Đã mua',
     hesitant: 'Do dự',
     declined: 'Từ chối',
-    deleted: 'Đã xóa',
   };
   const folderTabs = [...document.querySelectorAll('[data-folder]')];
   let nhom = Object.prototype.hasOwnProperty.call(GROUP_LABEL, params.get('nhom'))
@@ -95,7 +94,8 @@
     : (params.get('platform') === 'messenger' ? 'fb-sale' : 'zalo');
   let zline = params.get('zline') === 'sale' || params.get('zline') === 'dv' ? params.get('zline') : '';
   let folder = Object.prototype.hasOwnProperty.call(FOLDER_LABEL, params.get('hop')) ? params.get('hop') : 'pending';
-  let folderCounts = { pending: 0, sent: 0, bought: 0, hesitant: 0, declined: 0, deleted: 0 };
+  let folderCounts = { pending: 0, sent: 0, bought: 0, hesitant: 0, declined: 0 };
+  const pendingDeletes = new Map();
   const cardState = new Map();
   let salesChannel = params.get('kenh') || 'farm';
   let channels = [];
@@ -561,7 +561,8 @@
 
   function insertMissing() {
     const have = new Set(renderedIds());
-    const fresh = drafts.filter(d => d && d.id && !have.has(d.id));
+    const pending = new Set(pendingDeletes.keys());
+    const fresh = drafts.filter(d => d && d.id && !have.has(d.id) && !pending.has(d.id));
     if (!fresh.length) return 0;
     const empty = listEl.querySelector('.empty-list');
     if (empty) empty.remove();
@@ -601,7 +602,10 @@
         api('/admin/api/stats?kenh=' + encodeURIComponent(salesChannel)),
       ]);
       if (seq !== loadSeq) return;
-      const incoming = data.drafts || [];
+      const rawIncoming = data.drafts || [];
+      const incoming = window.undoDelete
+        ? window.undoDelete.omitPending(rawIncoming, [...pendingDeletes.keys()])
+        : rawIncoming.filter(d => d && !pendingDeletes.has(d.id));
       counts = data.counts || {};
       triageCounts = data.triageCounts || triageCounts;
       groupCounts = data.groupCounts || groupCounts;
@@ -2109,39 +2113,86 @@
     }
   }
 
+  function undoPolicy() {
+    return window.undoDelete;
+  }
+
+  function pushUndoToast(id) {
+    const host = document.getElementById('undo-toasts');
+    const node = el('div', { class: 'toast', role: 'status' });
+    node.appendChild(document.createTextNode('Đã xoá khỏi hộp thư. '));
+    const b = el('button', { type: 'button', class: 'linkish', text: 'Hoàn tác' });
+    b.addEventListener('click', () => { undoPending(id); });
+    node.appendChild(b);
+    if (host) host.appendChild(node);
+    return node;
+  }
+
+  function putCardBack(entry) {
+    if (!entry || !entry.card) return;
+    if (entry.card.isConnected) return;
+    const cards = [...listEl.querySelectorAll('.msg-card')];
+    const before = cards[entry.index] || null;
+    if (entry.next && entry.next.parentNode === listEl) listEl.insertBefore(entry.card, entry.next);
+    else if (before) listEl.insertBefore(entry.card, before);
+    else listEl.appendChild(entry.card);
+  }
+
+  // Xóa hides the card now and waits 3s before DELETE. Refresh or close
+  // during that window drops the timer, so the server row stays intact.
   async function removeDraft(id) {
-    if (!confirm('Xoá tin này khỏi hộp thư? Tin trên Facebook và Zalo không bị xoá, và không gửi gì cho khách.')) return;
+    const policy = undoPolicy();
+    if (!policy || policy.needsConfirm()) return;
+    if (pendingDeletes.has(id)) return;
+    const index = drafts.findIndex(d => d && d.id === id);
+    const draft = index >= 0 ? drafts[index] : null;
+    const safe = window.CSS && CSS.escape ? CSS.escape(id) : id;
+    const card = listEl.querySelector('.msg-card[data-draft-id="' + safe + '"]');
+    const next = card ? card.nextSibling : null;
+    if (card) card.remove();
+    if (index >= 0) drafts = drafts.filter(d => d && d.id !== id);
+    if (selectedId === id) {
+      selectedId = null;
+      detailStamp = '';
+      document.body.classList.remove('show-detail');
+    }
+    const toastNode = pushUndoToast(id);
+    const job = policy.schedule(id, {
+      ms: policy.UNDO_MS,
+      onFinalize: () => { finalizeDelete(id); },
+    });
+    pendingDeletes.set(id, {
+      draft,
+      index: index < 0 ? 0 : index,
+      card,
+      next,
+      job,
+      toastNode,
+    });
+  }
+
+  function undoPending(id) {
+    const entry = pendingDeletes.get(id);
+    if (!entry || !entry.job.undo()) return;
+    pendingDeletes.delete(id);
+    if (entry.toastNode) entry.toastNode.remove();
+    if (entry.draft) drafts = undoPolicy().restoreInPlace(drafts, entry);
+    putCardBack(entry);
+  }
+
+  async function finalizeDelete(id) {
+    const entry = pendingDeletes.get(id);
+    if (!entry) return;
+    pendingDeletes.delete(id);
+    if (entry.toastNode) entry.toastNode.remove();
     try {
       await api('/admin/api/drafts/' + id + '/delete', {
         method: 'POST',
         body: JSON.stringify({ actor_name: actorName() }),
       });
-      if (selectedId === id && !dirty) {
-        selectedId = null;
-        detailStamp = '';
-        document.body.classList.remove('show-detail');
-      }
-      listStamp = '';
-      toast('Đã xoá khỏi hộp thư.', {
-        label: 'Hoàn tác',
-        run: () => restoreDraft(id),
-      });
-      await load();
     } catch (e) {
-      if (e.message !== 'unauthorized') toast(e.message);
-    }
-  }
-
-  async function restoreDraft(id) {
-    try {
-      await api('/admin/api/drafts/' + id + '/restore', {
-        method: 'POST',
-        body: JSON.stringify({ actor_name: actorName() }),
-      });
-      listStamp = '';
-      toast('Đã hoàn tác.');
-      await load();
-    } catch (e) {
+      if (entry.draft) drafts = undoPolicy().restoreInPlace(drafts, entry);
+      putCardBack(entry);
       if (e.message !== 'unauthorized') toast(e.message);
     }
   }

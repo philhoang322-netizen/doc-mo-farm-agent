@@ -276,6 +276,23 @@ function resetForTests() {
   recent.clear();
 }
 
+async function forgetDraft(draftId) {
+  if (!draftId) return 0;
+  if (!db.DB_ENABLED) {
+    const before = memory.length;
+    for (let i = memory.length - 1; i >= 0; i -= 1) {
+      if (memory[i] && memory[i].draft_id === draftId) memory.splice(i, 1);
+    }
+    return before - memory.length;
+  }
+  try {
+    const r = await db.pool.query('DELETE FROM staff_handoffs WHERE draft_id = $1', [draftId]);
+    return r.rowCount || 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
 module.exports = {
   NEEDS_HUMAN,
   MODE_TEXT,
@@ -283,4 +300,5 @@ module.exports = {
   escalate,
   recent: recentRows,
   resetForTests,
+  forgetDraft,
 };

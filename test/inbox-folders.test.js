@@ -92,14 +92,19 @@ test('a new customer message returns to Chờ xử lý and keeps Đã mua', asyn
   assert.equal(kept.invoice_code, 'HD9');
 });
 
-test('deleted drafts sit in Đã xóa and not in the open folders', async () => {
+test('a finalized delete is gone from every folder', async () => {
   const d = await seed({ customer_user_id: 'fb_del', customer_query: 'alo' });
-  await drafts.softDelete(d.id, { actor: 'manager:Phước' });
-  const pending = await drafts.listDrafts({ salesChannel: 'farm', hop: 'pending' });
-  assert.equal(pending.drafts.some(item => item.id === d.id), false);
-  const gone = await drafts.listDrafts({ salesChannel: 'farm', hop: 'deleted' });
-  assert.ok(gone.drafts.some(item => item.id === d.id));
-  assert.ok(gone.folderCounts.deleted >= 1);
+  await drafts.hardDelete(d.id, { actor: 'manager:Phước' });
+  for (const hop of ['pending', 'sent', 'bought', 'hesitant', 'declined']) {
+    const listed = await drafts.listDrafts({ salesChannel: 'farm', hop });
+    assert.equal(listed.drafts.some(item => item.id === d.id), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(listed.folderCounts, 'deleted'), false);
+  }
+  await assert.rejects(
+    () => drafts.listDrafts({ salesChannel: 'farm', hop: 'deleted' }),
+    (err) => err && err.status === 400
+  );
+  assert.equal(await drafts.getDraft(d.id), null);
 });
 
 test('learn off is audited and stores no training pair', async () => {

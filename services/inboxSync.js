@@ -8,6 +8,7 @@
  * conversation list, so that side is reported and skipped.
  */
 const drafts = require('./drafts');
+const tombstones = require('./tombstones');
 
 const GRAPH_VERSION = 'v21.0';
 const GAP_MS = 60 * 1000;
@@ -193,7 +194,7 @@ async function syncMissed(opts = {}) {
         if (!text) continue;
 
         const existing = await drafts.findBySourceMsg('messenger', id);
-        if (existing) {
+        if (existing || await tombstones.isBlocked('messenger', id)) {
           base.skipped += 1;
           continue;
         }
