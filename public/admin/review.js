@@ -1139,45 +1139,10 @@
     return box;
   }
 
-  function renderThreadContext(d) {
+  function mountThreadContext(d, nested) {
     const api = window.threadContext;
-    const rows = Array.isArray(d.thread_context) ? d.thread_context : [];
-    if (!api || !rows.length) return null;
-    const box = el('div', { class: 'thread-context' });
-    let expanded = false;
-    const list = el('div', { class: 'thread-list' });
-    const toggle = el('button', { type: 'button', class: 'thread-more', text: 'Xem thêm' });
-    function bubble(m) {
-      const side = m.direction === 'out' ? 'out' : 'in';
-      const who = side === 'out' ? (m.sender_label || 'Shop') : 'Khách';
-      const whenText = m.created_time ? when(m.created_time) : '';
-      const row = el('div', { class: 'thread-row ' + side });
-      const item = el('div', { class: 'thread-bubble' });
-      item.appendChild(el('div', { class: 'thread-meta', text: whenText ? (who + ' · ' + whenText) : who }));
-      item.appendChild(el('div', { class: 'thread-text', text: m.text || '' }));
-      row.appendChild(item);
-      return row;
-    }
-    function paint() {
-      const view = api.visible(rows, expanded);
-      list.textContent = '';
-      view.forEach(m => list.appendChild(bubble(m)));
-      const show = api.needsToggle(rows);
-      toggle.hidden = !show;
-      toggle.textContent = expanded ? 'Thu gọn' : 'Xem thêm';
-      toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-      box.dataset.shown = String(view.length);
-    }
-    toggle.addEventListener('click', (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      expanded = !expanded;
-      paint();
-    });
-    box.appendChild(list);
-    box.appendChild(toggle);
-    paint();
-    return box;
+    if (!api || typeof api.mount !== 'function') return null;
+    return api.mount(d && d.thread_context, { nested: !!nested });
   }
 
   function buildCard(d) {
@@ -1212,6 +1177,8 @@
       channelNameNodes(d).forEach(node => nameBox.appendChild(node));
       top.appendChild(nameBox);
       btn.appendChild(top);
+      const threadBox = mountThreadContext(d, true);
+      if (threadBox) btn.appendChild(threadBox);
       const customer = el('div', { class: 'msg-customer is-clamped' });
       customer.appendChild(richFragment(snippet(d) || '—'));
       btn.appendChild(customer);
@@ -1436,7 +1403,7 @@
     const main = el('div', { class: 'detail-main' });
     const side = el('div', { class: 'detail-side' });
     body.appendChild(meta);
-    const thread = renderThreadContext(d);
+    const thread = mountThreadContext(d, false);
     if (thread) main.appendChild(thread);
     const want = el('div', { class: 'want-box' });
     want.appendChild(el('span', { text: 'Khách đang muốn' }));

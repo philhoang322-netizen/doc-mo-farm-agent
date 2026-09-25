@@ -443,15 +443,14 @@ async function attributionSummary() {
   const apps = new Map();
   const fields = new Set();
   let signatureLanh = 0;
-  const ops = require('./ops');
+  const lanhMark = require('./lanhMark');
   for (const row of rows) {
     const meta = row.sender_meta || {};
     for (const field of metaFields(meta)) fields.add(field);
     if (meta.from_name) names.set(meta.from_name, (names.get(meta.from_name) || 0) + 1);
     for (const tag of meta.tags || []) tags.set(tag, (tags.get(tag) || 0) + 1);
     if (meta.app_id) apps.set(meta.app_id, (apps.get(meta.app_id) || 0) + 1);
-    const folded = ops.normalizeText(row.message_text);
-    if (folded && folded.split(' ').includes('lanh')) signatureLanh += 1;
+    if (lanhMark.textHasLanh(row.message_text)) signatureLanh += 1;
   }
   const pack = (map) => [...map.entries()]
     .map(([key, count]) => ({ key, count }))

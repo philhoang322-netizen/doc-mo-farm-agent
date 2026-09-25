@@ -372,9 +372,12 @@ test('context list collapses to 3 and expands to at most 10', () => {
   assert.equal(ui.visible(twelve, true).length, 10);
   assert.equal(ui.visible(twelve, true)[0], 3);
   const js = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin', 'review.js'), 'utf8');
-  assert.match(js, /Xem thêm/);
-  assert.match(js, /thread-context/);
+  const widget = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin', 'thread-context.js'), 'utf8');
+  assert.match(js, /mountThreadContext/);
   assert.match(js, /Chuyển qua DV/);
+  assert.match(widget, /Xem thêm/);
+  assert.match(widget, /thread-context/);
+  assert.equal(ui.mount([]), null);
 });
 
 test('manual Sale/DV move writes a manual thread label', async () => {
@@ -392,6 +395,180 @@ test('manual Sale/DV move writes a manual thread label', async () => {
   assert.equal(label.label, 'dv');
   assert.equal(label.source, 'manual');
   assert.equal(label.confidence, 1);
+});
+
+test('trời lạnh is not a Lành signature; Lành and Lanh are', async () => {
+  const lanh = require('../services/lanhMark');
+  assert.equal(lanh.textHasLanh('Dạ hôm nay trời lạnh quá'), false);
+  assert.equal(lanh.textHasLanh('lạnh'), false);
+  assert.equal(lanh.textHasLanh('xlanhx'), false);
+  assert.equal(lanh.textHasLanh('Lành'), true);
+  assert.equal(lanh.textHasLanh('Em giữ phòng giúp anh\nLành'), true);
+  assert.equal(lanh.textHasLanh('LANH'), true);
+  assert.equal(lanh.textHasLanh('Lanh,'), true);
+  assert.equal(threadLabels.lanhAttribution([
+    {
+      direction: 'out',
+      message_text: 'Dạ hôm nay trời lạnh quá',
+      sender_meta: { from_name: 'Dốc Mơ Farm', from_id: '111', page_id: '111' },
+    },
+  ]), null);
+  assert.equal(threadLabels.lanhAttribution([
+    {
+      direction: 'out',
+      message_text: 'Dạ',
+      sender_meta: { from_name: 'Lạnh', from_id: '111', page_id: '111' },
+    },
+  ]), null);
+  assert.equal(threadLabels.lanhAttribution([
+    {
+      direction: 'out',
+      message_text: 'Dạ còn phòng',
+      sender_meta: { from_name: 'Lành', from_id: '111', page_id: '111' },
+    },
+  ]), 'staff_lanh');
+  await store.record({
+    channel: 'fb',
+    thread_id: 'fb_cold',
+    direction: 'out',
+    message_text: 'Dạ hôm nay trời lạnh quá',
+    sender_meta: { from_name: 'Dốc Mơ Farm', from_id: '111', page_id: '111' },
+    source_msg_id: 'cold-1',
+    created_time: fresh,
+  });
+  await store.record({
+    channel: 'fb',
+    thread_id: 'fb_cold',
+    direction: 'out',
+    message_text: 'Em giữ phòng giúp anh\nLành',
+    sender_meta: { from_name: 'Dốc Mơ Farm', from_id: '111', page_id: '111' },
+    source_msg_id: 'sign-1',
+    created_time: fresh,
+  });
+  const status = await backfill.publicStatus();
+  assert.equal(status.attribution.signature_lanh_count, 1);
+  assert.equal(JSON.stringify(status).includes('trời lạnh'), false);
+  assert.equal(JSON.stringify(status).includes('Lành'), false);
+  assert.equal(backfill.clampMonths(undefined), 3);
+  assert.equal(backfill.clampMonths(''), 3);
+  assert.equal(backfill.clampMonths(9), 6);
+  assert.equal(backfill.clampMonths(0), 3);
+  assert.equal(backfill.clampMonths(3), 3);
+});
+
+test('relabel does not call Claude; a vague DV follow-up does not either', async () => {
+  const llm = require('../services/llm');
+  process.env.ANTHROPIC_API_KEY = 'test-key';
+  process.env.FB_CLASSIFY_MODEL = '1';
+  let calls = 0;
+  llm.setTransportForTests(async () => {
+    calls += 1;
+    return { content: [{ type: 'text', text: 'sale' }] };
+  });
+  try {
+    await store.record({
+      channel: 'fb',
+      thread_id: 'fb_vague',
+      direction: 'in',
+      message_text: 'Cho mình đặt phòng qua đêm',
+      source_msg_id: 'vague-in',
+      created_time: fresh,
+    });
+    await store.setLabel('fb', 'fb_vague', { label: 'dv', source: 'keyword', confidence: 0.8 });
+    const stayed = await threadLabels.resolveTurn({
+      channel: 'messenger',
+      userId: 'fb_vague',
+      text: 'Là loại nào ha shop?',
+      prior: null,
+    });
+    assert.equal(stayed.biz_line, 'dv');
+    assert.equal(calls, 0);
+
+    await store.record({
+      channel: 'fb',
+      thread_id: 'fb_open',
+      direction: 'in',
+      message_text: 'alo shop',
+      source_msg_id: 'open-in',
+      created_time: fresh,
+    });
+    await threadLabels.relabel();
+    assert.equal(calls, 0);
+  } finally {
+    llm.setTransportForTests(null);
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.FB_CLASSIFY_MODEL;
+  }
+});
+
+test('live classify sends at most 8 sanitized examples with the thread label and keywords', async () => {
+  const llm = require('../services/llm');
+  process.env.ANTHROPIC_API_KEY = 'test-key';
+  process.env.FB_CLASSIFY_MODEL = '1';
+  let body = null;
+  llm.setTransportForTests(async (prepared) => {
+    body = prepared.body;
+    return { content: [{ type: 'text', text: 'dv' }] };
+  });
+  try {
+    for (let i = 0; i < 6; i += 1) {
+      const id = `fb_shot_dv_${i}`;
+      await store.setLabel('fb', id, { label: 'dv', source: 'manual', confidence: 1 });
+      await store.record({
+        channel: 'fb',
+        thread_id: id,
+        direction: 'in',
+        message_text: i === 0 ? 'đặt phòng 0901234567' : 'mình muốn farmstay',
+        source_msg_id: `shot-dv-${i}`,
+        created_time: fresh,
+      });
+    }
+    for (let i = 0; i < 6; i += 1) {
+      const id = `fb_shot_sale_${i}`;
+      await store.setLabel('fb', id, { label: 'sale', source: 'manual', confidence: 1 });
+      await store.record({
+        channel: 'fb',
+        thread_id: id,
+        direction: 'in',
+        message_text: 'mua thịt heo giúp shop',
+        source_msg_id: `shot-sale-${i}`,
+        created_time: fresh,
+      });
+    }
+    const shots = threadLabels.buildFewShot([
+      ...Array.from({ length: 6 }, () => ({ label: 'dv', messages: [{ direction: 'in', message_text: 'phòng' }] })),
+      ...Array.from({ length: 6 }, () => ({ label: 'sale', messages: [{ direction: 'in', message_text: 'thịt' }] })),
+    ]);
+    const capped = threadLabels.classificationMessages(
+      [{ direction: 'in', message_text: 'alo' }],
+      shots,
+      { label: 'unknown', keywords: ['farmstay', 'phòng'] }
+    );
+    assert.equal(capped.messages.filter((row) => row.role === 'assistant').length, 8);
+    assert.match(capped.system, /farmstay/);
+    assert.match(capped.system, /unknown/);
+
+    const decided = await threadLabels.resolveTurn({
+      channel: 'messenger',
+      userId: 'fb_newkid',
+      text: 'alo shop ơi',
+      prior: null,
+    });
+    assert.equal(decided.biz_line, 'dv');
+    assert.equal(decided.source, 'model');
+    assert.ok(body);
+    const assistants = body.messages.filter((row) => row.role === 'assistant');
+    assert.ok(assistants.length > 0 && assistants.length <= 8);
+    assert.equal(JSON.stringify(body).includes('0901234567'), false);
+    assert.match(body.system, /Từ khóa DV/);
+    const saved = await store.getLabel('fb', 'fb_newkid');
+    assert.equal(saved.label, 'dv');
+    assert.equal(saved.source, 'model');
+  } finally {
+    llm.setTransportForTests(null);
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.FB_CLASSIFY_MODEL;
+  }
 });
 
 test('echoes record app_id and our sends record without duplicating the mid', async () => {

@@ -18,9 +18,9 @@ const MESSAGE_FIELDS = 'id,message,from,to,created_time,tags,attachments';
 let live = null;
 
 function clampMonths(value) {
-  const n = Number(value == null || value === '' ? 6 : value);
-  if (!Number.isFinite(n) || n <= 0) return 6;
-  return Math.min(24, Math.max(1, Math.round(n)));
+  const n = Number(value == null || value === '' ? 3 : value);
+  if (!Number.isFinite(n) || n <= 0) return 3;
+  return Math.min(6, Math.max(1, Math.round(n)));
 }
 
 function resetForTests() {
@@ -178,8 +178,7 @@ async function storeGraphMessage(msg, pageId, psid, since, job) {
 }
 
 function nameLooksLikeStaff(name) {
-  const ops = require('./ops');
-  return ops.normalizeText(name).split(' ').includes('lanh');
+  return require('./lanhMark').textHasLanh(name);
 }
 
 async function ingestConversation(http, token, pageId, conv, since, job, sleep, pauseMs) {

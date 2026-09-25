@@ -7,13 +7,15 @@
  * the newest message is strong Sale evidence and the rest of the thread
  * has no service wording.
  *
- * Keyword lists are learned from those labels. Few-shot examples for the
- * Claude classification call go through the PII sanitizer. Message bodies
- * are not logged.
+ * Keyword lists are learned from those labels. Backfill and relabel stay
+ * local: they do not call Claude. Live classification may, and that call
+ * gets at most eight short sanitized examples plus the thread label and
+ * learned keywords. Message bodies are not logged.
  */
 const ops = require('./ops');
 const pii = require('./pii');
 const bizLine = require('./bizLine');
+const lanhMark = require('./lanhMark');
 const store = require('./conversationStore');
 
 const SOURCES = ['staff_lanh', 'signature', 'keyword', 'manual', 'model'];
@@ -48,9 +50,13 @@ const SEED_DISPLAY = [
 ];
 
 let learned = [];
+let keywordCache = null;
+let shotCache = null;
 
 function resetForTests() {
   learned = [];
+  keywordCache = null;
+  shotCache = null;
 }
 
 function extraPhrases() {
@@ -73,15 +79,11 @@ function dvHit(text) {
 }
 
 function nameIsLanh(name) {
-  const folded = ops.normalizeText(name);
-  if (!folded) return false;
-  return folded.split(' ').includes('lanh');
+  return lanhMark.textHasLanh(name);
 }
 
 function textHasLanh(text) {
-  const folded = ops.normalizeText(text);
-  if (!folded) return false;
-  return folded.split(' ').includes('lanh');
+  return lanhMark.textHasLanh(text);
 }
 
 /**
@@ -170,10 +172,62 @@ function classifyContext({ channel, text, messages, label, prior }) {
   return null;
 }
 
+async function ensureLearned() {
+  if (keywordCache) return keywordCache;
+  keywordCache = (async () => {
+    const labels = await store.allLabels('fb');
+    const ground = labels.filter((row) => (
+      row.source === 'staff_lanh' || row.source === 'signature' || row.source === 'manual'
+    ));
+    await refreshKeywords(ground.length ? ground : labels);
+    shotCache = await fewShotFromStore(labels);
+  })().catch((err) => {
+    keywordCache = null;
+    throw err;
+  });
+  return keywordCache;
+}
+
+function threadWindow(messages, text) {
+  const rows = (messages || []).slice(-10);
+  const newest = String(text || '').trim();
+  if (!newest) return rows;
+  const last = rows[rows.length - 1];
+  const lastText = last ? String(last.message_text || last.text || '').trim() : '';
+  if (lastText === newest) return rows;
+  return rows.concat([{ direction: 'in', message_text: newest }]).slice(-10);
+}
+
+async function liveModel(messages, label, text) {
+  const rows = threadWindow(messages, text);
+  if (!rows.some((row) => String(row.message_text || row.text || '').trim())) return null;
+  let shots = shotCache;
+  if (!shots) {
+    try {
+      shots = await fewShotFromStore(await store.allLabels('fb'));
+      shotCache = shots;
+    } catch (err) {
+      console.error('few-shot skipped:', err.message);
+      shots = [];
+    }
+  }
+  return modelClassify(rows, shots, {
+    label: label && label.label,
+    keywords: learned.slice(0, 30),
+  });
+}
+
 async function resolveTurn({ channel, userId, text, prior }) {
   const storeChannel = channel === 'messenger' ? 'fb' : (channel === 'zalo' ? 'zalo' : null);
   let messages = [];
   let label = null;
+  if (storeChannel === 'fb') {
+    try {
+      await ensureLearned();
+    } catch (err) {
+      console.error('keywords skipped:', err.message);
+    }
+  }
   if (storeChannel && userId) {
     try {
       messages = await store.recent(storeChannel, userId, 10);
@@ -184,6 +238,28 @@ async function resolveTurn({ channel, userId, text, prior }) {
   }
   const decided = classifyContext({ channel, text, messages, label, prior });
   if (decided) return decided;
+  if (channel === 'messenger') {
+    try {
+      const modeled = await liveModel(messages, label, text);
+      if (modeled && (modeled.label === 'dv' || modeled.label === 'sale')) {
+        if (userId) {
+          try {
+            await store.setLabel('fb', userId, modeled);
+          } catch (err) {
+            console.error('thread label skipped:', err.message);
+          }
+        }
+        return {
+          biz_line: modeled.label,
+          biz_sticky: false,
+          source: 'model',
+          confidence: modeled.confidence,
+        };
+      }
+    } catch (err) {
+      console.error('live classify skipped:', err.message);
+    }
+  }
   const fallback = bizLine.resolve({ channel, text, prior });
   return {
     biz_line: fallback.biz_line,
@@ -332,19 +408,19 @@ function buildFewShot(threads) {
   for (const label of ['dv', 'sale']) {
     const picked = (threads || []).filter((thread) => thread && thread.label === label).slice(0, 4);
     for (const thread of picked) {
-      const lines = (thread.messages || []).slice(-10).map((row) => {
+      const lines = (thread.messages || []).slice(-4).map((row) => {
         const who = row.direction === 'out' ? 'Shop' : 'Khách';
-        const body = pii.maskText(String(row.message_text || row.text || '').slice(0, 240));
+        const body = pii.maskText(String(row.message_text || row.text || '').slice(0, 160));
         return `${who}: ${body}`;
-      }).filter((line) => line.trim() !== `${line.startsWith('Shop') ? 'Shop' : 'Khách'}: `);
+      }).filter((line) => !line.endsWith(': '));
       if (!lines.length) continue;
-      examples.push({ label, text: lines.join('\n') });
+      examples.push({ label, text: lines.join('\n').slice(0, 360) });
     }
   }
-  return examples;
+  return examples.slice(0, 8);
 }
 
-function classificationMessages(messages, shots) {
+function classificationMessages(messages, shots, hint) {
   const history = [];
   for (const example of (shots || []).slice(0, 8)) {
     history.push({ role: 'user', content: example.text });
@@ -352,19 +428,30 @@ function classificationMessages(messages, shots) {
   }
   const context = (messages || []).slice(-10).map((row) => {
     const who = row.direction === 'out' ? 'Shop' : 'Khách';
-    return `${who}: ${pii.maskText(String(row.message_text || row.text || '').slice(0, 240))}`;
+    return `${who}: ${pii.maskText(String(row.message_text || row.text || '').slice(0, 180))}`;
   }).join('\n');
   history.push({ role: 'user', content: context });
+  const kw = hint && Array.isArray(hint.keywords) ? hint.keywords.slice(0, 30) : [];
+  const labelBit = hint && hint.label
+    ? `Nhãn hiện tại của thread: ${hint.label}.`
+    : 'Thread chưa có nhãn.';
+  const kwBit = kw.length ? `Từ khóa DV đã học: ${kw.join(', ')}.` : '';
   return {
-    system: 'Phân loại hội thoại thành dv (phòng, ở lại, sự kiện, đi trong ngày, vé tham quan) hoặc sale (nông sản, giao hàng). Chỉ trả về một từ: dv, sale, hoặc unknown.',
+    system: [
+      'Phân loại hội thoại thành dv (phòng, ở lại, sự kiện, đi trong ngày, vé tham quan) hoặc sale (nông sản, giao hàng).',
+      'Thread đã gắn DV thì câu hỏi mơ hồ vẫn là dv, trừ khi tin mới là sale rõ.',
+      labelBit,
+      kwBit,
+      'Chỉ trả về một từ: dv, sale, hoặc unknown.',
+    ].filter(Boolean).join(' '),
     messages: history,
   };
 }
 
-async function modelClassify(messages, shots) {
+async function modelClassify(messages, shots, hint) {
   if (process.env.NODE_ENV === 'test' && process.env.FB_CLASSIFY_MODEL !== '1') return null;
   if (!process.env.ANTHROPIC_API_KEY) return null;
-  const payload = classificationMessages(messages, shots);
+  const payload = classificationMessages(messages, shots, hint);
   if (!payload.messages.length || !String(payload.messages[payload.messages.length - 1].content || '').trim()) {
     return null;
   }
@@ -438,45 +525,56 @@ async function relabel() {
   const existing = new Map((await store.allLabels('fb')).map((row) => [row.thread_id, row]));
   const drafts = require('./drafts');
   const saved = [];
-  const unknownIds = [];
+  const rest = [];
   let draftsUpdated = 0;
   for (const [threadId, messages] of byThread) {
-    const row = decideThread(messages, existing.get(threadId));
-    if (row.label === 'unknown' && row.source !== 'manual') {
-      unknownIds.push(threadId);
+    const prior = existing.get(threadId);
+    if (prior && prior.source === 'manual') {
+      saved.push(prior);
+      draftsUpdated += await drafts.applyThreadLabel('messenger', threadId, prior);
       continue;
     }
-    const stored = await store.setLabel('fb', threadId, row);
-    saved.push(stored);
-    draftsUpdated += await drafts.applyThreadLabel('messenger', threadId, stored);
+    const attr = lanhAttribution(messages);
+    if (attr) {
+      const stored = await store.setLabel('fb', threadId, {
+        label: 'dv',
+        source: attr,
+        confidence: attr === 'staff_lanh' ? 0.95 : 0.9,
+      });
+      saved.push(stored);
+      draftsUpdated += await drafts.applyThreadLabel('messenger', threadId, stored);
+      continue;
+    }
+    rest.push(threadId);
   }
-  const keywords = await refreshKeywords(saved);
-  const shots = await fewShotFromStore(saved);
-  for (const threadId of unknownIds) {
-    const messages = byThread.get(threadId) || [];
-    const modeled = await modelClassify(messages.slice(-10), shots);
-    const row = modeled && modeled.label !== 'unknown'
-      ? modeled
-      : { label: 'unknown', source: 'keyword', confidence: 0.3 };
+  const ground = saved.filter((row) => row.source === 'staff_lanh' || row.source === 'signature' || row.source === 'manual');
+  const keywords = await refreshKeywords(ground);
+  for (const threadId of rest) {
+    const row = decideThread(byThread.get(threadId) || [], null);
     const stored = await store.setLabel('fb', threadId, row);
     saved.push(stored);
     if (stored.label === 'sale' || stored.label === 'dv') {
       draftsUpdated += await drafts.applyThreadLabel('messenger', threadId, stored);
     }
   }
+  shotCache = await fewShotFromStore(await store.allLabels('fb'));
+  keywordCache = Promise.resolve();
   const labels = await store.allLabels('fb');
   return {
     counts: countLabels(labels),
     drafts_updated: draftsUpdated,
-    keywords: await refreshKeywords(labels.length ? labels : saved),
+    keywords,
   };
 }
 
 async function stats() {
   const labels = await store.allLabels('fb');
+  const ground = labels.filter((row) => (
+    row.source === 'staff_lanh' || row.source === 'signature' || row.source === 'manual'
+  ));
   return {
     counts: countLabels(labels),
-    keywords: await refreshKeywords(labels),
+    keywords: await refreshKeywords(ground.length ? ground : labels),
   };
 }
 
