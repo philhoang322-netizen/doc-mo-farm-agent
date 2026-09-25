@@ -19,6 +19,7 @@ const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
 
+const faqBody = require('../services/faqBody');
 const store = require('../services/faqStore');
 const csv = require('../services/faqCsv');
 const persona = require('../services/faqPersona');
@@ -378,7 +379,95 @@ test('import validates CSV headers and previews a replace', async () => {
 
     const page = await fetch(base + '/admin/faq', { headers: { Authorization: basic } });
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /Kiến thức FAQ/);
+    const html = await page.text();
+    assert.match(html, /Kiến thức FAQ/);
+    assert.match(html, /Chọn CSV/);
+    assert.doesNotMatch(html, /Nạp sau deploy/);
+    assert.doesNotMatch(html, /nhom_san_pham/);
+  } finally {
+    server.close();
+  }
+});
+
+function syntheticCsv(bytes) {
+  const header = 'id,nhom_san_pham,san_pham,nhom_cau_hoi,cau_hoi,bien_the_tu_khoa,y_dinh_khach,cau_tra_loi_chuan,gia_dieu_kien,hanh_dong,do_tin_cay,trang_thai_xac_minh,ly_do_can_xac_minh,nguon_chinh,moc_nguon,ghi_chu_noi_bo';
+  const lines = [header];
+  let size = Buffer.byteLength(header + '\n');
+  let n = 0;
+  while (size < bytes) {
+    n += 1;
+    const code = 'BIG-' + String(n).padStart(4, '0');
+    const answer = 'Câu trả lời mẫu ' + n + '. ' + 'nội dung mẫu '.repeat(40);
+    const line = [
+      code, 'Nhóm mẫu', 'Sản phẩm mẫu', 'Nhóm câu mẫu',
+      'Câu hỏi mẫu ' + n, 'từ khóa mẫu', 'ý định mẫu',
+      answer, '', 'TU_DONG', 'Cao', 'ĐÃ XÁC MINH', '',
+      'nguồn mẫu', '01/01/2026', 'ghi chú mẫu',
+    ].join(',');
+    lines.push(line);
+    size += Buffer.byteLength(line + '\n');
+  }
+  return lines.join('\n') + '\n';
+}
+
+test('a 300 KB CSV imports while other JSON stays at the default limit', async () => {
+  const csvText = syntheticCsv(300 * 1024);
+  assert.ok(Buffer.byteLength(csvText) >= 300 * 1024);
+  assert.ok(Buffer.byteLength(csvText) < 450 * 1024);
+  const parsed = csv.parseFaqCsv(csvText);
+  assert.deepEqual(parsed.errors, []);
+  assert.ok(parsed.items.length > 100);
+
+  const app = express();
+  const defaultJson = express.json();
+  app.use((req, res, next) => {
+    if (faqBody.skipGlobalJson(req)) return next();
+    return defaultJson(req, res, next);
+  });
+  app.post('/api/ping', (req, res) => res.json({ ok: true }));
+  hitlAdmin.mount(app);
+  const server = await new Promise(resolve => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const base = 'http://127.0.0.1:' + server.address().port;
+  try {
+    const headers = { Authorization: basic, 'Content-Type': 'application/json' };
+    const blocked = await fetch(base + '/api/ping', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ blob: 'x'.repeat(150 * 1024) }),
+    });
+    assert.equal(blocked.status, 413);
+
+    const body = JSON.stringify({ csv: csvText, confirm: true });
+    assert.ok(Buffer.byteLength(body) > 200 * 1024);
+    const saved = await fetch(base + '/admin/api/faq/import', {
+      method: 'POST',
+      headers,
+      body,
+    });
+    assert.equal(saved.status, 200);
+    const savedBody = await saved.json();
+    assert.equal(savedBody.preview, false);
+    assert.equal(savedBody.added, parsed.items.length);
+    assert.equal((await store.all()).length, parsed.items.length);
+
+    const rules = await fetch(base + '/admin/api/faq/rules', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ body: 'Quy tắc mẫu. '.repeat(12000) }),
+    });
+    assert.equal(rules.status, 400);
+    assert.match((await rules.json()).error, /quá dài/);
+
+    const raw = await fetch(base + '/admin/api/faq/import', {
+      method: 'POST',
+      headers: { Authorization: basic, 'Content-Type': 'text/csv' },
+      body: 'code,group\n1,2\n',
+    });
+    assert.equal(raw.status, 400);
+    const rawBody = await raw.json();
+    assert.match(rawBody.error, /Thiếu cột/);
   } finally {
     server.close();
   }
