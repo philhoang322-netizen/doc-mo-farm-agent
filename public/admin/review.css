@@ -648,6 +648,9 @@ body.hitl .kiot-grand { font-weight: 750; }
 body.hitl .kiot-warn { color: var(--orange); font-weight: 650; margin: 6px 0 0; font-size: 0.9375rem; }
 body.hitl .kiot-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 body.hitl .kiot-ack { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-weight: 650; }
+body.hitl .kiot-ack[hidden],
+body.hitl .kiot-msg[hidden],
+body.hitl .banner[hidden] { display: none !important; }
 body.hitl .kiot-ack input { width: auto; min-height: 0; }
 @media (max-width: 820px) {
   body.hitl .workspace, body.hitl .grid2, body.hitl .refund-grid, body.hitl .addr-grid3, body.hitl .kiot-grid, body.hitl .kiot-money { grid-template-columns: 1fr; }
