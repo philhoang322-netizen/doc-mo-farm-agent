@@ -65,6 +65,11 @@ async function handleMessage(p) {
   return ops.withLock(`${p.channel}:${p.externalKey}`, async () => {
     try {
       await noteInbound(p, p.text);
+      try {
+        await require('./conversationStore').recordPipelineInbound(p);
+      } catch (err) {
+        console.error('conversation record skipped:', err.message);
+      }
       try { require('./healthWatch').noteSuccess('pipeline'); } catch (_) {}
       if (p.typing) p.typing(p.replyTo).catch(() => {});
 
@@ -632,6 +637,11 @@ async function handleNonText(p) {
   try {
     const customer = await db.getOrCreateCustomer(p.externalKey, p.senderName);
     await noteInbound(p, shown);
+    try {
+      await require('./conversationStore').recordPipelineInbound(inbound);
+    } catch (err) {
+      console.error('conversation record skipped:', err.message);
+    }
     await db.saveMessage(p.externalKey, 'user', shown);
 
     // An image is very often a bank transfer receipt — the farm should look.

@@ -1,0 +1,41 @@
+/* Thread history on an inbox card. Loaded beside review.css so card-action
+   edits in that file do not have to carry these rules. */
+body.hitl .thread-context {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 var(--space-3);
+  width: 100%;
+  min-width: 0;
+}
+body.hitl .thread-list { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+body.hitl .thread-row { display: flex; width: 100%; min-width: 0; }
+body.hitl .thread-row.out { justify-content: flex-end; }
+body.hitl .thread-bubble {
+  max-width: 85%;
+  border-radius: 14px;
+  padding: 8px 10px;
+  font-size: 14px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+body.hitl .thread-row.in .thread-bubble { background: #ece7e0; color: var(--ink); }
+body.hitl .thread-row.out .thread-bubble { background: var(--green-soft); color: var(--ink); }
+body.hitl .thread-meta { font-size: 12px; font-weight: 650; color: var(--muted); margin-bottom: 2px; }
+body.hitl .thread-text { white-space: normal; }
+body.hitl .thread-more {
+  align-self: flex-start;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--green-deep);
+  min-height: var(--tap);
+  min-width: var(--tap);
+  padding: 0 4px;
+  font-weight: 650;
+  font-size: 15px;
+  cursor: pointer;
+}
+body.hitl button.thread-more { background: transparent; color: var(--green-deep); }
+body.hitl .msg .thread-context { margin: 4px 0 6px; }

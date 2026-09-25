@@ -1139,6 +1139,12 @@
     return box;
   }
 
+  function mountThreadContext(d, nested) {
+    const api = window.threadContext;
+    if (!api || typeof api.mount !== 'function') return null;
+    return api.mount(d && d.thread_context, { nested: !!nested });
+  }
+
   function buildCard(d) {
       const s = ensureCard(d);
       if (!s.dirty) s.reply = d.draft_reply || d.ai_suggested_draft || '';
@@ -1171,6 +1177,8 @@
       channelNameNodes(d).forEach(node => nameBox.appendChild(node));
       top.appendChild(nameBox);
       btn.appendChild(top);
+      const threadBox = mountThreadContext(d, true);
+      if (threadBox) btn.appendChild(threadBox);
       const customer = el('div', { class: 'msg-customer is-clamped' });
       customer.appendChild(richFragment(snippet(d) || '—'));
       btn.appendChild(customer);
@@ -1395,6 +1403,8 @@
     const main = el('div', { class: 'detail-main' });
     const side = el('div', { class: 'detail-side' });
     body.appendChild(meta);
+    const thread = mountThreadContext(d, false);
+    if (thread) main.appendChild(thread);
     const want = el('div', { class: 'want-box' });
     want.appendChild(el('span', { text: 'Khách đang muốn' }));
     const wantText = el('div', { class: 'msg-customer' });

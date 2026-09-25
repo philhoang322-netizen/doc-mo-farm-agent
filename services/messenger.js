@@ -511,6 +511,16 @@ async function sendText(psid, text) {
       message: { text: chunk },
     });
     if (!last.ok) return last;
+    try {
+      await require('./conversationStore').recordOutbound({
+        channel: 'fb',
+        thread_id: customerKey(id),
+        text: chunk,
+        source_msg_id: last.message_id || null,
+      });
+    } catch (err) {
+      console.error('conversation record skipped:', err.message);
+    }
   }
   return last || { ok: false, error: 'Tin nhắn trống' };
 }
@@ -519,7 +529,7 @@ async function sendImage(psid, imageUrl) {
   const id = psidFromUserId(psid);
   const url = String(imageUrl || '').trim();
   if (!id || !url) return { ok: false, error: 'Thiếu ảnh QR hoặc PSID' };
-  return postMessage({
+  const result = await postMessage({
     recipient: { id },
     messaging_type: 'RESPONSE',
     message: {
@@ -529,6 +539,20 @@ async function sendImage(psid, imageUrl) {
       },
     },
   });
+  if (result && result.ok) {
+    try {
+      await require('./conversationStore').recordOutbound({
+        channel: 'fb',
+        thread_id: customerKey(id),
+        text: '',
+        attachments_summary: 'image',
+        source_msg_id: result.message_id || null,
+      });
+    } catch (err) {
+      console.error('conversation record skipped:', err.message);
+    }
+  }
+  return result;
 }
 
 function attachmentKind(attachments) {
@@ -729,6 +753,13 @@ async function processBody(body, deps) {
   const results = [];
 
   for (const ev of messagingEvents(body)) {
+    if (ev && ev.message) {
+      try {
+        await require('./conversationStore').recordMessengerEvent(ev, pageId());
+      } catch (err) {
+        console.error('conversation record skipped:', err.message);
+      }
+    }
     const skip = skipReason(ev);
     if (skip) {
       log({ type: 'messenger_skipped', reason: skip });
