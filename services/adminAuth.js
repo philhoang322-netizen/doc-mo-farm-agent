@@ -47,33 +47,45 @@ function readCookie(req, name) {
   return null;
 }
 
-function signSession() {
-  const body = Buffer.from(JSON.stringify({
+function signSession(user) {
+  const payload = {
     exp: Date.now() + MAX_AGE_SEC * 1000,
-    v: 1,
-  })).toString('base64url');
+    v: user ? 2 : 1,
+  };
+  if (user && user.username) {
+    payload.uid = user.id || null;
+    payload.username = user.username;
+    payload.role = user.role;
+    payload.name = user.display_name || user.username;
+  }
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const sig = crypto.createHmac('sha256', process.env.ADMIN_PASSWORD).update(body).digest('base64url');
   return `${body}.${sig}`;
 }
 
-function sessionOk(req) {
-  if (!passwordConfigured()) return false;
+function readSession(req) {
+  if (!passwordConfigured()) return null;
   const token = readCookie(req, COOKIE);
-  if (!token) return false;
+  if (!token) return null;
   const dot = token.indexOf('.');
-  if (dot < 1) return false;
+  if (dot < 1) return null;
   const body = token.slice(0, dot);
   const sig = token.slice(dot + 1);
   const expected = crypto.createHmac('sha256', process.env.ADMIN_PASSWORD).update(body).digest('base64url');
   const a = Buffer.from(sig);
   const b = Buffer.from(expected);
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false;
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
   try {
     const data = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
-    return !!(data && data.exp > Date.now());
+    if (!data || !(data.exp > Date.now())) return null;
+    return data;
   } catch {
-    return false;
+    return null;
   }
+}
+
+function sessionOk(req) {
+  return !!readSession(req);
 }
 
 function basicPassword(req) {
@@ -122,10 +134,10 @@ function isAuthed(req) {
   return passwordAuthed(req) || apiKeyOk(req);
 }
 
-function setSessionCookie(req, res) {
+function setSessionCookie(req, res, user) {
   const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
   const parts = [
-    `${COOKIE}=${signSession()}`,
+    `${COOKIE}=${signSession(user)}`,
     'HttpOnly',
     'SameSite=Lax',
     'Path=/admin',
@@ -145,6 +157,7 @@ module.exports = {
   passwordAuthed,
   isAuthed,
   safeEqual,
+  readSession,
   setSessionCookie,
   clearSessionCookie,
 };

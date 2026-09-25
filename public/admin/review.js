@@ -111,6 +111,7 @@
   let detailStamp = '';
   let loadSeq = 0;
   let queuedDrafts = null;
+  let me = { role: 'manager', canSend: true, canDelete: true, canKiot: true, canManageUsers: true };
 
   function needsHumanTicket(d) {
     return String(d.ticket_status || '').indexOf('NEEDS_HUMAN') !== -1;
@@ -811,7 +812,7 @@
       card.appendChild(reply);
 
       const actions = el('div', { class: 'card-actions' });
-      if (openReply) {
+      if (openReply && me.canSend) {
         const sendBtn = el('button', { type: 'button', class: 'btn btn-primary', text: 'Duyệt & Gửi' });
         sendBtn.addEventListener('click', (ev) => {
           ev.preventDefault();
@@ -846,7 +847,7 @@
         if (fold.open && !fold.querySelector('.kiot-panel')) fold.appendChild(kiotPanel(d, d.id));
       });
       if (fold.open) fold.appendChild(kiotPanel(d, d.id));
-      card.appendChild(fold);
+      if (me.canKiot) card.appendChild(fold);
       return card;
   }
 
@@ -2090,7 +2091,7 @@
       ev.stopPropagation();
       removeDraft(d.id);
     });
-    row.appendChild(del);
+    if (me.canDelete) row.appendChild(del);
     return row;
   }
 
@@ -2216,8 +2217,26 @@
     }, interval);
   }
 
+  async function loadMe() {
+    try {
+      const res = await fetch('/admin/api/session', { credentials: 'same-origin' });
+      if (!res.ok) return;
+      me = await res.json();
+      if (me.role === 'sale') {
+        const tab = document.querySelector('[data-nhom="fb-dv"]');
+        if (tab) tab.hidden = true;
+      }
+      if (me.role === 'dv') {
+        const tab = document.querySelector('[data-nhom="fb-sale"]');
+        if (tab) tab.hidden = true;
+      }
+      const users = document.getElementById('users-link');
+      if (users) users.hidden = !me.canManageUsers;
+    } catch (_) { /* server still enforces the role */ }
+  }
+
   syncTabs();
-  loadChannels().then(load).then(startPolling).catch(e => {
+  loadChannels().then(loadMe).then(load).then(startPolling).catch(e => {
     if (e.message !== 'unauthorized') {
       listEl.textContent = '';
       listEl.appendChild(el('p', { class: 'empty', text: e.message }));

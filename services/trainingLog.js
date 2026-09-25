@@ -260,8 +260,8 @@ async function relevantExamples(query, salesChannel, limit = 3) {
     .map(row => ({ row, score: overlapScore(row, query) }))
     .filter(item => item.score > 0)
     .sort((a, b) => {
-      const aw = a.score * weightOf(a.row);
-      const bw = b.score * weightOf(b.row);
+      const aw = a.score * weightOf(a.row) * roleFactor(a.row);
+      const bw = b.score * weightOf(b.row) * roleFactor(b.row);
       if (bw !== aw) return bw - aw;
       return a.row.created_at < b.row.created_at ? 1 : -1;
     })
@@ -273,6 +273,13 @@ function weightOf(row) {
   const n = Number(row && row.example_weight);
   if (Number.isFinite(n) && n > 0) return n;
   return CORRECTION_WEIGHT;
+}
+
+/** Manager corrections outrank sale/dv when the overlap is otherwise equal. */
+function roleFactor(row) {
+  const actor = String((row && row.actor) || '');
+  if (!actor || actor.startsWith('manager')) return 1;
+  return 0.6;
 }
 
 function clip(s, n) {
