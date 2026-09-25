@@ -535,6 +535,7 @@ body.hitl .health-dot {
 body.hitl .health-label:empty { display: none; }
 body.hitl .health-chip.bad { color: var(--red); }
 body.hitl .health-chip.bad .health-dot { background: var(--red); }
+body.inbox #search-toggle.is-active { color: var(--green-deep); background: var(--green-soft); }
 
 body.hitl .app-menu {
   position: absolute;
@@ -671,6 +672,20 @@ body.hitl .folder {
 }
 body.hitl .folder.active { background: var(--green-soft); color: var(--green-deep); }
 body.hitl .folder-deleted { font-weight: 550; }
+body.hitl .hot-list {
+  flex: 0 0 auto;
+  min-height: var(--tap);
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--red-soft);
+  color: var(--red);
+  font-weight: 700;
+  font-size: 14px;
+  white-space: nowrap;
+}
+body.hitl .hot-list.active { box-shadow: inset 0 0 0 1px var(--red); }
+body.hitl .hot-list[hidden] { display: none; }
 body.hitl .filter-btn { position: relative; flex: 0 0 auto; }
 body.hitl .filter-text { display: none; }
 body.hitl .filter-btn.has-filters::after {
@@ -1069,22 +1084,39 @@ body.hitl .detail-actions { display: flex; flex-wrap: wrap; gap: 0; width: 100%;
 body.hitl .detail-actions { width: auto; margin: 0 0 var(--space-2); }
 body.inbox .detail-quick {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0;
-  overflow-x: auto;
+  overflow: visible;
   margin: 0 0 var(--space-2);
 }
 body.inbox .detail-quick .detail-actions,
-body.inbox .detail-quick .status-actions { flex: 0 0 auto; width: auto; margin: 0; }
+body.inbox .detail-quick .status-actions {
+  display: contents;
+}
+body.inbox .detail-quick .quick-sep {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: 1px;
+  min-height: 24px;
+  margin: 10px 4px;
+  background: var(--line);
+}
+body.inbox .detail-quick button.card-act,
 body.inbox .detail-quick button.btn {
+  flex: 0 0 auto;
+  flex-shrink: 0;
   width: auto;
+  max-width: none;
+  min-width: max-content;
+  min-height: var(--tap);
   white-space: nowrap;
+  overflow: visible;
   padding: 8px 10px;
   font-size: 14px;
   font-weight: 650;
-  color: var(--green-deep);
 }
+body.inbox .detail-quick button.btn { color: var(--green-deep); }
 
 body.hitl .cust-fold,
 body.hitl .kiot-fold {
@@ -1477,13 +1509,36 @@ body.hitl .qr { max-width: 220px; }
   }
   body.inbox .back { display: inline-flex; }
   body.inbox.show-detail button#detail-back { display: inline-flex; }
+  body.inbox.show-detail #search-toggle { display: none; }
   body.inbox .kiot-actions .btn { width: 100%; }
+  body.inbox .app-bar { gap: 0; padding-left: 2px; padding-right: 0; }
+  body.inbox .bar-actions { gap: 0; }
+  body.inbox .brand { min-width: max-content; }
+  body.inbox .brand h1 {
+    overflow: visible;
+    text-overflow: clip;
+    font-size: 16px;
+    letter-spacing: -0.04em;
+  }
+  body.inbox .ver { margin-left: 4px; padding: 0 4px; font-size: 11px; }
+  body.inbox .health-chip { width: var(--tap); min-width: var(--tap); padding: 0; }
+  body.inbox .health-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  body.inbox.search-open:not(.show-detail) .brand { display: none; }
+  body.inbox.search-open:not(.show-detail) .inbox-search { display: block; flex: 1 1 auto; min-width: 0; }
+  body.inbox.search-open:not(.show-detail) .inbox-search input { width: 100%; }
   body.inbox .detail-main,
   body.inbox .detail-side { display: contents; }
   body.inbox .cust-fold { order: -1; }
-  body.inbox.search-open .brand { display: none; }
-  body.inbox.search-open .inbox-search { display: block; flex: 1 1 auto; min-width: 0; }
-  body.inbox.search-open .inbox-search input { width: 100%; }
 }
 
 @media (min-width: 1024px) {

@@ -351,6 +351,13 @@
     });
   });
 
+  const hotListBtn = document.getElementById('hot-list');
+  if (hotListBtn) {
+    hotListBtn.addEventListener('click', () => {
+      guardSwitch(() => { triage = triage === 'hot' ? '' : 'hot'; });
+    });
+  }
+
   const filterPanel = document.getElementById('filter-panel');
   const filterToggle = document.getElementById('filter-toggle');
   if (filterToggle && filterPanel) {
@@ -376,6 +383,16 @@
       if (key === 'kenh' || key === 'all') {
         salesChannel = 'farm';
         renderChannels();
+      }
+      if (key === 'search' || key === 'all') {
+        const input = document.getElementById('inbox-search');
+        if (input) input.value = '';
+        document.body.classList.remove('search-open');
+        const toggle = document.getElementById('search-toggle');
+        if (toggle) {
+          toggle.classList.remove('is-active');
+          toggle.setAttribute('aria-expanded', 'false');
+        }
       }
     });
   }
@@ -482,6 +499,15 @@
     });
     const hotChip = document.getElementById('hot-chip');
     if (hotChip) hotChip.hidden = false;
+    const hotList = document.getElementById('hot-list');
+    if (hotList) {
+      const n = triageCounts.hot || 0;
+      hotList.hidden = n < 1;
+      const count = hotList.querySelector('.count');
+      if (count) count.textContent = String(n);
+      hotList.classList.toggle('active', triage === 'hot');
+      hotList.setAttribute('aria-pressed', triage === 'hot' ? 'true' : 'false');
+    }
     const typeRow = document.getElementById('types');
     if (typeRow) typeRow.hidden = nhom !== 'zalo';
     const zaloLine = document.getElementById('zalo-line');
@@ -516,6 +542,11 @@
       const ch = channels.find(c => c.id === salesChannel);
       items.push({ key: 'kenh', label: ch ? ch.name : salesChannel });
     }
+    const searchEl = document.getElementById('inbox-search');
+    const searchQuery = searchEl ? searchEl.value.trim() : '';
+    if (searchQuery) items.push({ key: 'search', label: 'Tìm: ' + searchQuery });
+    const searchToggle = document.getElementById('search-toggle');
+    if (searchToggle) searchToggle.classList.toggle('is-active', !!searchQuery);
     if (filterToggle) filterToggle.classList.toggle('has-filters', items.length > 0);
     if (!items.length) {
       box.hidden = true;
@@ -1394,13 +1425,16 @@
         quick.appendChild(lineActions(d, 'detail-actions'));
         quick.appendChild(statusActions(d));
       }
-      if (!locked) quick.appendChild(actionButton('Lưu', 'ghost', () => save()));
+      const draftActs = [];
+      if (!locked) draftActs.push(actionButton('Lưu', 'ghost', () => save()));
       if (!locked && d.approval_status !== 'REJECTED') {
-        quick.appendChild(actionButton('Từ chối bản nháp', 'ghost', () => reject()));
+        draftActs.push(actionButton('Từ chối bản nháp', 'ghost', () => reject()));
       }
       if (!locked && d.approval_status !== 'PENDING_REVIEW') {
-        quick.appendChild(actionButton('Đưa về chờ xử lý', 'ghost', () => reopen()));
+        draftActs.push(actionButton('Đưa về chờ xử lý', 'ghost', () => reopen()));
       }
+      if (draftActs.length && quick.childNodes.length) quick.appendChild(el('span', { class: 'quick-sep', 'aria-hidden': 'true' }));
+      draftActs.forEach(btn => quick.appendChild(btn));
       if (quick.childNodes.length) main.appendChild(quick);
     }
 
@@ -1434,7 +1468,7 @@
     main.appendChild(el('p', { id: 'reply-error', class: 'reply-error', hidden: 'hidden' }));
     if (!locked) main.appendChild(learnToggle(s));
 
-    const phoneField = blockField('customer_phone', 'Số điện thoại', d.customer_phone, {
+    const phoneField = blockField('customer_phone', 'SĐT lưu vào tin', d.customer_phone, {
       disabled: locked, placeholder: 'Nếu có', type: 'tel', inputmode: 'tel', autocomplete: 'tel',
     });
     const invoiceField = blockField('invoice_code', 'Mã hoá đơn', d.invoice_code, { disabled: locked, placeholder: 'Ví dụ: HD011637' });
@@ -1959,7 +1993,7 @@
     const nameHint = el('p', { class: 'kiot-name-hint', text: seeded.hint });
     nameHint.hidden = !seeded.hint;
     nameInput.wrap.appendChild(nameHint);
-    const phoneInput = kiotInput('Số điện thoại', d.customer_phone || '', 'kiot-phone-' + pid, { type: 'tel', inputmode: 'tel' });
+    const phoneInput = kiotInput('SĐT tra KiotViet', d.customer_phone || '', 'kiot-phone-' + pid, { type: 'tel', inputmode: 'tel' });
     const invoiceInput = adoptDraftField('invoice_code');
     const addrInput = kiotInput('Địa chỉ giao', addressText(d), 'kiot-address-' + pid);
     nameInput.input.addEventListener('input', () => {
@@ -2909,7 +2943,12 @@
       setSearch(!document.body.classList.contains('search-open'));
     });
   }
-  if (searchInput) searchInput.addEventListener('input', () => renderList());
+  if (searchInput) {
+    searchInput.addEventListener('input', () => {
+      renderList();
+      paintActiveFilters();
+    });
+  }
 
   let lastScrollY = 0;
   window.addEventListener('scroll', () => {
