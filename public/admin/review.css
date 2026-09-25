@@ -501,7 +501,6 @@ body.hitl .ver {
   vertical-align: middle;
   line-height: 1.6;
 }
-body.inbox.bar-collapsed .ver { display: none; }
 body.hitl .bar-actions { display: flex; align-items: center; flex: 0 0 auto; }
 body.hitl .inbox-search { display: none; margin: 0; }
 body.hitl .inbox-search input { margin-top: 0; min-height: var(--tap); }
@@ -639,24 +638,20 @@ body.hitl .queue-title h2 { margin: 0; font-size: 16px; }
 body.hitl .toolbar { display: flex; flex-direction: column; }
 body.hitl .folder-bar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-1);
   min-width: 0;
   padding: 0 var(--space-1) 0 var(--space-2);
 }
 body.hitl .folder-row {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-1);
   flex: 1 1 auto;
   min-width: 0;
-  overflow-x: auto;
-  padding: 2px 20px 2px 0;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-  -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 28px), transparent);
-  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 28px), transparent);
+  overflow: visible;
+  padding: 2px 0;
 }
-body.hitl .folder-row::-webkit-scrollbar { display: none; }
 body.hitl .folder {
   flex: 0 0 auto;
   white-space: nowrap;
@@ -674,8 +669,15 @@ body.hitl .folder.active { background: var(--green-soft); color: var(--green-dee
 body.hitl .folder-deleted { font-weight: 550; }
 body.hitl .hot-list {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: var(--tap);
+  min-width: var(--tap);
+  height: var(--tap);
   min-height: var(--tap);
-  padding: 8px 10px;
+  padding: 0;
   border: 0;
   border-radius: var(--radius-sm);
   background: var(--red-soft);
@@ -683,6 +685,13 @@ body.hitl .hot-list {
   font-weight: 700;
   font-size: 14px;
   white-space: nowrap;
+}
+body.hitl .hot-list .hot-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
 }
 body.hitl .hot-list.active { box-shadow: inset 0 0 0 1px var(--red); }
 body.hitl .hot-list[hidden] { display: none; }
@@ -1511,8 +1520,18 @@ body.hitl .qr { max-width: 220px; }
   body.inbox.show-detail button#detail-back { display: inline-flex; }
   body.inbox.show-detail #search-toggle { display: none; }
   body.inbox .kiot-actions .btn { width: 100%; }
-  body.inbox .app-bar { gap: 0; padding-left: 2px; padding-right: 0; }
+  body.inbox .app-bar {
+    gap: 0;
+    padding-left: calc(12px + env(safe-area-inset-left, 0px));
+    padding-right: calc(4px + env(safe-area-inset-right, 0px));
+  }
   body.inbox .bar-actions { gap: 0; }
+  body.inbox .app-bar .icon-btn,
+  body.inbox .app-bar .health-chip {
+    width: 36px;
+    min-width: 36px;
+    padding: 0;
+  }
   body.inbox .brand { min-width: max-content; }
   body.inbox .brand h1 {
     overflow: visible;
@@ -1521,7 +1540,6 @@ body.hitl .qr { max-width: 220px; }
     letter-spacing: -0.04em;
   }
   body.inbox .ver { margin-left: 4px; padding: 0 4px; font-size: 11px; }
-  body.inbox .health-chip { width: var(--tap); min-width: var(--tap); padding: 0; }
   body.inbox .health-label {
     position: absolute;
     width: 1px;

@@ -209,6 +209,10 @@ test('inbox keeps every pre-redesign control and API trigger', () => {
   assert.match(css, /search-open:not\(\.show-detail\) \.inbox-search/);
   assert.match(css, /health-chip\.bad/);
   assert.match(css, /#app-menu:not\(\[hidden\]\) #storage:not\(\[hidden\]\)/);
+  assert.match(css, /padding-left:\s*calc\(12px \+ env\(safe-area-inset-left/);
+  assert.match(css, /folder-row \{[^}]*flex-wrap:\s*wrap/s);
+  assert.doesNotMatch(css, /bar-collapsed \.ver/);
+  assert.match(js, /aria-label', 'Nóng '/);
 });
 
 function loadPlaywright() {
@@ -223,7 +227,7 @@ const chrome = ['/usr/bin/google-chrome-stable', '/usr/bin/google-chrome', '/usr
 
 test('quick-row hit boxes, brand, and search chip fit the phone', {
   skip: !playwright || !chrome,
-  timeout: 90000,
+  timeout: 120000,
 }, async () => {
   process.env.DATABASE_URL = '';
   process.env.ADMIN_PASSWORD = 'secret';
@@ -283,14 +287,75 @@ test('quick-row hit boxes, brand, and search chip fit the phone', {
     async function brandBox() {
       return page.evaluate(() => {
         const h1 = document.querySelector('#app-bar h1');
+        const name = document.getElementById('product-name');
         const ver = document.querySelector('#app-version');
         return {
           scroll: h1.scrollWidth,
           client: h1.clientWidth,
           truncated: h1.scrollWidth > h1.clientWidth + 1,
+          left: name.getBoundingClientRect().left,
           version: ver ? getComputedStyle(ver).display : 'missing',
+          versionText: ver ? ver.textContent.trim() : '',
           search: getComputedStyle(document.getElementById('search-toggle')).display,
           text: h1.innerText.replace(/\s+/g, ' ').trim(),
+        };
+      });
+    }
+    async function folderFit() {
+      return page.evaluate(() => {
+        const folders = [...document.querySelectorAll('#folder-nav .folder')];
+        const hot = document.getElementById('hot-list');
+        const hotShown = hot && !hot.hidden && getComputedStyle(hot).display !== 'none';
+        const hotBox = hotShown ? hot.getBoundingClientRect() : null;
+        const nav = document.getElementById('folder-nav');
+        const navStyle = getComputedStyle(nav);
+        const list = document.querySelector('#queue');
+        const listBox = list.getBoundingClientRect();
+        const view = document.documentElement.clientWidth;
+        const desktop = view >= 1024;
+        const boundsLeft = desktop ? listBox.left : 0;
+        const boundsRight = desktop ? listBox.right : view;
+        const intersects = (a, b) => a.left < b.right - 0.5 && b.left < a.right - 0.5
+          && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5;
+        const boxes = folders.map(btn => {
+          const box = btn.getBoundingClientRect();
+          let masked = false;
+          let clipped = false;
+          let node = btn.parentElement;
+          while (node && node !== document.documentElement) {
+            const style = getComputedStyle(node);
+            const mask = (style.maskImage || '') + ' ' + (style.webkitMaskImage || '');
+            if (/\b(?:linear|radial|conic)-gradient\b|url\(/.test(mask)) masked = true;
+            const ox = style.overflowX;
+            const oy = style.overflowY;
+            if (ox === 'hidden' || ox === 'auto' || ox === 'scroll' || ox === 'clip'
+              || oy === 'hidden' || oy === 'auto' || oy === 'scroll' || oy === 'clip') {
+              const parent = node.getBoundingClientRect();
+              if (box.left < parent.left - 1 || box.right > parent.right + 1
+                || box.top < parent.top - 1 || box.bottom > parent.bottom + 1) clipped = true;
+            }
+            node = node.parentElement;
+          }
+          return {
+            text: btn.innerText.replace(/\s+/g, ' ').trim(),
+            left: Math.round(box.left),
+            right: Math.round(box.right),
+            top: Math.round(box.top),
+            bottom: Math.round(box.bottom),
+            w: Math.round(box.width),
+            h: Math.round(box.height),
+            masked,
+            clipped,
+            outside: box.left < boundsLeft - 1 || box.right > boundsRight + 1,
+            hotOverlap: hotBox ? intersects(box, hotBox) : false,
+          };
+        });
+        return {
+          boxes,
+          scroll: nav.scrollWidth > nav.clientWidth + 1,
+          mask: ((navStyle.maskImage || '') + ' ' + (navStyle.webkitMaskImage || '')).trim(),
+          hotLabel: hot ? hot.getAttribute('aria-label') : '',
+          hotHidden: !hotShown,
         };
       });
     }
@@ -378,10 +443,37 @@ test('quick-row hit boxes, brand, and search chip fit the phone', {
       active: document.getElementById('search-toggle').classList.contains('is-active'),
     }));
 
+    const folders = {};
+    for (const width of [390, 402, 440]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForSelector('#folder-nav .folder');
+      folders['list-' + width] = await folderFit();
+    }
+    await page.setViewportSize({ width: 1024, height: 800 });
+    await page.locator('.msg-card', { hasText: 'Nguyễn Lan' }).locator('.msg').click();
+    await page.waitForSelector('#detail .detail-quick');
+    folders['detail-1024'] = await folderFit();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    folders['detail-1280'] = await folderFit();
+    await page.setViewportSize({ width: 402, height: 874 });
+    await page.click('#detail-back');
+    await page.waitForSelector('#queue .msg', { state: 'visible' });
+    await page.locator('.msg-card', { hasText: 'Trần Bích' }).locator('.msg').click();
+    await page.waitForSelector('details.kiot-fold[open] .kiot-panel');
+    await page.locator('details.kiot-fold[open] .kiot-panel').scrollIntoViewIfNeeded();
+    const kiotBrand = await brandBox();
+
     for (const [key, box] of Object.entries(brands)) {
       assert.equal(box.truncated, false, key + ' h1 ' + box.scroll + '/' + box.client + ' ' + box.text);
       assert.match(box.text, /omni sale dmf/i);
+      assert.ok(box.left >= 12, key + ' brand left ' + box.left);
+      assert.notEqual(box.version, 'none', key + ' version hidden');
+      assert.match(box.versionText, /1\.0\.0/);
     }
+    assert.ok(kiotBrand.left >= 12, 'kiot brand left ' + kiotBrand.left);
+    assert.notEqual(kiotBrand.version, 'none', 'kiot version ' + kiotBrand.version);
+    assert.match(kiotBrand.versionText, /1\.0\.0/);
+    assert.match(kiotBrand.text, /omni sale dmf/i);
     assert.equal(brands['list-390'].version, 'inline-block');
     assert.equal(brands['list-alert-390'].version, 'inline-block');
     assert.equal(brands['detail-390'].search, 'none');
@@ -400,6 +492,20 @@ test('quick-row hit boxes, brand, and search chip fit the phone', {
     assert.equal(cleared.value, '');
     assert.equal(cleared.active, false);
     assert.equal(cleared.text.includes('Tìm:'), false);
+    for (const [key, fit] of Object.entries(folders)) {
+      assert.equal(fit.scroll, false, key + ' folder row scrolls');
+      assert.equal(fit.hotHidden, false, key + ' hot chip hidden');
+      assert.match(fit.hotLabel, /^Nóng \d+$/);
+      assert.doesNotMatch(fit.mask, /gradient/);
+      assert.ok(fit.boxes.length >= 6, key + ' folders ' + fit.boxes.length);
+      fit.boxes.forEach(box => {
+        assert.equal(box.masked, false, key + ' ' + box.text + ' masked');
+        assert.equal(box.clipped, false, key + ' ' + box.text + ' clipped');
+        assert.equal(box.outside, false, key + ' ' + box.text + ' ' + box.left + '-' + box.right);
+        assert.equal(box.hotOverlap, false, key + ' ' + box.text + ' overlaps Nóng');
+        assert.ok(box.h >= 44, key + ' ' + box.text + ' h ' + box.h);
+      });
+    }
   } finally {
     await browser.close();
     server.close();

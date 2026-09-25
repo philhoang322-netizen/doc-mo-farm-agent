@@ -505,6 +505,7 @@
       hotList.hidden = n < 1;
       const count = hotList.querySelector('.count');
       if (count) count.textContent = String(n);
+      hotList.setAttribute('aria-label', 'Nóng ' + n);
       hotList.classList.toggle('active', triage === 'hot');
       hotList.setAttribute('aria-pressed', triage === 'hot' ? 'true' : 'false');
     }
