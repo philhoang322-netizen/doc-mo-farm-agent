@@ -805,14 +805,17 @@
       });
       reply.value = s.reply || '';
       if (!openReply) reply.disabled = true;
+      const replyError = el('p', { class: 'reply-error', hidden: true });
       reply.addEventListener('input', () => {
         s.reply = reply.value;
         s.dirty = true;
         dirty = true;
+        replyError.hidden = true;
       });
       reply.addEventListener('click', (ev) => ev.stopPropagation());
       card.appendChild(replyLabel);
       card.appendChild(reply);
+      card.appendChild(replyError);
 
       const actions = el('div', { class: 'card-actions' });
       if (openReply) {
@@ -984,8 +987,11 @@
       const s = ensureCard(d);
       s.reply = reply.value;
       s.dirty = true;
+      const err = document.getElementById('reply-error');
+      if (err) err.hidden = true;
     });
     body.appendChild(el('div', { class: 'field-block' }, [reply]));
+    body.appendChild(el('p', { id: 'reply-error', class: 'reply-error', hidden: true }));
     if (!locked) {
       const learn = el('label', { class: 'learn-toggle' });
       const box = el('input', { type: 'checkbox', class: 'learn-check' });
@@ -1311,21 +1317,26 @@
     return patch({ approval_status: 'PENDING_REVIEW', actor_name: actorName() }, 'Đã đưa về chờ duyệt.');
   }
   function send() {
+    const policy = window.sendOnce;
     const data = readForm();
-    const refund = !!detailEl.querySelector('#d-refund');
-    let msg = refund
-      ? 'Gửi phản hồi này cho khách? Hoàn tiền không tự chạy — chỉ tin nhắn được gửi.'
-      : 'Gửi tin này cho khách?';
-    if (data.sales_channel && data.sales_channel !== 'farm') {
-      const ch = channels.find(c => c.id === data.sales_channel);
-      msg = 'Kênh ' + (ch ? ch.name : data.sales_channel) + ' chưa có đường gửi. Tin sẽ được duyệt và nằm ở Chờ gửi. Tiếp tục?';
-    } else if (data.channel === 'messenger') {
-      msg = refund
-        ? 'Gửi phản hồi này cho khách trên Facebook Messenger? Hoàn tiền không tự chạy.'
-        : 'Gửi tin này cho khách trên Facebook Messenger?';
+    const card = ensureCard({ id: selectedId });
+    const plan = policy.prepare({ reply: data.draft_reply, learn: card.learn });
+    const err = document.getElementById('reply-error');
+    if (!plan.send) {
+      if (err) {
+        err.hidden = false;
+        err.textContent = plan.inline;
+      }
+      return;
     }
-    if (!confirm(msg)) return;
-    return patch(payload({ approval_status: 'APPROVED', send: true }), 'Đã duyệt.');
+    if (err) err.hidden = true;
+    if (!policy.gate.tryBegin(selectedId)) return;
+    const btn = document.getElementById('btn-approve');
+    if (btn) btn.disabled = true;
+    return patch(payload({ approval_status: 'APPROVED', send: true }), 'Đã gửi.')
+      .finally(() => {
+        policy.gate.end(selectedId);
+      });
   }
 
   function vnd(n) {
@@ -2041,38 +2052,58 @@
     return 'Đã duyệt · ' + tail;
   }
 
+  function cardSendButton(id) {
+    const safe = window.CSS && CSS.escape ? CSS.escape(id) : id;
+    const card = listEl.querySelector('.msg-card[data-draft-id="' + safe + '"]');
+    return card ? card.querySelector('.card-actions > .btn-primary') : null;
+  }
+
+  function showReplyError(id, text) {
+    const safe = window.CSS && CSS.escape ? CSS.escape(id) : id;
+    const card = listEl.querySelector('.msg-card[data-draft-id="' + safe + '"]');
+    const err = card && card.querySelector('.reply-error');
+    if (!err) return;
+    err.hidden = !text;
+    err.textContent = text || '';
+  }
+
   async function approveCard(d) {
+    const policy = window.sendOnce;
     const s = ensureCard(d);
-    const text = String(s.reply || '').trim();
-    if (!text) {
-      toast('Nhập câu trả lời trước khi gửi.');
+    const plan = policy.prepare({ reply: s.reply, learn: s.learn });
+    if (!plan.send) {
+      showReplyError(d.id, plan.inline);
       return;
     }
-    const where = d.channel === 'messenger' ? ' trên Facebook Messenger' : '';
-    if (!confirm('Gửi tin này cho khách' + where + '?')) return;
-    if (busy) return;
+    showReplyError(d.id, '');
+    if (!policy.gate.tryBegin(d.id)) return;
+    const btn = cardSendButton(d.id);
+    if (btn) btn.disabled = true;
     busy = true;
     try {
       const res = await api('/admin/api/drafts/' + d.id, {
         method: 'PATCH',
         body: JSON.stringify({
-          draft_reply: text,
+          draft_reply: plan.text,
           send: true,
-          learn: s.learn !== false,
+          learn: plan.learn,
           actor_name: actorName(),
           approval_status: 'APPROVED',
         }),
       });
       s.dirty = false;
-      s.reply = text;
+      s.reply = plan.text;
       dirty = cardsDirty();
       const sent = res.send && res.send.sent;
       toast(sent ? learnNote(res, true) : (res.send && res.send.pendingAdapter ? learnNote(res, false) : (res.send ? 'Đã duyệt, chưa gửi được.' : 'Đã lưu.')));
+      if (!sent && btn) btn.disabled = false;
       listStamp = '';
       await load();
     } catch (e) {
+      if (btn) btn.disabled = false;
       if (e.message !== 'unauthorized') toast(e.message);
     } finally {
+      policy.gate.end(d.id);
       busy = false;
     }
   }

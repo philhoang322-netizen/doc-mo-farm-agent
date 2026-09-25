@@ -501,6 +501,8 @@ body.hitl .card-reply {
   width: calc(100% - 20px); margin: 0 10px 8px; min-height: 96px; border: 2px solid var(--line);
   border-radius: 12px; padding: 10px 12px; background: #fff;
 }
+body.hitl .reply-error { margin: 0 12px 8px; color: var(--red); font-weight: 700; font-size: 0.875rem; }
+body.hitl .reply-error[hidden] { display: none !important; }
 body.hitl .card-actions, body.hitl .status-actions {
   display: flex; flex-wrap: wrap; gap: 6px; padding: 0 10px 8px; align-items: center;
 }
