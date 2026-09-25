@@ -2582,8 +2582,10 @@
       if (onlyOpaque) return nameFallback(names[0].text || names[0].name || '');
     }
     const nodes = showIdentity ? [identityRow(d, opts)] : [];
+    const identityName = showIdentity ? nodes[0].querySelector('.id-name').textContent : '';
     names.filter(item => item.source !== 'kiot').forEach(item => {
       if (item.source === 'id' || opaqueId(item.text || item.name)) return;
+      if (identityName && item.name && item.name === identityName) return;
       const bit = el('span', { class: 'msg-channel-name' });
       if (item.avatar && /^https:\/\//.test(item.avatar)) {
         bit.appendChild(el('img', { class: 'msg-avatar', alt: '', src: item.avatar }));

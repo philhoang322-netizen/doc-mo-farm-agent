@@ -824,10 +824,10 @@ body.inbox .msg-card .msg {
   padding: 8px 12px 7px;
 }
 body.inbox .msg-card .msg-names {
-  flex-direction: row;
+  flex-direction: column;
   flex-wrap: nowrap;
-  align-items: baseline;
-  gap: 6px;
+  align-items: stretch;
+  gap: 2px;
   overflow: hidden;
 }
 body.inbox .msg-card .msg-name,
@@ -889,7 +889,7 @@ body.hitl .msg {
   font-weight: 400;
 }
 body.hitl .msg-top { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-2); min-width: 0; }
-body.hitl .msg-names { display: flex; flex: 1 1 auto; flex-direction: row; flex-wrap: nowrap; align-items: baseline; gap: 8px; min-width: 0; overflow: hidden; width: 100%; }
+body.hitl .msg-names { display: flex; flex: 1 1 auto; flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 2px; min-width: 0; overflow: hidden; width: 100%; }
 body.hitl .id-row {
   display: flex;
   flex-wrap: nowrap;
@@ -1200,7 +1200,7 @@ body.hitl .detail-empty strong { display: block; color: var(--ink); margin-botto
 body.hitl .back { display: inline-flex; margin: 0 0 var(--space-2); background: transparent; border: 0; box-shadow: none; color: var(--green-deep); min-height: var(--tap); padding: 0; font-weight: 650; }
 body.hitl .detail-meta { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin-bottom: var(--space-3); min-width: 0; }
 body.hitl .name-row { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 8px; margin-right: 0; min-width: 0; flex: 1 1 100%; overflow: hidden; }
-body.hitl .name-row .msg-names { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: baseline; gap: 8px; min-width: 0; overflow: hidden; }
+body.hitl .name-row .msg-names { display: flex; flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 2px; min-width: 0; overflow: hidden; }
 body.hitl .detail-meta h3 { margin: 0; font-size: 20px; font-weight: 700; }
 body.hitl .cust-code { font-size: 15px; font-weight: 650; color: var(--muted); }
 body.hitl .want-box {
