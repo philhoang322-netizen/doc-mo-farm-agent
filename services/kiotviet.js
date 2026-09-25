@@ -68,6 +68,7 @@ async function getToken(force = false) {
     return token;
   } catch (e) {
     console.error('KiotViet auth failed:', e.response?.data || e.message);
+    try { require('./healthWatch').noteFailure('kiotviet', 'auth'); } catch (_) {}
     return null;
   }
 }
@@ -88,12 +89,21 @@ async function call(method, path, { params, data, retry = true } = {}) {
         'Content-Type': 'application/json',
       },
     });
+    try { require('./healthWatch').noteSuccess('kiotviet'); } catch (_) {}
     return r.data;
   } catch (e) {
     // An expired token looks like a 401 — refresh once and try again.
     if (retry && e.response?.status === 401) {
       await getToken(true);
       return call(method, path, { params, data, retry: false });
+    }
+    const status = e.response?.status;
+    const code = e.code === 'ECONNABORTED' || e.code === 'ETIMEDOUT' ? 'timeout'
+      : status === 401 ? 'auth'
+      : status >= 500 ? 'upstream'
+      : null;
+    if (code) {
+      try { require('./healthWatch').noteFailure('kiotviet', code); } catch (_) {}
     }
     const detail = e.response?.data ? JSON.stringify(e.response.data).slice(0, 300) : e.message;
     throw new Error(`KiotViet ${method} ${path}: ${detail}`);

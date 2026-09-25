@@ -102,13 +102,30 @@ async function fetchPages(http, pageId, token) {
       const status = e.response && e.response.status;
       const data = e.response && e.response.data;
       const fail = graphFailure({ status, data }, token);
+      try {
+        require('./healthWatch').noteGraphResult({
+          ok: false,
+          status,
+          errorCode: fail && fail.code,
+        });
+      } catch (_) {}
       return {
         error: fail || { message: safeText(e.message || 'Không gọi được Graph', token), code: null },
         pages,
       };
     }
     const fail = graphFailure(res, token);
-    if (fail) return { error: fail, pages };
+    if (fail) {
+      try {
+        require('./healthWatch').noteGraphResult({
+          ok: false,
+          status: res && res.status,
+          errorCode: fail.code,
+        });
+      } catch (_) {}
+      return { error: fail, pages };
+    }
+    try { require('./healthWatch').noteSuccess('graph'); } catch (_) {}
     const data = (res && res.data) || {};
     pages.push(data);
     const next = data.paging && data.paging.cursors && data.paging.cursors.after;
