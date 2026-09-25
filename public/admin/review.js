@@ -1162,6 +1162,12 @@
     return box;
   }
 
+  function mountThreadContext(d, nested) {
+    const api = window.threadContext;
+    if (!api || typeof api.mount !== 'function') return null;
+    return api.mount(d && d.thread_context, { nested: !!nested });
+  }
+
   function buildCard(d) {
       const s = ensureCard(d);
       if (!s.dirty) s.reply = d.draft_reply || d.ai_suggested_draft || '';
@@ -1194,9 +1200,13 @@
       channelNameNodes(d).forEach(node => nameBox.appendChild(node));
       top.appendChild(nameBox);
       btn.appendChild(top);
+      const threadBox = mountThreadContext(d, true);
+      if (threadBox) btn.appendChild(threadBox);
       const customer = el('div', { class: 'msg-customer is-clamped' });
       customer.appendChild(richFragment(snippet(d) || '—'));
       btn.appendChild(customer);
+      const reviewNote = faqReviewNode(d);
+      if (reviewNote) btn.appendChild(reviewNote);
       const foot = el('div', { class: 'msg-foot' });
       const received = receivedStamp(d);
       foot.appendChild(el('span', { class: 'msg-time', text: received.text, title: received.title }));
@@ -1284,6 +1294,24 @@
     learn.appendChild(el('span', { class: 'switch', 'aria-hidden': 'true' }));
     learn.appendChild(el('span', { text: 'Cho AI học từ câu trả lời này' }));
     return learn;
+  }
+
+  function faqReviewNode(d) {
+    const info = d && d.faq_review;
+    if (!info || typeof info !== 'object') return null;
+    const codes = Array.isArray(info.codes) ? info.codes.filter(Boolean).join(', ') : '';
+    const conf = info.confidence == null || info.confidence === '' ? '' : String(info.confidence);
+    const hand = info.handoff ? 'có' : 'không';
+    const bits = [
+      codes ? ('FAQ ' + codes) : 'FAQ —',
+      conf !== '' ? ('tin ' + conf) : '',
+      'chuyển người: ' + hand,
+      info.reason || '',
+    ].filter(Boolean).join(' · ');
+    return el('span', { class: 'faq-review' }, [
+      el('span', { class: 'faq-review-label', text: 'Người duyệt' }),
+      document.createTextNode(' ' + bits),
+    ]);
   }
 
   function triageBadge(d) {
@@ -1413,6 +1441,8 @@
     fillActionChips(quick, d);
     if (quick.childNodes.length) body.appendChild(quick);
     side.appendChild(customerPanel(d));
+    const thread = mountThreadContext(d, false);
+    if (thread) main.appendChild(thread);
     const want = el('div', { class: 'want-box' });
     want.appendChild(el('span', { text: 'Khách đang muốn' }));
     const wantText = el('div', { class: 'msg-customer' });
@@ -1433,6 +1463,8 @@
       }));
     }
     if (d.pii_note) main.appendChild(el('p', { class: 'hint', text: d.pii_note }));
+    const reviewNote = faqReviewNode(d);
+    if (reviewNote) main.appendChild(reviewNote);
 
     main.appendChild(el('div', { class: 'draft-label' }, [
       el('label', { for: 'draft-reply', text: 'Bản nháp trả lời' }),
@@ -3498,6 +3530,8 @@
       }
       const users = document.getElementById('users-link');
       if (users) users.hidden = !me.canManageUsers;
+      const faqLink = document.getElementById('faq-link');
+      if (faqLink) faqLink.hidden = !me.canFaq;
     } catch (_) { /* server still enforces the role */ }
   }
 

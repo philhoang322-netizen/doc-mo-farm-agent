@@ -24,6 +24,7 @@ const inboxStatus = require('./inboxStatus');
 const inboxOrder = require('../public/admin/inbox-order');
 const tombstones = require('./tombstones');
 const sourceTime = require('../public/admin/card-time');
+const faqText = require('./faqText');
 
 const STATUSES = ['PENDING_REVIEW', 'APPROVED', 'REJECTED', 'SENT'];
 const STATUS_SET = new Set(STATUSES);
@@ -138,6 +139,7 @@ function blankDraft(fields) {
     inbox_prev_status: inboxStatus.FOLDER_SET.has(fields.inbox_prev_status) ? fields.inbox_prev_status : null,
     inbox_status_at: fields.inbox_status_at || now,
     inbox_status_auto: fields.inbox_status_auto === true,
+    faq_review: fields.faq_review || null,
   };
 }
 
@@ -224,6 +226,7 @@ function fromRow(row) {
     inbox_prev_status: inboxStatus.FOLDER_SET.has(row.inbox_prev_status) ? row.inbox_prev_status : null,
     inbox_status_at: toIso(row.inbox_status_at),
     inbox_status_auto: row.inbox_status_auto === true || row.inbox_status_auto === 't',
+    faq_review: parseFaqReview(row.faq_review),
   });
 }
 
@@ -282,6 +285,7 @@ ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_status TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_prev_status TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_status_at TIMESTAMPTZ;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_status_auto BOOLEAN;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS faq_review TEXT;
 CREATE INDEX IF NOT EXISTS idx_outbound_drafts_triage
     ON outbound_drafts (triage_level, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_outbound_drafts_source_msg
@@ -398,8 +402,28 @@ function cleanText(key, v) {
   return s;
 }
 
+function cleanFaqReview(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const codes = Array.isArray(v.codes)
+    ? v.codes.map(code => String(code).slice(0, 64)).filter(Boolean).slice(0, 5)
+    : [];
+  const confidence = Number(v.confidence);
+  return {
+    codes,
+    confidence: Number.isFinite(confidence) ? Math.round(confidence * 100) / 100 : null,
+    handoff: v.handoff === true,
+    reason: String(v.reason || '').slice(0, 300),
+  };
+}
+
+function parseFaqReview(v) {
+  if (!v) return null;
+  if (typeof v === 'object') return cleanFaqReview(v);
+  try { return cleanFaqReview(JSON.parse(v)); } catch { return null; }
+}
+
 function cleanReply(v) {
-  const s = String(v ?? '').replace(/\0/g, '').trim();
+  const s = faqText.stripReviewerBlock(String(v ?? '').replace(/\0/g, '')).trim();
   if (s.length > LIMITS.draft_reply) throw new DraftError(400, 'draft_reply quá dài');
   return s;
 }
@@ -853,7 +877,15 @@ async function createDraft(body, ctx = {}) {
   fields.inbox_prev_status = prevFolder && prevFolder !== 'pending' ? prevFolder : null;
   fields.inbox_status_at = new Date().toISOString();
   fields.inbox_status_auto = false;
-  const draft = decorate(await insertDraft(blankDraft(fields)));
+  fields.faq_review = cleanFaqReview(body && body.faq_review);
+  let draft = decorate(await insertDraft(blankDraft(fields)));
+  if (db.DB_ENABLED && fields.faq_review) {
+    await db.pool.query(
+      'UPDATE outbound_drafts SET faq_review = $2 WHERE id = $1',
+      [draft.id, JSON.stringify(fields.faq_review)]
+    );
+    draft = { ...draft, faq_review: fields.faq_review };
+  }
   await audit.record({
     actor: ctx.actor || 'ai',
     action: 'draft.created',
@@ -1053,6 +1085,11 @@ async function moveBizLine(id, line, ctx = {}) {
     after: { biz_line: line, biz_sticky: true },
     meta: { ...audit.draftMeta(saved), from: existing.biz_line || null, to: line },
   });
+  try {
+    await require('./threadLabels').setManual(saved.channel, saved.customer_user_id, line);
+  } catch (err) {
+    console.error('thread label skipped:', err.message);
+  }
   return decorate(saved);
 }
 
@@ -1146,6 +1183,28 @@ async function hardDeleteThread(id, ctx = {}) {
   }
   if (!deleted.length && !existing) return null;
   return { scope: 'thread', count: deleted.length, deleted };
+}
+
+async function applyThreadLabel(channel, userId, row) {
+  await ensureReady();
+  if (!userId || !row) return 0;
+  if (row.label !== 'sale' && row.label !== 'dv') return 0;
+  const all = await loadAllRaw();
+  let updated = 0;
+  for (const d of all) {
+    if (!d || d.deleted_at) continue;
+    if (d.channel !== channel || d.customer_user_id !== userId) continue;
+    if (d.approval_status !== 'PENDING_REVIEW') continue;
+    if (d.biz_sticky && row.source !== 'manual') continue;
+    const sticky = row.source === 'manual';
+    if (d.biz_line === row.label && d.biz_sticky === sticky) continue;
+    d.biz_line = row.label;
+    d.biz_sticky = sticky;
+    d.updated_at = new Date().toISOString();
+    await saveDraft(d);
+    updated += 1;
+  }
+  return updated;
 }
 
 async function softDelete(id, ctx = {}) {
@@ -1339,7 +1398,7 @@ async function noteImageFallback(sendText, draftText, fail) {
 }
 
 async function deliver(draft) {
-  const text = String(draft.draft_reply || '').trim();
+  const text = faqText.customerFacingReply(draft);
   if (!text) {
     return {
       ok: false,
@@ -1749,12 +1808,14 @@ module.exports = {
   opsStatus,
   GROUPS,
   createDraft,
+  customerFacingReply: faqText.customerFacingReply,
   listDrafts,
   getDraft,
   updateDraft,
   conversationLine,
   findBySourceMsg,
   moveBizLine,
+  applyThreadLabel,
   softDelete,
   hardDelete,
   hardDeleteThread,

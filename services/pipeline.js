@@ -27,6 +27,7 @@ const confidenceGate = require('./confidenceGate');
 const audit = require('./audit');
 const triage = require('./triage');
 const tombstones = require('./tombstones');
+const faqDraft = require('./faqDraft');
 
 const FALLBACK_REPLY =
   'Dạ farm đang bận xử lý một chút, bạn nhắn lại giúp mình sau ít phút nha 🌿 ' +
@@ -81,6 +82,11 @@ async function handleMessage(p) {
   return ops.withLock(`${p.channel}:${p.externalKey}`, async () => {
     try {
       await noteInbound(p, p.text);
+      try {
+        await require('./conversationStore').recordPipelineInbound(p);
+      } catch (err) {
+        console.error('conversation record skipped:', err.message);
+      }
       try { require('./healthWatch').noteSuccess('pipeline'); } catch (_) {}
       if (p.typing) p.typing(p.replyTo).catch(() => {});
 
@@ -215,6 +221,31 @@ async function handleMessage(p) {
           reason: edge.reason,
           signal: 'low_confidence',
         }, log);
+      }
+
+      const grounded = await faqDraft.compose(p.text);
+      if (grounded && grounded.handled) {
+        const release = await hitl.releaseToCustomer(p, grounded.text, {
+          intent: p.text,
+          forceHold: true,
+          ack: false,
+          rewriteDv: false,
+          triage: grounded.triage,
+          needsHuman: grounded.reviewer.handoff === true,
+          reason: grounded.reviewer.reason,
+          urgency: grounded.reviewer.handoff ? 'high' : undefined,
+          route: grounded.reviewer.handoff ? 'needs-human' : undefined,
+          ticket_status: grounded.reviewer.handoff ? 'Cần người thật' : undefined,
+          faq_review: grounded.reviewer,
+        });
+        return {
+          ok: true,
+          held: !!release.held,
+          sent: false,
+          draftId: release.draft && release.draft.id,
+          faq: true,
+          triage: grounded.triage && grounded.triage.level,
+        };
       }
 
       const { text: reply, tokensUsed, handoff, newOrder, stockHold, confidence, piiNote } =
@@ -628,6 +659,11 @@ async function handleNonText(p) {
   try {
     const customer = await db.getOrCreateCustomer(p.externalKey, p.senderName);
     await noteInbound(p, shown);
+    try {
+      await require('./conversationStore').recordPipelineInbound(inbound);
+    } catch (err) {
+      console.error('conversation record skipped:', err.message);
+    }
     await db.saveMessage(p.externalKey, 'user', shown);
 
     // An image is very often a bank transfer receipt — the farm should look.

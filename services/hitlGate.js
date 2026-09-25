@@ -22,6 +22,7 @@ const drafts = require('./drafts');
 const stations = require('./stations');
 const triage = require('./triage');
 const bizLine = require('./bizLine');
+const threadLabels = require('./threadLabels');
 const customerLink = require('./customerLink');
 
 const FALSEY = /^(0|false|no|off)$/i;
@@ -127,8 +128,9 @@ async function releaseToCustomer(p, text, extra = {}) {
   const channel = draftChannel(p);
   const userId = customerUserId(p);
   const prior = await drafts.conversationLine(channel, userId);
-  const biz = bizLine.resolve({
+  const biz = await threadLabels.resolveTurn({
     channel,
+    userId,
     text: String(source || ''),
     prior,
   });
@@ -162,6 +164,7 @@ async function releaseToCustomer(p, text, extra = {}) {
     pii_note: clip(extra.pii_note, 300),
     triage_level: triaged.level,
     triage_label: triaged.label,
+    faq_review: extra.faq_review || null,
   });
   if (heardPhone) {
     try {
