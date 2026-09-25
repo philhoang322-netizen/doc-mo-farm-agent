@@ -9,6 +9,7 @@ const assert = require('node:assert/strict');
 
 const root = path.join(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'public', 'admin', 'review.html'), 'utf8');
+const css = fs.readFileSync(path.join(root, 'public', 'admin', 'review.css'), 'utf8');
 const js = fs.readFileSync(path.join(root, 'public', 'admin', 'review.js'), 'utf8');
 const refresh = fs.readFileSync(path.join(root, 'public', 'admin', 'inbox-refresh.js'), 'utf8');
 
@@ -28,6 +29,9 @@ const htmlBits = [
   'id="health-banner"',
   'id="updated-at"',
   'id="new-indicator"',
+  'id="search-toggle"',
+  'aria-controls="inbox-search"',
+  'id="inbox-search"',
   'id="refresh-now"',
   'id="sync-missed"',
   'Đồng bộ tin bị sót',
@@ -92,7 +96,7 @@ const htmlBits = [
 ];
 
 const jsBits = [
-  "body.appendChild(customerPanel(d))",
+  "side.appendChild(customerPanel(d))",
   'Hồ sơ khách',
   "text: 'Gắn'",
   "text: 'bỏ'",
@@ -171,4 +175,29 @@ test('inbox keeps every pre-redesign control and API trigger', () => {
   assert.doesNotMatch(keydown.slice(0, 1200), /\bsend\(|\bapprove\(/);
   assert.match(refresh, /Có /);
   assert.match(refresh, /tin mới/);
+
+  const detail = js.slice(js.indexOf('function renderDetail'), js.indexOf('function blockField'));
+  assert.match(detail, /side\.appendChild\(customerPanel\(d\)\)/);
+  assert.match(detail, /class: 'detail-quick'/);
+  assert.match(detail, /Từ chối bản nháp/);
+  assert.match(detail, /Đưa về chờ xử lý/);
+  assert.match(detail, /s\.kiotOpen \|\| wantsOrder\(d\)/);
+  assert.match(detail, /fold\.open && !fold\.querySelector\('\.kiot-panel'\)\) fold\.appendChild\(kiotPanel\(d\)\)/);
+  assert.match(js, /function wantsOrder\(d\)/);
+  assert.match(js, /kiotOpen: wantsOrder\(d\)/);
+  assert.match(js, /triage_level === 'hot'/);
+  assert.doesNotMatch(js, /adoptDraftField\('customer_phone'/);
+  assert.doesNotMatch(js, /approveCard/);
+  const phoneLine = js.slice(js.indexOf("const phoneInput = kiotInput('Số điện thoại'"), js.indexOf("const phoneInput = kiotInput('Số điện thoại'") + 180);
+  assert.match(phoneLine, /kiot-phone-/);
+  assert.doesNotMatch(phoneLine, /name:\s*'customer_phone'|disabled:\s*true/);
+  assert.match(js, /\/admin\/api\/drafts\/' \+ encodeURIComponent\(d\.id\) \+ '\/customer'/);
+  assert.match(js, /Cần xem/);
+  assert.match(js, /data\.storage !== 'postgres'/);
+  assert.match(js, /function setSearch/);
+  assert.match(css, /body\.inbox \.msg-card \.tags \{[^}]*flex-wrap:\s*wrap/s);
+  assert.match(css, /max-height:\s*40px/);
+  assert.match(css, /tag-prev/);
+  assert.match(css, /search-open \.inbox-search/);
+  assert.match(css, /health-chip\.bad/);
 });

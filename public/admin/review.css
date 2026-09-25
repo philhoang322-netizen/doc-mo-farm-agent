@@ -523,7 +523,7 @@ body.hitl .health-chip {
   box-shadow: none;
 }
 body.inbox button#detail-back { display: none; }
-body.hitl .health-chip { width: auto; padding: 0 8px; color: var(--muted); font-weight: 650; font-size: 14px; }
+body.hitl .health-chip { width: auto; flex: 0 0 auto; padding: 0 8px; color: var(--muted); font-weight: 650; font-size: 14px; }
 body.hitl .health-dot {
   width: 10px;
   height: 10px;
@@ -865,12 +865,16 @@ body.inbox .msg-card .msg-foot {
 }
 body.inbox .msg-card .msg-time { flex: 0 0 auto; font-size: 13px; }
 body.inbox .msg-card .tags {
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
+  align-content: flex-start;
   overflow: hidden;
+  max-height: 40px;
   margin: 0;
   min-width: 0;
   gap: 4px;
 }
+body.inbox .msg-card .tag-prev,
+body.inbox .msg-card .tag-refund { order: -1; }
 body.inbox .msg-card .tag {
   font-size: 12px;
   line-height: 18px;
@@ -1072,6 +1076,14 @@ body.inbox .detail-quick {
 }
 body.inbox .detail-quick .detail-actions,
 body.inbox .detail-quick .status-actions { flex: 0 0 auto; width: auto; margin: 0; }
+body.inbox .detail-quick button.btn {
+  width: auto;
+  white-space: nowrap;
+  padding: 8px 10px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--green-deep);
+}
 
 body.hitl .cust-fold,
 body.hitl .kiot-fold {
@@ -1465,6 +1477,12 @@ body.hitl .qr { max-width: 220px; }
   body.inbox .back { display: inline-flex; }
   body.inbox.show-detail button#detail-back { display: inline-flex; }
   body.inbox .kiot-actions .btn { width: 100%; }
+  body.inbox .detail-main,
+  body.inbox .detail-side { display: contents; }
+  body.inbox .cust-fold { order: -1; }
+  body.inbox.search-open .brand { display: none; }
+  body.inbox.search-open .inbox-search { display: block; flex: 1 1 auto; min-width: 0; }
+  body.inbox.search-open .inbox-search input { width: 100%; }
 }
 
 @media (min-width: 1024px) {
@@ -1480,6 +1498,7 @@ body.hitl .qr { max-width: 220px; }
     flex-direction: column;
   }
   body.inbox .inbox-search { display: block; flex: 1 1 280px; max-width: 480px; }
+  body.inbox #search-toggle { display: none; }
   body.inbox .brand { flex: 0 1 auto; }
   body.inbox .queue-shell { flex: 1; min-height: 0; display: flex; }
   body.inbox .workspace {
