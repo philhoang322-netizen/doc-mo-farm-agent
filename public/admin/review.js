@@ -950,7 +950,6 @@
     detailEl.replaceChildren(el('div', { class: 'detail-empty' }, [
       el('div', null, [
         el('strong', { text: 'Chọn một tin bên trái' }),
-        el('p', { text: 'Đọc, sửa bản nháp, rồi bấm Duyệt và gửi. Hệ thống không tự gửi.' }),
       ]),
     ]));
   }
@@ -1546,10 +1545,6 @@
     extraGrid.appendChild(field('kiot_summary', 'Tóm tắt Kiot', d.kiot_summary, { disabled: locked, wide: true, multiline: true, rows: '3' }));
     extraGrid.appendChild(field('qr_image_url', 'Link ảnh QR', d.qr_image_url, { disabled: locked, wide: true }));
     extra.appendChild(extraGrid);
-    extra.appendChild(el('p', {
-      class: 'hint',
-      text: '@Farm gửi qua Zalo sau khi duyệt. Zalo Bot dùng bot_ rồi tới chat id. Messenger dùng fb_ rồi tới PSID và chỉ gửi khi bật MESSENGER_ENABLED rồi bấm Duyệt và gửi. Shopee, FB và kênh tự thêm chưa có đường gửi — duyệt xong tin nằm ở Chờ gửi.',
-    }));
     if (d.qr_image_url && /^https?:\/\//i.test(d.qr_image_url)) {
       extra.appendChild(el('img', { class: 'qr', alt: 'Mã QR', src: d.qr_image_url }));
     }
@@ -1567,12 +1562,6 @@
       sendBtn.id = 'btn-approve';
       actions.appendChild(sendBtn);
     }
-    actions.appendChild(el('span', {
-      class: 'sticky-note',
-      text: refund
-        ? 'Tin chỉ gửi khi bấm Duyệt & Gửi. Không tự hoàn.'
-        : 'Tin chỉ gửi khi bấm Duyệt & Gửi.',
-    }));
     form.appendChild(actions);
     detailEl.appendChild(form);
     if (fold && fold.open && !fold.querySelector('.kiot-panel')) fold.appendChild(kiotPanel(d));
@@ -1607,7 +1596,7 @@
     panel.appendChild(el('h4', { text: 'Đổi trả / hoàn tiền — cần người duyệt' }));
     panel.appendChild(el('p', {
       class: 'refund-lead',
-      text: 'Không tự hoàn. Không dùng chữ “đã duyệt hoàn”. Bạn chọn hướng xử lý, rồi mới Duyệt và gửi tin cho khách.',
+      text: 'Không tự hoàn. Không dùng chữ “đã duyệt hoàn”.',
     }));
     const decide = el('div', { class: 'decide' }, [
       el('span', { text: 'Quyết định của bạn' }),
@@ -1638,10 +1627,6 @@
     panel.appendChild(grid);
     panel.appendChild(blockField('internal_note', 'Ghi chú nội bộ (không gửi khách)', f.internal_note, {
       disabled: locked, placeholder: 'Ví dụ: hàng rò — chờ xác nhận trước khi hoàn',
-    }));
-    panel.appendChild(el('p', {
-      class: 'refund-note',
-      text: 'Tin trả khách ở dưới vẫn chỉ đi khi bấm Duyệt và gửi.',
     }));
     return panel;
   }
@@ -1975,7 +1960,7 @@
     const panel = el('section', { class: 'kiot-panel', id: 'kiot-panel-' + pid });
     panel.appendChild(el('p', {
       class: 'kiot-lead',
-      text: 'Điền nhanh hoặc chọn từng món. Chưa tạo trên KiotViet cho đến khi bạn bấm xác nhận. Tin khách không tự gửi.',
+      text: 'Điền nhanh hoặc chọn từng món. Chưa tạo trên KiotViet cho đến khi bạn bấm xác nhận.',
     }));
 
     const quick = el('textarea', {
@@ -2116,10 +2101,6 @@
       box.appendChild(el('p', { class: 'kiot-created-note', text: bits.join(' · ') }));
       if (invoice && mark.image) {
         box.appendChild(el('img', { class: 'kiot-invoice-img', src: mark.image, alt: 'Hoá đơn ' + mark.code }));
-        box.appendChild(el('p', {
-          class: 'kiot-created-note',
-          text: 'Ảnh và nội dung CK đang chờ. Bấm Duyệt & Gửi ở thanh dưới để gửi khách.',
-        }));
       }
       if (!invoice) {
         const issue = el('button', { type: 'button', class: 'btn btn-primary', text: 'Xuất hóa đơn' });
@@ -2127,7 +2108,7 @@
         box.appendChild(issue);
         box.appendChild(el('p', {
           class: 'kiot-created-note',
-          text: 'Xuất hoá đơn để có mã QR. Chưa gửi cho khách cho đến khi bấm Duyệt & Gửi.',
+          text: 'Xuất hoá đơn để có mã QR.',
         }));
       }
       return box;
@@ -2147,7 +2128,7 @@
         }
         toast(data.saved === false
           ? (data.error || ('Đã xuất ' + data.code))
-          : ('Đã xuất ' + data.code + '. Tin vẫn chờ duyệt, chưa gửi.'));
+          : ('Đã xuất ' + data.code));
         dirty = false;
         detailStamp = '';
         listStamp = '';
@@ -2568,7 +2549,7 @@
         showExisting({ code, total: data.total });
         toast(data.saved === false
           ? (data.error || ('Đã tạo ' + code + ' nhưng chưa ghi vào nháp.'))
-          : ('Đã tạo ' + code + ' · ' + vnd(data.total) + '. Tin vẫn chờ duyệt, chưa gửi.'));
+          : ('Đã tạo ' + code + ' · ' + vnd(data.total)));
         dirty = false;
         detailStamp = '';
         listStamp = '';

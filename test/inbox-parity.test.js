@@ -189,6 +189,11 @@ test('inbox keeps every pre-redesign control and API trigger', () => {
   assert.match(js, /triage_level === 'hot'/);
   assert.doesNotMatch(js, /adoptDraftField\('customer_phone'/);
   assert.doesNotMatch(js, /approveCard/);
+  assert.doesNotMatch(js, /Tin chỉ gửi khi bấm Duyệt & Gửi/);
+  assert.doesNotMatch(js, /Hệ thống không tự gửi/);
+  assert.doesNotMatch(js, /Tin khách không tự gửi/);
+  assert.doesNotMatch(js, /vẫn chỉ đi khi bấm Duyệt/);
+  assert.doesNotMatch(js, /Bấm Duyệt & Gửi ở thanh dưới/);
   const phoneLine = js.slice(js.indexOf("const phoneInput = kiotInput('SĐT tra KiotViet'"), js.indexOf("const phoneInput = kiotInput('SĐT tra KiotViet'") + 200);
   assert.match(phoneLine, /kiot-phone-/);
   assert.match(js, /SĐT lưu vào tin/);
