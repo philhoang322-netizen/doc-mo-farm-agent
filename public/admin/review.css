@@ -63,6 +63,18 @@ body {
   font-size: 13px;
   font-weight: 700;
   color: var(--soft);
+  flex: 1 1 140px;
+  min-width: 0;
+}
+.filters input, .filters select { width: 100%; min-width: 0; }
+.filters label:not(:has(input[type="date"])) { flex-basis: 100%; }
+.filters button[type="submit"] { flex: 0 0 auto; }
+@media (min-width: 900px) {
+  .filters { flex-wrap: nowrap; }
+  .filters label,
+  .filters label:not(:has(input[type="date"])) { flex: 1 1 auto; }
+  .filters label:has(input[type="date"]) { flex: 0 0 158px; }
+  .filters button[type="submit"] { margin-left: auto; }
 }
 .audit-row {
   background: var(--card);
