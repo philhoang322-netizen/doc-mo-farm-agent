@@ -19,6 +19,8 @@ const botService = require('./zaloBotService');
 const messenger = require('./messenger');
 const trainingLog = require('./trainingLog');
 const triage = require('./triage');
+const bizLine = require('./bizLine');
+const inboxStatus = require('./inboxStatus');
 
 const STATUSES = ['PENDING_REVIEW', 'APPROVED', 'REJECTED', 'SENT'];
 const STATUS_SET = new Set(STATUSES);
@@ -31,6 +33,8 @@ const MESSAGE_TYPES = ['follower', 'zns', 'broadcast'];
 const MESSAGE_TYPE_SET = new Set(MESSAGE_TYPES);
 const PLATFORMS = ['zalo', 'messenger'];
 const PLATFORM_SET = new Set(PLATFORMS);
+const GROUPS = ['zalo', 'fb-sale', 'fb-dv'];
+const GROUP_SET = new Set(GROUPS);
 const BUILTIN_CHANNELS = [
   { id: 'farm', name: '@Farm', builtin: true },
   { id: 'shopee', name: 'Shopee', builtin: true },
@@ -52,6 +56,7 @@ const LIMITS = {
   pii_note: 300,
   template_name: 120,
   customer_query: 2000,
+  source_msg_id: 200,
 };
 
 const EDITABLE = [
@@ -120,6 +125,14 @@ function blankDraft(fields) {
     triage_level: fields.triage_level || null,
     triage_label: fields.triage_label || null,
     review_form: fields.review_form || emptyReviewForm(),
+    biz_line: fields.biz_line === 'sale' || fields.biz_line === 'dv' ? fields.biz_line : null,
+    biz_sticky: fields.biz_sticky === true,
+    deleted_at: null,
+    source_msg_id: fields.source_msg_id || null,
+    inbox_status: inboxStatus.FOLDER_SET.has(fields.inbox_status) ? fields.inbox_status : 'pending',
+    inbox_prev_status: inboxStatus.FOLDER_SET.has(fields.inbox_prev_status) ? fields.inbox_prev_status : null,
+    inbox_status_at: fields.inbox_status_at || now,
+    inbox_status_auto: fields.inbox_status_auto === true,
   };
 }
 
@@ -135,10 +148,14 @@ function opsStatus(d) {
 
 function decorate(d) {
   if (!d) return null;
+  const reply = d.draft_reply || '';
   return {
     ...d,
     ops_status: opsStatus(d),
     review_form: parseStoredReviewForm(d.review_form),
+    ai_suggested_draft: reply || d.ai_draft_version || '',
+    inbox_status: inboxStatus.inferFolder(d),
+    decline_hint: inboxStatus.suggestDecline(d),
   };
 }
 
@@ -193,6 +210,14 @@ function fromRow(row) {
     triage_level: row.triage_level || null,
     triage_label: row.triage_label || null,
     review_form: row.review_form || null,
+    biz_line: row.biz_line === 'sale' || row.biz_line === 'dv' ? row.biz_line : null,
+    biz_sticky: row.biz_sticky === true || row.biz_sticky === 't' || row.biz_sticky === 'true',
+    deleted_at: toIso(row.deleted_at),
+    source_msg_id: row.source_msg_id || null,
+    inbox_status: inboxStatus.FOLDER_SET.has(row.inbox_status) ? row.inbox_status : null,
+    inbox_prev_status: inboxStatus.FOLDER_SET.has(row.inbox_prev_status) ? row.inbox_prev_status : null,
+    inbox_status_at: toIso(row.inbox_status_at),
+    inbox_status_auto: row.inbox_status_auto === true || row.inbox_status_auto === 't',
   });
 }
 
@@ -242,8 +267,18 @@ ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS ai_draft_version TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS triage_level TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS triage_label TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS review_form TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS biz_line TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS biz_sticky BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS source_msg_id TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_status TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_prev_status TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_status_at TIMESTAMPTZ;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_status_auto BOOLEAN;
 CREATE INDEX IF NOT EXISTS idx_outbound_drafts_triage
     ON outbound_drafts (triage_level, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_outbound_drafts_source_msg
+    ON outbound_drafts (channel, source_msg_id);
 CREATE TABLE IF NOT EXISTS sales_channels (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
@@ -300,6 +335,8 @@ async function persistFile() {
   const rows = [...memory.values()].map(row => {
     const copy = { ...row };
     delete copy.ops_status;
+    delete copy.ai_suggested_draft;
+    delete copy.decline_hint;
     return copy;
   });
   await fs.promises.writeFile(tmp, JSON.stringify(rows));
@@ -547,9 +584,11 @@ async function insertDraft(draft) {
        draft_reply, approval_status, kiot_summary, invoice_code, customer_code,
        qr_image_url, pii_note, reviewed_at, sent_at, send_error, send_via, send_hook,
        message_type, template_name, sales_channel, delivery_phase,
-       customer_query, ai_draft_version, triage_level, triage_label, review_form
+       customer_query, ai_draft_version, triage_level, triage_label, review_form,
+       biz_line, biz_sticky, deleted_at, source_msg_id,
+       inbox_status, inbox_prev_status, inbox_status_at, inbox_status_auto
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39
      ) RETURNING *`,
     [
       draft.id, draft.created_at, draft.updated_at, draft.channel,
@@ -564,6 +603,8 @@ async function insertDraft(draft) {
       draft.customer_query, draft.ai_draft_version,
       draft.triage_level, draft.triage_label,
       reviewFormJson(draft.review_form),
+      draft.biz_line, draft.biz_sticky === true, draft.deleted_at, draft.source_msg_id,
+      draft.inbox_status, draft.inbox_prev_status, draft.inbox_status_at, draft.inbox_status_auto === true,
     ]
   );
   return fromRow(r.rows[0]);
@@ -585,7 +626,9 @@ async function saveDraft(draft) {
        send_error=$18, send_via=$19, send_hook=$20, updated_at=$21,
        message_type=$22, template_name=$23, sales_channel=$24, delivery_phase=$25,
        customer_query=$26, ai_draft_version=$27,
-       triage_level=$28, triage_label=$29, review_form=$30
+       triage_level=$28, triage_label=$29, review_form=$30,
+       biz_line=$31, biz_sticky=$32, deleted_at=$33, source_msg_id=$34,
+       inbox_status=$35, inbox_prev_status=$36, inbox_status_at=$37, inbox_status_auto=$38
      WHERE id=$1
      RETURNING *`,
     [
@@ -599,7 +642,156 @@ async function saveDraft(draft) {
       draft.customer_query, draft.ai_draft_version,
       draft.triage_level, draft.triage_label,
       reviewFormJson(draft.review_form),
+      draft.biz_line, draft.biz_sticky === true, draft.deleted_at, draft.source_msg_id,
+      draft.inbox_status, draft.inbox_prev_status, draft.inbox_status_at, draft.inbox_status_auto === true,
     ]
+  );
+  return fromRow(r.rows[0]);
+}
+
+async function loadAllRaw() {
+  await ensureReady();
+  if (!db.DB_ENABLED) return [...memory.values()];
+  const r = await db.pool.query(
+    'SELECT * FROM outbound_drafts ORDER BY created_at DESC LIMIT 500'
+  );
+  return r.rows.map(fromRow);
+}
+
+function effectiveLine(d) {
+  if (!d) return null;
+  if (d.biz_line === 'sale' || d.biz_line === 'dv') return d.biz_line;
+  if (d.channel === 'messenger') {
+    return bizLine.classify(d.customer_query || d.customer_intent || '') || 'sale';
+  }
+  return null;
+}
+
+async function conversationLine(channel, userId) {
+  if (!userId) return null;
+  const all = await loadAllRaw();
+  const mine = all.filter(d => d.channel === channel && d.customer_user_id === userId);
+  const stickies = mine.filter(d => d.biz_sticky && (d.biz_line === 'sale' || d.biz_line === 'dv'));
+  stickies.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+  if (stickies[0]) return { biz_line: stickies[0].biz_line, biz_sticky: true };
+  const labeled = mine
+    .map(d => ({ d, line: effectiveLine(d) }))
+    .filter(x => x.line === 'sale' || x.line === 'dv');
+  labeled.sort((a, b) => String(b.d.created_at || '').localeCompare(String(a.d.created_at || '')));
+  if (labeled[0]) return { biz_line: labeled[0].line, biz_sticky: false };
+  return null;
+}
+
+async function bizForNewDraft(fields, body) {
+  if (body && (body.biz_line === 'sale' || body.biz_line === 'dv')) {
+    return { biz_line: body.biz_line, biz_sticky: body.biz_sticky === true };
+  }
+  const prior = await conversationLine(fields.channel, fields.customer_user_id);
+  return bizLine.resolve({
+    channel: fields.channel,
+    text: fields.customer_query || fields.customer_intent || '',
+    prior,
+  });
+}
+
+async function conversationFolder(channel, userId) {
+  if (!userId) return null;
+  const all = await loadAllRaw();
+  const mine = all.filter(d => d.channel === channel && d.customer_user_id === userId && !d.deleted_at);
+  mine.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+  if (!mine[0]) return null;
+  return inboxStatus.inferFolder(mine[0]);
+}
+
+async function backfillFolders(rows) {
+  for (const d of rows) {
+    if (!d || d.deleted_at) continue;
+    if (inboxStatus.FOLDER_SET.has(d.inbox_status)) continue;
+    d.inbox_status = inboxStatus.inferFolder(d);
+    d.inbox_status_at = d.inbox_status_at || d.sent_at || d.updated_at || d.created_at;
+    d.inbox_status_auto = false;
+    await saveDraft(d);
+  }
+}
+
+async function applyHesitantMove(rows, now = new Date()) {
+  const due = inboxStatus.hesitantCandidates(rows, now, inboxStatus.hesitantHours());
+  for (const d of due) {
+    await setInboxStatus(d.id, 'hesitant', { actor: 'system', auto: true });
+    d.inbox_status = 'hesitant';
+  }
+  return due.length;
+}
+
+async function setInboxStatus(id, to, ctx = {}) {
+  await ensureReady();
+  if (!inboxStatus.FOLDER_SET.has(to)) throw new DraftError(400, 'Thư mục không hợp lệ');
+  const existing = await getDraft(id);
+  if (!existing) return null;
+  if (existing.deleted_at) throw new DraftError(400, 'Tin đã xoá');
+  const from = inboxStatus.inferFolder(existing);
+  if (from === 'bought' && to === 'sent') return decorate(existing);
+  if (from === to) return decorate(existing);
+  const next = {
+    ...existing,
+    inbox_status: to,
+    inbox_status_at: ctx.at ? new Date(ctx.at).toISOString() : new Date().toISOString(),
+    inbox_status_auto: ctx.auto === true,
+    updated_at: new Date().toISOString(),
+  };
+  if (ctx.orderCode && !next.invoice_code) next.invoice_code = String(ctx.orderCode).slice(0, 80);
+  const saved = await saveDraft(next);
+  if (!saved) return null;
+  await audit.record({
+    actor: ctx.actor || (ctx.auto ? 'system' : 'manager'),
+    action: 'draft.inbox_status',
+    entity_type: 'draft',
+    entity_id: saved.id,
+    before: { inbox_status: from },
+    after: { inbox_status: to },
+    meta: {
+      ...audit.draftMeta(saved),
+      from,
+      to,
+      auto: ctx.auto === true,
+      at: saved.inbox_status_at,
+    },
+  });
+  return decorate(saved);
+}
+
+async function backfillMessengerLines(rows) {
+  for (const d of rows) {
+    if (!d || d.deleted_at) continue;
+    if (d.channel !== 'messenger') continue;
+    if (d.biz_line === 'sale' || d.biz_line === 'dv') continue;
+    d.biz_line = bizLine.classify(d.customer_query || d.customer_intent || '') || 'sale';
+    d.biz_sticky = false;
+    await saveDraft(d);
+  }
+}
+
+function groupOf(d) {
+  if (!d || d.deleted_at) return null;
+  if (d.channel === 'zalo') return 'zalo';
+  if (d.channel === 'messenger' && d.biz_line === 'dv') return 'fb-dv';
+  if (d.channel === 'messenger') return 'fb-sale';
+  return null;
+}
+
+async function findBySourceMsg(channel, msgId) {
+  await ensureReady();
+  const id = msgId == null ? '' : String(msgId).trim();
+  if (!id) return null;
+  if (!db.DB_ENABLED) {
+    for (const d of memory.values()) {
+      if (d.channel === channel && d.source_msg_id === id) return decorate(d);
+    }
+    return null;
+  }
+  const r = await db.pool.query(
+    'SELECT * FROM outbound_drafts WHERE channel=$1 AND source_msg_id=$2 ORDER BY created_at DESC LIMIT 1',
+    [channel, id]
   );
   return fromRow(r.rows[0]);
 }
@@ -610,6 +802,15 @@ async function createDraft(body, ctx = {}) {
   fields.sales_channel = await assertSalesChannel(
     body && body.sales_channel ? body.sales_channel : 'farm'
   );
+  const biz = await bizForNewDraft(fields, body);
+  fields.biz_line = biz.biz_line;
+  fields.biz_sticky = biz.biz_sticky;
+  fields.source_msg_id = cleanText('source_msg_id', body && body.source_msg_id);
+  const prevFolder = await conversationFolder(fields.channel, fields.customer_user_id);
+  fields.inbox_status = 'pending';
+  fields.inbox_prev_status = prevFolder && prevFolder !== 'pending' ? prevFolder : null;
+  fields.inbox_status_at = new Date().toISOString();
+  fields.inbox_status_auto = false;
   const draft = decorate(await insertDraft(blankDraft(fields)));
   await audit.record({
     actor: ctx.actor || 'ai',
@@ -640,15 +841,24 @@ function normalizeListQuery(query) {
     salesChannel: query.salesChannel || null,
     triage: query.triage || null,
     platform: query.platform || null,
+    nhom: query.nhom || null,
+    zline: query.zline || null,
+    hop: query.hop || null,
   };
 }
 
 function matchesScope(d, q) {
+  if (q.hop === 'deleted') {
+    if (!d.deleted_at) return false;
+  } else if (d.deleted_at) return false;
+  if (q.hop && q.hop !== 'deleted' && inboxStatus.inferFolder(d) !== q.hop) return false;
   const sales = d.sales_channel || 'farm';
   if (q.salesChannel && sales !== q.salesChannel) return false;
   if (q.type && d.message_type !== q.type) return false;
   if (q.triage && d.triage_level !== q.triage) return false;
   if (q.platform && d.channel !== q.platform) return false;
+  if (q.nhom && groupOf(d) !== q.nhom) return false;
+  if (q.nhom === 'zalo' && q.zline && d.biz_line !== q.zline) return false;
   return true;
 }
 
@@ -665,11 +875,25 @@ async function listDrafts(query) {
   if (q.salesChannel) await assertSalesChannel(q.salesChannel);
   if (q.triage && !triage.LABEL[q.triage]) throw new DraftError(400, 'triage không hợp lệ');
   if (q.platform && !PLATFORM_SET.has(q.platform)) throw new DraftError(400, 'Nền tảng không hợp lệ');
+  if (q.nhom && !GROUP_SET.has(q.nhom)) throw new DraftError(400, 'Nhóm không hợp lệ');
+  if (q.zline && q.zline !== 'sale' && q.zline !== 'dv') throw new DraftError(400, 'Nhãn không hợp lệ');
+  if (q.hop && q.hop !== 'deleted' && !inboxStatus.FOLDER_SET.has(q.hop)) {
+    throw new DraftError(400, 'Thư mục không hợp lệ');
+  }
 
-  const all = db.DB_ENABLED
-    ? (await db.pool.query('SELECT * FROM outbound_drafts ORDER BY created_at DESC LIMIT 500')).rows.map(fromRow)
-    : [...memory.values()].map(d => decorate(d));
-  const salesScoped = all.filter(d => matchesScope(d, { ...q, triage: null, platform: null }));
+  const raw = await loadAllRaw();
+  await backfillMessengerLines(raw);
+  await backfillFolders(raw);
+  await applyHesitantMove(raw);
+  const all = raw.map(d => decorate(d));
+  const salesScoped = all.filter(d => matchesScope(d, {
+    ...q, triage: null, platform: null, nhom: null, zline: null,
+  }));
+  const badgeScoped = all.filter(d => {
+    if (d.deleted_at) return false;
+    if (q.salesChannel && (d.sales_channel || 'farm') !== q.salesChannel) return false;
+    return true;
+  });
   const counts = emptyOpsCounts();
   for (const d of salesScoped) counts[opsStatus(d)] = (counts[opsStatus(d)] || 0) + 1;
   const inOps = (d) => {
@@ -691,6 +915,25 @@ async function listDrafts(query) {
     if (q.triage && d.triage_level !== q.triage) continue;
     if (d.channel === 'zalo' || d.channel === 'messenger') platformCounts[d.channel] += 1;
   }
+  const groupCounts = { zalo: 0, fbSale: 0, fbDv: 0 };
+  const folderCounts = { pending: 0, sent: 0, bought: 0, hesitant: 0, declined: 0, deleted: 0 };
+  const pendingIds = [];
+  const hopFilter = q.hop && q.hop !== 'deleted' ? q.hop : 'pending';
+  for (const d of all) {
+    if (q.salesChannel && (d.sales_channel || 'farm') !== q.salesChannel) continue;
+    const g = d.channel === 'zalo' ? 'zalo' : (d.channel === 'messenger' && d.biz_line === 'dv' ? 'fb-dv' : (d.channel === 'messenger' ? 'fb-sale' : null));
+    if (q.nhom && g !== q.nhom) continue;
+    if (d.deleted_at) {
+      folderCounts.deleted += 1;
+      continue;
+    }
+    const folder = inboxStatus.inferFolder(d);
+    if (folderCounts[folder] != null) folderCounts[folder] += 1;
+    if (folder === 'pending') pendingIds.push(d.id);
+    if (folder === hopFilter && g === 'zalo') groupCounts.zalo += 1;
+    else if (folder === hopFilter && g === 'fb-sale') groupCounts.fbSale += 1;
+    else if (folder === hopFilter && g === 'fb-dv') groupCounts.fbDv += 1;
+  }
   const scoped = all.filter(d => matchesScope(d, q));
   const drafts = scoped
     .filter(d => {
@@ -700,7 +943,90 @@ async function listDrafts(query) {
     })
     .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
     .slice(0, 200);
-  return { drafts, counts, triageCounts, platformCounts, storage: db.DB_ENABLED ? 'postgres' : 'memory' };
+  return {
+    drafts,
+    counts,
+    triageCounts,
+    platformCounts,
+    groupCounts,
+    folderCounts,
+    pendingIds,
+    storage: db.DB_ENABLED ? 'postgres' : 'memory',
+  };
+}
+
+async function moveBizLine(id, line, ctx = {}) {
+  await ensureReady();
+  const existing = await getDraft(id);
+  if (!existing) return null;
+  if (line !== 'sale' && line !== 'dv') throw new DraftError(400, 'Nhóm không hợp lệ');
+  if (existing.deleted_at) throw new DraftError(400, 'Tin đã xoá');
+  const next = {
+    ...existing,
+    biz_line: line,
+    biz_sticky: true,
+    updated_at: new Date().toISOString(),
+  };
+  const saved = await saveDraft(next);
+  if (!saved) return null;
+  await audit.record({
+    actor: ctx.actor || 'manager',
+    action: 'draft.biz_line',
+    entity_type: 'draft',
+    entity_id: saved.id,
+    before: { biz_line: existing.biz_line || null, biz_sticky: existing.biz_sticky === true },
+    after: { biz_line: line, biz_sticky: true },
+    meta: { ...audit.draftMeta(saved), from: existing.biz_line || null, to: line },
+  });
+  return decorate(saved);
+}
+
+async function softDelete(id, ctx = {}) {
+  await ensureReady();
+  const existing = await getDraft(id);
+  if (!existing) return null;
+  if (existing.deleted_at) return decorate(existing);
+  const next = {
+    ...existing,
+    deleted_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  const saved = await saveDraft(next);
+  if (!saved) return null;
+  await audit.record({
+    actor: ctx.actor || 'manager',
+    action: 'draft.deleted',
+    entity_type: 'draft',
+    entity_id: saved.id,
+    before: { deleted_at: null, approval_status: existing.approval_status },
+    after: { deleted_at: saved.deleted_at, approval_status: saved.approval_status },
+    meta: audit.draftMeta(saved),
+  });
+  return decorate(saved);
+}
+
+async function restoreDraft(id, ctx = {}) {
+  await ensureReady();
+  const existing = await getDraft(id);
+  if (!existing) return null;
+  if (!existing.deleted_at) return decorate(existing);
+  const next = {
+    ...existing,
+    deleted_at: null,
+    updated_at: new Date().toISOString(),
+  };
+  const saved = await saveDraft(next);
+  if (!saved) return null;
+  await audit.record({
+    actor: ctx.actor || 'manager',
+    action: 'draft.restored',
+    entity_type: 'draft',
+    entity_id: saved.id,
+    before: { deleted_at: existing.deleted_at },
+    after: { deleted_at: null, approval_status: saved.approval_status },
+    meta: audit.draftMeta(saved),
+  });
+  return decorate(saved);
 }
 
 async function messageStats(salesChannel) {
@@ -991,8 +1317,12 @@ function contentChanged(before, after) {
   return JSON.stringify(before.review_form || null) !== JSON.stringify(after.review_form || null);
 }
 
-async function writeDraftAudit(existing, saved, { actor, wantSend, send }) {
+async function writeDraftAudit(existing, saved, { actor, wantSend, send, learn, exampleKind }) {
   const meta = audit.draftMeta(saved);
+  if (wantSend) {
+    meta.learning = learn ? 'on' : 'off';
+    if (exampleKind) meta.example_kind = exampleKind;
+  }
   if (contentChanged(existing, saved)) {
     await audit.record({
       actor,
@@ -1053,6 +1383,8 @@ async function updateDraft(id, body, ctx = {}) {
   const input = { ...body };
   const named = ctx.actorName != null ? ctx.actorName : input.actor_name;
   delete input.actor_name;
+  const learn = !(input.learn === false || input.learn === 'false' || input.learn === 0 || input.learn === '0');
+  delete input.learn;
   if (input.approval_status === 'SENT' && input.send !== true) {
     throw new DraftError(400, 'Không đặt SENT trực tiếp. Dùng send: true để gửi.');
   }
@@ -1072,6 +1404,8 @@ async function updateDraft(id, body, ctx = {}) {
     }
     const wantSend = input.send === true;
     let send = null;
+    let learned = false;
+    let exampleKind = null;
 
     if (wantSend) {
       if (existing.approval_status === 'SENT') {
@@ -1089,12 +1423,20 @@ async function updateDraft(id, body, ctx = {}) {
       next.delivery_phase = 'sending';
       next.send_error = null;
       await saveDraft(next);
-      try {
-        await trainingLog.storeIfEdited(next);
-      } catch (e) {
-        console.error('Training log failed:', e.message);
+      if (learn) {
+        try {
+          const row = await trainingLog.storeOnApprove(next, { actor, learn: true });
+          learned = !!row;
+          exampleKind = row && row.example_kind;
+        } catch (e) {
+          console.error('Training log failed:', e.message);
+        }
       }
       send = await deliver(next);
+      if (send) {
+        send.learned = learned;
+        send.learn = learn;
+      }
       next.delivery_phase = null;
       if (send.pendingAdapter) {
         next.approval_status = 'APPROVED';
@@ -1105,6 +1447,11 @@ async function updateDraft(id, body, ctx = {}) {
         next.approval_status = 'SENT';
         next.sent_at = new Date().toISOString();
         next.send_via = send.via;
+        if (inboxStatus.inferFolder(next) !== 'bought') {
+          next.inbox_status = 'sent';
+          next.inbox_status_at = next.sent_at;
+          next.inbox_status_auto = true;
+        }
       } else {
         next.approval_status = 'APPROVED';
         next.send_via = null;
@@ -1128,9 +1475,20 @@ async function updateDraft(id, body, ctx = {}) {
 
     const saved = await saveDraft(next);
     if (!saved) return { draft: null, send };
-    await writeDraftAudit(existing, saved, { actor, wantSend, send });
+    if (wantSend && send && send.sent && inboxStatus.inferFolder(existing) !== 'bought' && saved.inbox_status === 'sent') {
+      await audit.record({
+        actor: 'system',
+        action: 'draft.inbox_status',
+        entity_type: 'draft',
+        entity_id: saved.id,
+        before: { inbox_status: inboxStatus.inferFolder(existing) },
+        after: { inbox_status: 'sent' },
+        meta: { ...audit.draftMeta(saved), from: inboxStatus.inferFolder(existing), to: 'sent', auto: true },
+      });
+    }
+    await writeDraftAudit(existing, saved, { actor, wantSend, send, learn: wantSend ? learn : undefined, exampleKind });
     await maybeClaimHandover(existing, saved, body);
-    return { draft: decorate(saved), send };
+    return { draft: decorate(saved), send, learned: wantSend ? learned : false, learn: wantSend ? learn : undefined };
   });
 }
 
@@ -1178,10 +1536,18 @@ module.exports = {
   DraftError,
   storageMode,
   opsStatus,
+  GROUPS,
   createDraft,
   listDrafts,
   getDraft,
   updateDraft,
+  conversationLine,
+  findBySourceMsg,
+  moveBizLine,
+  softDelete,
+  restoreDraft,
+  setInboxStatus,
+  conversationFolder,
   listChannels,
   addChannel,
   messageStats,

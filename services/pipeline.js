@@ -236,6 +236,7 @@ async function handleMessage(p) {
         ticket_status: stockHeld ? 'Cần đối soát kho' : undefined,
         pii_note: piiNote || undefined,
         triage: triaged,
+        rewriteDv: true,
       });
       if (!release.held) {
         log({

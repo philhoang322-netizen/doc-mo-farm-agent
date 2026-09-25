@@ -21,6 +21,7 @@
 const drafts = require('./drafts');
 const stations = require('./stations');
 const triage = require('./triage');
+const bizLine = require('./bizLine');
 
 const FALSEY = /^(0|false|no|off)$/i;
 
@@ -122,12 +123,34 @@ async function releaseToCustomer(p, text, extra = {}) {
     ? 'NEEDS_HUMAN'
     : (routed.route === 'needs-human' ? 'Cần người thật' : 'Mới tiếp nhận');
 
+  const channel = draftChannel(p);
+  const userId = customerUserId(p);
+  const prior = await drafts.conversationLine(channel, userId);
+  const biz = bizLine.resolve({
+    channel,
+    text: String(source || ''),
+    prior,
+  });
+  let outbound = body;
+  if (
+    extra.rewriteDv === true
+    && channel === 'messenger'
+    && biz.biz_line === 'dv'
+    && !bizLine.knowledgeHasStayInfo()
+  ) {
+    outbound = bizLine.DV_CLARIFY;
+  }
+
   const draft = await drafts.createDraft({
-    channel: draftChannel(p),
-    customer_user_id: customerUserId(p),
+    channel,
+    customer_user_id: userId,
     customer_name: clip(extra.customer_name || p.senderName, 200),
     customer_intent: clip(routed.storedIntent, 1000),
-    draft_reply: clip(body, 8000),
+    customer_query: clip(typeof p.text === 'string' ? p.text : source, 2000),
+    draft_reply: clip(outbound, 8000),
+    biz_line: biz.biz_line,
+    biz_sticky: biz.biz_sticky,
+    source_msg_id: clip(p.msgId, 200),
     assigned_department: clip(extra.assigned_department || routed.department, 120),
     ticket_status: clip(extra.ticket_status || ticketDefault, 120),
     qr_image_url: httpUrl(extra.qr_image_url),

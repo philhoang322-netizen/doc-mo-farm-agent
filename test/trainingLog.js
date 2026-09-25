@@ -68,7 +68,21 @@ function assert(cond, msg) {
     send: true,
   });
   assert(same.draft.draft_reply === 'Dạ còn hàng ạ', 'trim');
-  assert((await training.listRecent()).length === 1, 'unchanged approval skipped');
+  const afterSame = await training.listRecent();
+  assert(afterSame.length === 2, 'unchanged approval stored at lower weight, got ' + afterSame.length);
+  const approved = afterSame.find(row => row.customer_original_query === 'Còn dầu gội không');
+  assert(approved && approved.example_kind === 'approved', 'approved kind');
+  assert(approved.example_weight === 0.35, 'lower weight');
+  assert(approved.action === 'STORE_AS_FEW_SHOT_EXAMPLE', approved.action);
+
+  const quiet = await drafts.createDraft({
+    channel: 'zalo',
+    sales_channel: 'farm',
+    customer_query: 'Còn trứng không',
+    draft_reply: 'Dạ còn trứng ạ',
+  });
+  await drafts.updateDraft(quiet.id, { draft_reply: 'Dạ hết trứng ạ', send: true, learn: false });
+  assert((await training.listRecent()).length === 2, 'learn off stores nothing');
 
   const block = await training.promptBlock('Cho hỏi giá nước gừng với', 'farm');
   assert(block.includes('Mình uống thử không'), 'similar query injects the correction');
@@ -87,7 +101,7 @@ function assert(cond, msg) {
   console.log(JSON.stringify({
     ok: true,
     stored: training.trainingLog(pair),
-    skippedUnchanged: true,
+    skippedUnchanged: false,
     injected: true,
   }));
 })().catch((e) => {

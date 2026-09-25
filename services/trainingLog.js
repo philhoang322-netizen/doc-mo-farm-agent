@@ -15,6 +15,9 @@ const path = require('path');
 const db = require('./database');
 
 const ACTION = 'STORE_AS_FEW_SHOT_EXAMPLE';
+/** Unedited approvals are still examples, but they rank below a real correction. */
+const APPROVED_WEIGHT = 0.35;
+const CORRECTION_WEIGHT = 1;
 const STOP = new Set([
   'anh', 'chi', 'em', 'minh', 'ban', 'da', 'khong', 'duoc', 'mot',
   'cai', 'nay', 'roi', 'nhe', 'voi', 'cua', 'thi', 'cho', 'lam',
@@ -34,7 +37,10 @@ CREATE TABLE IF NOT EXISTS training_logs (
     customer_intent             TEXT,
     ai_draft_version            TEXT NOT NULL,
     manager_corrected_version   TEXT NOT NULL,
-    action                      TEXT NOT NULL DEFAULT 'STORE_AS_FEW_SHOT_EXAMPLE'
+    action                      TEXT NOT NULL DEFAULT 'STORE_AS_FEW_SHOT_EXAMPLE',
+    example_kind                TEXT,
+    example_weight              REAL,
+    actor                       TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_training_logs_draft
     ON training_logs (draft_id) WHERE draft_id IS NOT NULL;
@@ -62,6 +68,9 @@ function trainingLog(row) {
     ai_draft_version: row.ai_draft_version,
     manager_corrected_version: row.manager_corrected_version,
     action: row.action || ACTION,
+    example_kind: row.example_kind || null,
+    example_weight: row.example_weight == null ? null : Number(row.example_weight),
+    actor: row.actor || null,
   };
 }
 
@@ -81,10 +90,13 @@ async function ensureReady() {
   if (ready) return ready;
   ready = (async () => {
     if (db.DB_ENABLED) {
-      for (const sql of SCHEMA_SQL.split(';').map(s => s.trim()).filter(Boolean)) {
-        await db.pool.query(sql);
-      }
-      return;
+    for (const sql of SCHEMA_SQL.split(';').map(s => s.trim()).filter(Boolean)) {
+      await db.pool.query(sql);
+    }
+    await db.pool.query('ALTER TABLE training_logs ADD COLUMN IF NOT EXISTS example_kind TEXT');
+    await db.pool.query('ALTER TABLE training_logs ADD COLUMN IF NOT EXISTS example_weight REAL');
+    await db.pool.query('ALTER TABLE training_logs ADD COLUMN IF NOT EXISTS actor TEXT');
+    return;
     }
     await loadFile();
   })().catch(err => {
@@ -158,12 +170,26 @@ async function alreadyStored(draftId) {
  * Unchanged approvals are skipped. Returns the row, or null when skipped.
  */
 async function storeIfEdited(draft) {
+  const original = String(draft && draft.ai_draft_version || '').trim();
+  const corrected = String(draft && draft.draft_reply || '').trim();
+  if (!original || !corrected || original === corrected) return null;
+  return storeOnApprove(draft, { actor: null });
+}
+
+/**
+ * Store the sent reply when the manager left learning on.
+ * An edit is a correction (weight 1). An unchanged approval is a
+ * lower-weight approved example (weight 0.35). Returns null when
+ * learning is off, the reply is empty, or this draft was already stored.
+ */
+async function storeOnApprove(draft, opts = {}) {
   await ensureReady();
-  if (!draft) return null;
+  if (!draft || opts.learn === false) return null;
   const original = String(draft.ai_draft_version || '').trim();
   const corrected = String(draft.draft_reply || '').trim();
-  if (!original || !corrected || original === corrected) return null;
+  if (!corrected) return null;
   if (await alreadyStored(draft.id)) return null;
+  const edited = !original || original !== corrected;
   const row = {
     id: crypto.randomUUID(),
     created_at: new Date().toISOString(),
@@ -174,6 +200,9 @@ async function storeIfEdited(draft) {
     ai_draft_version: original,
     manager_corrected_version: corrected,
     action: ACTION,
+    example_kind: edited ? 'correction' : 'approved',
+    example_weight: edited ? CORRECTION_WEIGHT : APPROVED_WEIGHT,
+    actor: opts.actor ? String(opts.actor).slice(0, 120) : null,
   };
   if (!db.DB_ENABLED) {
     memory.push(row);
@@ -183,13 +212,15 @@ async function storeIfEdited(draft) {
   const r = await db.pool.query(
     `INSERT INTO training_logs (
        id, created_at, draft_id, sales_channel, customer_original_query,
-       customer_intent, ai_draft_version, manager_corrected_version, action
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       customer_intent, ai_draft_version, manager_corrected_version, action,
+       example_kind, example_weight, actor
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
      RETURNING *`,
     [
       row.id, row.created_at, row.draft_id, row.sales_channel,
       row.customer_original_query, row.customer_intent, row.ai_draft_version,
       row.manager_corrected_version, row.action,
+      row.example_kind, row.example_weight, row.actor,
     ]
   );
   return fromRow(r.rows[0]);
@@ -228,9 +259,20 @@ async function relevantExamples(query, salesChannel, limit = 3) {
   return rows
     .map(row => ({ row, score: overlapScore(row, query) }))
     .filter(item => item.score > 0)
-    .sort((a, b) => b.score - a.score || (a.row.created_at < b.row.created_at ? 1 : -1))
+    .sort((a, b) => {
+      const aw = a.score * weightOf(a.row);
+      const bw = b.score * weightOf(b.row);
+      if (bw !== aw) return bw - aw;
+      return a.row.created_at < b.row.created_at ? 1 : -1;
+    })
     .slice(0, cap)
     .map(item => item.row);
+}
+
+function weightOf(row) {
+  const n = Number(row && row.example_weight);
+  if (Number.isFinite(n) && n > 0) return n;
+  return CORRECTION_WEIGHT;
 }
 
 function clip(s, n) {
@@ -243,12 +285,17 @@ function clip(s, n) {
 async function promptBlock(query, salesChannel) {
   const examples = await relevantExamples(query, salesChannel, 3);
   if (!examples.length) return '';
-  const body = examples.map((ex, i) => (
-    `Ví dụ ${i + 1}\n` +
-    `Khách: ${clip(ex.customer_original_query, 400) || '(không lưu câu khách)'}\n` +
-    `Bản AI: ${clip(ex.ai_draft_version, 500)}\n` +
-    `Quản lý gửi: ${clip(ex.manager_corrected_version, 500)}`
-  )).join('\n\n');
+  const body = examples.map((ex, i) => {
+    const role = ex.example_kind === 'approved'
+      ? 'Quản lý đã duyệt (không sửa, trọng số thấp hơn)'
+      : 'Quản lý gửi';
+    return (
+      `Ví dụ ${i + 1}\n` +
+      `Khách: ${clip(ex.customer_original_query, 400) || '(không lưu câu khách)'}\n` +
+      `Bản AI: ${clip(ex.ai_draft_version, 500) || '(trống)'}\n` +
+      `${role}: ${clip(ex.manager_corrected_version, 500)}`
+    );
+  }).join('\n\n');
   return (
     '\n\nCÂU QUẢN LÝ ĐÃ SỬA — khi câu khách gần các ví dụ này, ưu tiên giọng và cách viết của quản lý. ' +
     'Không đổi giá, không thêm khuyến mãi ngoài tài liệu.\n' +
@@ -258,8 +305,11 @@ async function promptBlock(query, salesChannel) {
 
 module.exports = {
   ACTION,
+  APPROVED_WEIGHT,
+  CORRECTION_WEIGHT,
   ensureReady,
   storeIfEdited,
+  storeOnApprove,
   listRecent,
   relevantExamples,
   promptBlock,

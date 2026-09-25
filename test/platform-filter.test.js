@@ -69,21 +69,29 @@ test('platform filter keeps Zalo OA and Messenger apart from sales channels', as
   );
 });
 
-test('admin queue exposes Tin từ chips above Mức', () => {
+test('admin queue exposes inbox groups above Mức', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin', 'review.html'), 'utf8');
   const js = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin', 'review.js'), 'utf8');
-  const tin = html.indexOf('Tin từ');
+  const nhom = html.indexOf('Nhóm hộp thư');
   const muc = html.indexOf('>Mức<');
-  assert.ok(tin > 0 && muc > tin);
+  assert.ok(nhom > 0 && muc > nhom);
   assert.match(html, /Kênh bán/);
-  assert.match(html, /data-platform=""/);
-  assert.match(html, /data-platform="zalo"/);
+  assert.match(html, /data-nhom="zalo"/);
   assert.match(html, /Zalo OA/);
-  assert.match(html, /data-platform="messenger"/);
-  assert.match(html, /Messenger/);
-  assert.match(js, /d\.channel !== q\.platform|platform/);
-  assert.match(js, /q\.set\('platform', platform\)/);
+  assert.match(html, /data-nhom="fb-sale"/);
+  assert.match(html, /FB-Sale/);
+  assert.match(html, /data-nhom="fb-dv"/);
+  assert.match(html, /FB-DV/);
+  assert.match(html, /id="refresh-now"/);
+  assert.match(html, /Làm mới/);
+  assert.match(html, /id="sync-missed"/);
+  assert.match(html, /Đồng bộ tin bị sót/);
+  assert.match(html, /Cập nhật lúc/);
+  assert.match(js, /q\.set\('nhom', nhom\)/);
   assert.match(js, /Không có tin ' \+ name/);
-  assert.match(js, /Zalo OA và Messenger/);
+  assert.match(js, /Zalo OA, FB-Sale hoặc FB-DV/);
+  assert.match(js, /Chuyển qua Sale/);
+  assert.match(js, /Chuyển qua DV/);
+  assert.match(js, /Có ' \+ n \+ ' tin mới/);
   assert.doesNotMatch(js, /approval_status:\s*'APPROVED'[\s\S]{0,80}send:\s*true[\s\S]{0,40}auto/);
 });

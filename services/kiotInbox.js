@@ -563,6 +563,13 @@ async function prepareOrCreate(id, body, actorName) {
     try {
       const updated = await drafts.updateDraft(draft.id, patch, { actorName });
       saved = updated && updated.draft;
+      if (saved) {
+        saved = await drafts.setInboxStatus(saved.id, 'bought', {
+          actor: audit.managerActor(actorName),
+          auto: true,
+          orderCode: created.code,
+        }) || saved;
+      }
     } catch (e) {
       return {
         status: 200,
