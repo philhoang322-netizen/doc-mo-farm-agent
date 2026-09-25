@@ -59,6 +59,10 @@ function canManageUsers(p) {
   return !!p && p.role === 'manager';
 }
 
+function canFaq(p) {
+  return canManageUsers(p);
+}
+
 function canKiot(p) {
   return !!p && (p.role === 'manager' || p.role === 'sale');
 }
@@ -91,6 +95,7 @@ async function sessionPayload(p) {
     canKiot: canKiot(p),
     canRefund: canRefund(p),
     canManageUsers: canManageUsers(p),
+    canFaq: canFaq(p),
   };
 }
 
@@ -101,6 +106,7 @@ module.exports = {
   canSend,
   canDelete,
   canManageUsers,
+  canFaq,
   canKiot,
   canDiscount,
   canRefund,

@@ -1174,6 +1174,8 @@
       const customer = el('div', { class: 'msg-customer is-clamped' });
       customer.appendChild(richFragment(snippet(d) || '—'));
       btn.appendChild(customer);
+      const reviewNote = faqReviewNode(d);
+      if (reviewNote) btn.appendChild(reviewNote);
       const foot = el('div', { class: 'msg-foot' });
       foot.appendChild(el('span', { class: 'msg-time', text: when(d.created_at) }));
       foot.appendChild(tags);
@@ -1237,6 +1239,24 @@
     learn.appendChild(el('span', { class: 'switch', 'aria-hidden': 'true' }));
     learn.appendChild(el('span', { text: 'Cho AI học từ câu trả lời này' }));
     return learn;
+  }
+
+  function faqReviewNode(d) {
+    const info = d && d.faq_review;
+    if (!info || typeof info !== 'object') return null;
+    const codes = Array.isArray(info.codes) ? info.codes.filter(Boolean).join(', ') : '';
+    const conf = info.confidence == null || info.confidence === '' ? '' : String(info.confidence);
+    const hand = info.handoff ? 'có' : 'không';
+    const bits = [
+      codes ? ('FAQ ' + codes) : 'FAQ —',
+      conf !== '' ? ('tin ' + conf) : '',
+      'chuyển người: ' + hand,
+      info.reason || '',
+    ].filter(Boolean).join(' · ');
+    return el('span', { class: 'faq-review' }, [
+      el('span', { class: 'faq-review-label', text: 'Người duyệt' }),
+      document.createTextNode(' ' + bits),
+    ]);
   }
 
   function triageBadge(d) {
@@ -1395,6 +1415,8 @@
       }));
     }
     if (d.pii_note) main.appendChild(el('p', { class: 'hint', text: d.pii_note }));
+    const reviewNote = faqReviewNode(d);
+    if (reviewNote) main.appendChild(reviewNote);
 
     main.appendChild(el('div', { class: 'draft-label' }, [
       el('label', { for: 'draft-reply', text: 'Bản nháp trả lời' }),
@@ -2948,6 +2970,8 @@
       }
       const users = document.getElementById('users-link');
       if (users) users.hidden = !me.canManageUsers;
+      const faqLink = document.getElementById('faq-link');
+      if (faqLink) faqLink.hidden = !me.canFaq;
     } catch (_) { /* server still enforces the role */ }
   }
 

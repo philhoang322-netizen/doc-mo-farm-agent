@@ -1,0 +1,2 @@
+code,group,product,question,variants,answer,conditions,action_flag,verify_status,source
+FAQ-MAU-1,Nhóm mẫu,Sản phẩm mẫu,Câu hỏi mẫu,,Câu trả lời mẫu không có số liệu thật,,TU_DONG,verified,test

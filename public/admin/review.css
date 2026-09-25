@@ -1625,3 +1625,16 @@ body.hitl button.queue-tab.active {
 @media (prefers-reduced-motion: reduce) {
   body.hitl .skel-row { animation: none; }
 }
+
+.faq-review {
+  display: block;
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--muted, #5c564e);
+  white-space: normal;
+}
+.faq-review-label {
+  font-weight: 700;
+  color: var(--green-deep, #0f5a35);
+}

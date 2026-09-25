@@ -17,6 +17,7 @@ const llm = require('./llm');
 const pii = require('./pii');
 const stations = require('./stations');
 const trainingLog = require('./trainingLog');
+const faqPrompt = require('./faqPrompt');
 const triage = require('./triage');
 const customerLink = require('./customerLink');
 
@@ -925,12 +926,23 @@ async function systemBlocks(customer, memories, recentOrders, preferences, userM
   } catch (e) {
     console.error('Purchase history skipped:', e.message);
   }
+  let faqText = '';
+  try {
+    faqText = await faqPrompt.promptBlock(userMessage);
+  } catch (e) {
+    console.error('FAQ prompt skipped:', e.message);
+  }
+  // Training examples, then FAQ rules + candidates. A thread-context block
+  // can be pushed here beside them without mixing into either function.
+  const blocks = [
+    buildCustomerPrompt(customer, memories, recentOrders, preferences),
+    purchase,
+    trainingText,
+    faqText,
+  ];
   return [
     { type: 'text', text: buildStaticPrompt(), cache_control: { type: 'ephemeral' } },
-    {
-      type: 'text',
-      text: buildCustomerPrompt(customer, memories, recentOrders, preferences) + purchase + trainingText,
-    },
+    { type: 'text', text: blocks.filter(Boolean).join('') },
   ];
 }
 

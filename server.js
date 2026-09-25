@@ -36,6 +36,7 @@ const PORT = process.env.PORT || 3000;
 // only when capture did not (tests, or a parser skip) and tags verify_hook.
 app.use('/messenger/webhook', messenger.captureRawBody);
 app.use(express.json({
+  limit: '3mb',
   verify: (req, _res, buf) => {
     if (!Buffer.isBuffer(req.rawBody)) {
       req.rawBody = buf;
