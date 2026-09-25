@@ -20,6 +20,7 @@ const brand = require('./brand');
 const channelNames = require('./channelNames');
 const access = require('./access');
 const adminUsers = require('./adminUsers');
+const invoices = require('./invoices');
 
 const PUBLIC = path.join(__dirname, '..', 'public', 'admin');
 
@@ -595,6 +596,146 @@ async function kiotCustomer(req, res) {
   }
 }
 
+function escapeHtml(value) {
+  return String(value || '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[ch]));
+}
+
+async function publicInvoice(req, res) {
+  const code = String(req.params.code || '');
+  if (!invoices.verify(code, req.query.t)) {
+    return res.status(404).type('html').send('Không thấy hoá đơn');
+  }
+  try {
+    const row = await invoices.getByCode(code);
+    if (!row || row.document_type !== 'invoice') {
+      return res.status(404).type('html').send('Không thấy hoá đơn');
+    }
+    const img = `/hd/${encodeURIComponent(row.code)}/anh?t=${encodeURIComponent(invoices.sign(row.code))}`;
+    const total = Math.round(row.total).toLocaleString('vi-VN');
+    res.type('html').send(`<!doctype html>
+<html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(row.code)}</title>
+<style>
+  body { margin: 0; background: #f6f3ee; color: #1c1712; font: 17px/1.45 "Be Vietnam Pro", sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 16px; }
+  h1 { color: #0f5a35; font-size: 28px; margin: 0 0 8px; }
+  img { width: 100%; height: auto; background: #fff; border-radius: 12px; }
+  p { margin: 8px 0; }
+</style></head><body><main>
+<h1>${escapeHtml(row.code)}</h1>
+<p>${escapeHtml(row.customer_name || 'Khách')} · Tổng ${total}đ</p>
+<p>VCB 1058437590 · HTX NONG TRAI DOC MO</p>
+<p>nội dung CK: ${escapeHtml(row.code)}</p>
+<img src="${img}" alt="Hoá đơn ${escapeHtml(row.code)}">
+</main></body></html>`);
+  } catch (e) {
+    console.error('Public invoice failed:', e.message);
+    res.status(500).type('html').send('Không mở được hoá đơn');
+  }
+}
+
+async function publicInvoiceImage(req, res) {
+  const code = String(req.params.code || '');
+  if (!invoices.verify(code, req.query.t)) return res.status(404).end();
+  try {
+    const png = await invoices.pngFor(code);
+    if (!png) return res.status(404).end();
+    res.set('Cache-Control', 'private, max-age=60');
+    res.type('png').send(png);
+  } catch (e) {
+    console.error('Invoice image failed:', e.message);
+    res.status(500).end();
+  }
+}
+
+async function invoicesPage(req, res) {
+  guard(res);
+  if (!auth.passwordConfigured()) return res.status(503).type('html').send(unconfiguredHtml());
+  if (!auth.passwordAuthed(req)) return res.status(200).type('html').send(loginHtml(null));
+  if (!access.canKiot(await who(req))) return res.status(403).type('html').send('Không đủ quyền');
+  const html = await fs.promises.readFile(path.join(PUBLIC, 'invoices.html'), 'utf8');
+  res.type('html').send(brand.applyTemplate(html));
+}
+
+async function invoicesList(req, res) {
+  if (!access.canKiot(await who(req))) return deny(res);
+  const rows = await invoices.search({
+    q: req.query.q,
+    from: req.query.from,
+    to: req.query.to,
+  });
+  res.json({ invoices: rows.map(row => invoices.present(row)) });
+}
+
+async function invoicesCsv(req, res) {
+  if (!access.canKiot(await who(req))) return deny(res);
+  const rows = await invoices.search({
+    q: req.query.q,
+    from: req.query.from,
+    to: req.query.to,
+  });
+  res.set('Content-Type', 'text/csv; charset=utf-8');
+  res.set('Content-Disposition', 'attachment; filename="hoa-don.csv"');
+  res.send(invoices.toCsv(rows));
+}
+
+async function invoicesPaid(req, res) {
+  if (!access.canKiot(await who(req))) return deny(res);
+  const amount = req.body && req.body.amount;
+  const n = Number(amount);
+  if (amount == null || amount === '' || !Number.isFinite(n) || n < 0 || n > 1e12) {
+    return res.status(400).json({ error: 'Cần số tiền đã thu' });
+  }
+  const saved = await invoices.setPayment(req.params.code, n, await auditActor(req), 'manual');
+  if (!saved) return res.status(404).json({ error: 'Không thấy hoá đơn' });
+  res.json({ invoice: invoices.present(saved) });
+}
+
+async function invoicesSync(req, res) {
+  if (!access.canKiot(await who(req))) return deny(res);
+  const row = await invoices.getByCode(req.params.code);
+  if (!row) return res.status(404).json({ error: 'Không thấy hoá đơn' });
+  if (row.document_type !== 'invoice') {
+    return res.status(400).json({ error: 'Đơn đặt hàng chưa xuất hoá đơn, chưa đồng bộ được thanh toán.' });
+  }
+  const remote = await kiotviet.readInvoicePayment({ id: row.kiot_id, code: row.code });
+  if (!remote || !remote.ok) {
+    return res.status(502).json({ error: (remote && remote.error) || 'Không đọc được KiotViet' });
+  }
+  const saved = await invoices.setPayment(row.code, remote.amount_paid, await auditActor(req), 'kiotviet');
+  res.json({ invoice: invoices.present(saved), kiot_status: remote.kiot_status });
+}
+
+async function invoicesImage(req, res) {
+  if (!access.canKiot(await who(req))) return deny(res);
+  try {
+    const png = await invoices.pngFor(req.params.code);
+    if (!png) return res.status(404).end();
+    res.set('Cache-Control', 'private, max-age=60');
+    res.type('png').send(png);
+  } catch (e) {
+    console.error('Admin invoice image failed:', e.message);
+    res.status(500).end();
+  }
+}
+
+async function kiotIssue(req, res) {
+  try {
+    const p = await who(req);
+    if (!access.canKiot(p)) return deny(res);
+    const existing = await drafts.getDraft(req.params.id);
+    if (!existing || !access.canSee(p, existing)) return res.status(404).json({ error: 'Không thấy bản nháp' });
+    const result = await kiotInbox.issueInvoice(req.params.id, p && p.source === 'user' ? access.actor(p) : actorNameFrom(req));
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.error('Kiot issue failed:', e.message);
+    res.status(500).json({ error: 'Không xuất được hoá đơn' });
+  }
+}
+
 async function kiotCreate(req, res) {
   try {
     const p = await who(req);
@@ -867,6 +1008,16 @@ function mount(app) {
   app.get('/admin/kiot-picker.js', requirePageAsset, sendAsset('kiot-picker.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/review.js', requirePageAsset, sendAsset('review.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/audit.js', requirePageAsset, sendAsset('audit.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/invoices.css', requirePageAsset, sendAsset('invoices.css', 'text/css; charset=utf-8'));
+  app.get('/admin/invoices.js', requirePageAsset, sendAsset('invoices.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/invoices', invoicesPage);
+  app.get('/admin/api/invoices.csv', requireApi, invoicesCsv);
+  app.get('/admin/api/invoices', requireApi, invoicesList);
+  app.get('/admin/api/invoices/:code/anh', requireApi, invoicesImage);
+  app.post('/admin/api/invoices/:code/paid', requireApi, invoicesPaid);
+  app.post('/admin/api/invoices/:code/sync', requireApi, invoicesSync);
+  app.get('/hd/:code/anh', publicInvoiceImage);
+  app.get('/hd/:code', publicInvoice);
   app.get('/admin/audit', auditPage);
   app.get('/admin/api/audit', requireApi, listAudit);
   app.get('/admin/api/channels', requireApi, channels);
@@ -888,6 +1039,7 @@ function mount(app) {
   app.post('/admin/api/kiotviet/quick-entry', requireApi, kiotQuick);
   app.get('/admin/api/drafts/:id/kiotviet', requireApi, kiotPrefill);
   app.post('/admin/api/drafts/:id/kiotviet', requireApi, kiotCreate);
+  app.post('/admin/api/drafts/:id/kiotviet/invoice', requireApi, kiotIssue);
   app.post('/admin/api/customers/resume', requireApi, resumeCustomer);
   app.get('/admin/api/drafts/:id/customer', requireApi, customerCard);
   app.post('/admin/api/customers/link', requireApi, customerLinkSave);

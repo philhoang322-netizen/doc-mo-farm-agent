@@ -15,6 +15,7 @@ const db = require('./database');
 const quickEntry = require('./quickEntry');
 const channelNames = require('./channelNames');
 const customerLink = require('./customerLink');
+const invoices = require('./invoices');
 
 const BANK_BLOCK = 'HTX Nong Trai Doc Mo\nVCB 1058 43 7590';
 
@@ -41,15 +42,20 @@ function formatVnd(n) {
   return `${Math.round(value).toLocaleString('vi-VN')}đ`;
 }
 
-function paymentDraft({ code, total, kind }) {
-  const label = kind === 'order' ? 'đơn đặt hàng' : 'hoá đơn';
-  return [
-    `Dạ em đã tạo ${label} ${code} cho mình, tổng ${formatVnd(total)} ạ.`,
+function paymentDraft({ code, total, link }) {
+  const lines = [
+    `Dạ em đã tạo hoá đơn ${code} cho mình, tổng ${formatVnd(total)} ạ.`,
     '',
     'Mình chuyển khoản giúp em:',
     BANK_BLOCK,
-    `Nội dung: ${code}`,
-  ].join('\n');
+    `nội dung CK: ${code}`,
+  ];
+  if (link) lines.push('', `Hoá đơn: ${link}`);
+  return lines.join('\n');
+}
+
+function orderAck({ code, total }) {
+  return `Dạ em đã tạo đơn đặt hàng ${code}, tổng ${formatVnd(total)} ạ. Em xuất hoá đơn và gửi mã QR khi mình xác nhận giúp em.`;
 }
 
 function cleanPhone(v) {
@@ -559,11 +565,36 @@ async function prepareOrCreate(id, body, actorName) {
       kind: created.documentType || kind,
     });
 
-    const reply = paymentDraft({
-      code: created.code,
-      total: created.total,
-      kind: created.documentType || kind,
-    });
+    const saleItems = lines.map(line => ({
+      name: line.name || line.product_name,
+      sku: line.sku,
+      quantity: line.quantity,
+      price: line.price,
+      amount: line.line_total,
+    }));
+    let recorded = null;
+    try {
+      recorded = await invoices.recordSale({
+        kiotId: created.id,
+        code: created.code,
+        draftId: draft.id,
+        documentType: created.documentType || kind,
+        customerCode: created.customerCode || body.kiot_customer_code,
+        customerName: created.customerName || customerName || draft.customer_name,
+        customerPhone: phone,
+        channel: draft.channel,
+        items: saleItems,
+        total: created.total,
+      }, audit.managerActor(actorName));
+    } catch (err) {
+      console.error('Invoice record failed:', err.message);
+    }
+
+    const isInvoice = (created.documentType || kind) === 'invoice';
+    const link = isInvoice ? invoices.pageUrl(created.code) : '';
+    const reply = isInvoice
+      ? paymentDraft({ code: created.code, total: created.total, link })
+      : orderAck({ code: created.code, total: created.total });
     const summary = `${created.code} · ${formatVnd(created.total)}`;
     const nextForm = {
       ...(draft.review_form || {}),
@@ -578,6 +609,10 @@ async function prepareOrCreate(id, body, actorName) {
       actor_name: actorName || '',
     };
     if (draft.approval_status !== 'SENT') patch.draft_reply = reply;
+    if (isInvoice) {
+      const picture = invoices.imageUrl(created.code);
+      if (picture) patch.qr_image_url = picture;
+    }
     const kiotCode = created.customerCode || body.kiot_customer_code || '';
     const kiotId = created.customerId || body.kiot_customer_id || '';
     const samePhone = db.normalizePhone(draft.customer_phone) && db.normalizePhone(draft.customer_phone) === db.normalizePhone(phone);
@@ -669,8 +704,104 @@ async function prepareOrCreate(id, body, actorName) {
         customer_code: kiotCode || null,
         summary,
         draft: saved,
+        page_url: isInvoice ? link : null,
+        image_url: isInvoice ? invoices.imageUrl(created.code) : null,
         low_stock: !!low,
         stock_summary: low ? assessment.summary : null,
+      },
+    };
+  });
+}
+
+async function issueInvoice(id, actorName) {
+  return queue(id, async () => {
+    const draft = await drafts.getDraft(id);
+    if (!draft) return { status: 404, body: { error: 'Không thấy bản nháp' } };
+    const existing = existingSale(draft);
+    if (!existing) return { status: 400, body: { error: 'Nháp chưa có đơn đặt hàng' } };
+    const kind = (draft.review_form && draft.review_form.kiot_kind) || (/^DH/i.test(existing.code) ? 'order' : 'invoice');
+    if (kind !== 'order') {
+      return { status: 409, body: { error: 'Chứng từ này đã là hoá đơn', code: existing.code } };
+    }
+    const row = await invoices.getByCode(existing.code);
+    const issued = await kiotviet.issueInvoiceFromOrder({
+      orderId: (row && (row.order_kiot_id || row.kiot_id)) || null,
+      orderCode: existing.code,
+    });
+    if (!issued || !issued.ok) {
+      return { status: 502, body: { error: (issued && issued.error) || 'Không xuất được hoá đơn' } };
+    }
+    let savedRow = null;
+    try {
+      savedRow = await invoices.markIssued(existing.code, {
+        id: issued.id,
+        code: issued.code,
+        total: issued.total,
+        draftId: draft.id,
+        customerName: (row && row.customer_name) || draft.customer_name,
+        customerPhone: (row && row.customer_phone) || draft.customer_phone,
+        customerCode: (row && row.customer_code) || draft.customer_code,
+        channel: draft.channel,
+        items: row && row.items,
+      }, audit.managerActor(actorName));
+    } catch (err) {
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          created: true,
+          saved: false,
+          code: issued.code,
+          error: 'Đã xuất hoá đơn trên KiotViet nhưng chưa ghi được. Đừng xuất lại — kiểm tra mã ' + issued.code,
+        },
+      };
+    }
+    const link = invoices.pageUrl(issued.code);
+    const reply = paymentDraft({ code: issued.code, total: savedRow.total, link });
+    const nextForm = {
+      ...(draft.review_form || {}),
+      kiot_code: issued.code,
+      kiot_total: String(savedRow.total),
+      kiot_kind: 'invoice',
+    };
+    const patch = {
+      invoice_code: issued.code,
+      kiot_summary: `${issued.code} · ${formatVnd(savedRow.total)}`,
+      review_form: nextForm,
+      qr_image_url: invoices.imageUrl(issued.code),
+      actor_name: actorName || '',
+    };
+    if (draft.approval_status !== 'SENT') patch.draft_reply = reply;
+    let saved = null;
+    try {
+      const updated = await drafts.updateDraft(draft.id, patch, { actorName });
+      saved = updated && updated.draft;
+    } catch (err) {
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          created: true,
+          saved: false,
+          code: issued.code,
+          total: savedRow.total,
+          error: 'Đã xuất hoá đơn nhưng chưa ghi vào nháp. Đừng xuất lại — mã ' + issued.code,
+        },
+      };
+    }
+    remembered.set(draft.id, { code: issued.code, total: savedRow.total, kind: 'invoice' });
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        created: true,
+        saved: true,
+        code: issued.code,
+        total: savedRow.total,
+        document: 'invoice',
+        page_url: link,
+        image_url: invoices.imageUrl(issued.code),
+        draft: saved,
       },
     };
   });
@@ -682,6 +813,7 @@ module.exports = {
   suggestLines,
   prefill,
   prepareOrCreate,
+  issueInvoice,
   quickFill,
   existingSale,
   shippingFeeFor,

@@ -1286,6 +1286,22 @@ body.hitl .kiot-panel {
   margin: 0 0 var(--space-3);
 }
 body.hitl .kiot-panel h4 { margin: 0 0 4px; font-size: 17px; }
+body.hitl .kiot-created {
+  background: #fff;
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin: 0 0 var(--space-3);
+}
+body.hitl .kiot-created-kicker { margin: 0; color: var(--muted); font-size: 13px; font-weight: 650; }
+body.hitl .kiot-created-code {
+  margin: 2px 0;
+  font-size: 28px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  color: var(--green-deep);
+}
+body.hitl .kiot-created-note { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
+body.hitl .kiot-invoice-img { width: 100%; height: auto; margin-top: 8px; border-radius: 8px; background: #fff; }
 body.hitl .kiot-lead { margin: 0 0 var(--space-3); color: var(--muted); font-size: 15px; }
 body.hitl .kiot-quick-row { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-2); }
 body.hitl textarea.kiot-quick { min-height: 72px; width: 100%; font-size: 16px; }

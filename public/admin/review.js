@@ -1420,7 +1420,8 @@
     if (me.canKiot) {
       const fold = el('details', { class: 'kiot-fold' });
       fold.open = false;
-      fold.appendChild(el('summary', { text: 'Tạo đơn KiotViet' }));
+      const kiotExisting = kiotMark(d);
+      fold.appendChild(el('summary', { text: kiotExisting ? ('KiotViet · ' + kiotExisting.code) : 'Tạo đơn KiotViet' }));
       fold.addEventListener('toggle', () => {
         if (fold.open && !fold.querySelector('.kiot-panel')) fold.appendChild(kiotPanel(d));
       });
@@ -1784,10 +1785,10 @@
   function kiotMark(d) {
     if (!d) return null;
     const f = formOf(d);
-    if (f.kiot_code) return { code: f.kiot_code, total: f.kiot_total };
-    const code = String(d.invoice_code || '').trim();
-    if (/^(HD|DH)/i.test(code)) return { code, total: null };
-    return null;
+    const code = String(f.kiot_code || d.invoice_code || '').trim();
+    if (!/^(HD|DH)/i.test(code)) return null;
+    const kind = f.kiot_kind || (/^DH/i.test(code) ? 'order' : 'invoice');
+    return { code, total: f.kiot_total, kind, image: d.qr_image_url || '' };
   }
 
   function openDraft(id, opts) {
@@ -1905,6 +1906,7 @@
     if (state.existing) showExisting(state.existing);
     panel.appendChild(exist);
     panel.appendChild(ackLabel);
+    if (state.existing) panel.appendChild(createdCard(state.existing));
 
     const docRow = el('div', { class: 'kiot-docs', role: 'group', 'aria-label': 'Loại chứng từ' });
     const invoiceBtn = el('button', { type: 'button', class: 'chip active', text: 'Hoá đơn (HĐ)' });
@@ -1986,6 +1988,59 @@
     actions.appendChild(quoteBtn);
     actions.appendChild(confirmBtn);
     panel.appendChild(actions);
+
+    function createdCard(mark) {
+      const box = el('div', { class: 'kiot-created' });
+      const invoice = mark.kind !== 'order';
+      box.appendChild(el('p', {
+        class: 'kiot-created-kicker',
+        text: invoice ? 'Hoá đơn đã tạo' : 'Đơn đặt hàng đã tạo',
+      }));
+      box.appendChild(el('p', { class: 'kiot-created-code', text: mark.code }));
+      if (mark.total != null && mark.total !== '') box.appendChild(el('p', { text: 'Tổng ' + vnd(mark.total) }));
+      if (invoice && mark.image) {
+        box.appendChild(el('img', { class: 'kiot-invoice-img', src: mark.image, alt: 'Hoá đơn ' + mark.code }));
+        box.appendChild(el('p', {
+          class: 'kiot-created-note',
+          text: 'Ảnh và nội dung CK đang chờ. Bấm Duyệt & Gửi ở thanh dưới để gửi khách.',
+        }));
+      }
+      if (!invoice) {
+        const issue = el('button', { type: 'button', class: 'btn btn-primary', text: 'Xuất hóa đơn' });
+        issue.addEventListener('click', () => issueInvoice(issue));
+        box.appendChild(issue);
+        box.appendChild(el('p', {
+          class: 'kiot-created-note',
+          text: 'Xuất hoá đơn để có mã QR. Chưa gửi cho khách cho đến khi bấm Duyệt & Gửi.',
+        }));
+      }
+      return box;
+    }
+
+    async function issueInvoice(button) {
+      showError('');
+      button.disabled = true;
+      try {
+        const data = await api('/admin/api/drafts/' + d.id + '/kiotviet/invoice', {
+          method: 'POST',
+          body: JSON.stringify({ actor_name: actorName() }),
+        });
+        const reply = detailEl.querySelector('#draft-reply');
+        if (reply && data.draft && data.draft.draft_reply && d.approval_status !== 'SENT') {
+          reply.value = data.draft.draft_reply;
+        }
+        toast(data.saved === false
+          ? (data.error || ('Đã xuất ' + data.code))
+          : ('Đã xuất ' + data.code + '. Tin vẫn chờ duyệt, chưa gửi.'));
+        dirty = false;
+        detailStamp = '';
+        listStamp = '';
+        await load();
+      } catch (e) {
+        if (e.message !== 'unauthorized') showError(e.message);
+        button.disabled = false;
+      }
+    }
 
     function showError(text) {
       if (!text) {
