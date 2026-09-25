@@ -1713,6 +1713,172 @@ body.hitl button.queue-tab.active {
   box-shadow: inset 0 -2px 0 var(--green);
 }
 
+body.inbox .detail-body { padding: 8px 12px 12px; }
+body.inbox .detail-split { gap: 4px; }
+body.inbox .detail-meta { margin-bottom: 4px; gap: 4px 6px; align-items: center; }
+body.inbox .name-row { margin-right: 0; }
+body.inbox .want-box { padding: 8px 10px; margin-bottom: 0; }
+body.inbox .detail-quick { margin: 0; }
+body.inbox .draft-label { margin: 4px 0; }
+body.inbox .draft-label label { font-size: 13px; }
+body.inbox .learn-toggle { gap: 8px; margin: 2px 0; font-size: 14px; }
+body.inbox .cust-fold,
+body.inbox .kiot-fold,
+body.inbox .extra-detail { margin-top: 4px; }
+body.inbox .cust-fold summary,
+body.inbox .kiot-fold summary,
+body.inbox .extra-detail summary {
+  min-height: 44px;
+  height: 44px;
+  padding: 0;
+  font-size: 15px;
+}
+body.inbox details.kiot-fold > .field-block { margin: 2px 0 8px; }
+
+body.inbox .field-block label,
+body.inbox .extra-detail .grid label,
+body.inbox .composer form label,
+body.inbox .addr-block .field-block label,
+body.inbox .refund-panel .field-block label {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.2;
+  margin-bottom: 4px;
+}
+body.inbox .kiot-name-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 550;
+}
+body.inbox .field-block input,
+body.inbox .field-block select,
+body.inbox .extra-detail input,
+body.inbox .extra-detail select,
+body.inbox .composer input,
+body.inbox .composer select,
+body.inbox .addr-block input,
+body.inbox .addr-block select,
+body.inbox .cust-link input,
+body.inbox .kiot-line input,
+body.inbox .kiot-line select,
+body.inbox .kiot-qty input {
+  min-height: 40px;
+  height: 40px;
+  padding: 6px 10px;
+  font-size: 16px;
+  border-radius: 8px;
+}
+body.inbox textarea {
+  font-size: 16px;
+  padding: 8px 10px;
+  field-sizing: content;
+}
+body.inbox textarea#draft-reply {
+  min-height: 96px;
+  height: auto;
+  margin: 0;
+}
+body.inbox .extra-detail textarea,
+body.inbox .composer textarea {
+  height: auto;
+  min-height: 72px;
+}
+body.inbox textarea.kiot-quick {
+  display: block;
+  width: 100%;
+  min-height: 56px;
+  margin: 0 0 4px;
+  resize: vertical;
+}
+
+body.inbox .kiot-panel {
+  container-type: inline-size;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  border-radius: 0;
+}
+body.inbox .kiot-lead { margin: 0 0 6px; font-size: 13px; line-height: 1.35; }
+body.inbox .kiot-doc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+  margin: 0 0 8px;
+}
+body.inbox .kiot-doc-head .btn {
+  width: auto;
+  min-height: 44px;
+  padding: 0 4px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--green-deep);
+}
+body.inbox .kiot-docs { display: flex; flex-wrap: nowrap; gap: 2px; margin: 0; }
+body.inbox .kiot-docs .chip {
+  min-height: 44px;
+  height: 44px;
+  padding: 6px 10px;
+  font-size: 13px;
+  line-height: 20px;
+  border-radius: 8px;
+  background-clip: content-box;
+}
+body.inbox .kiot-grid,
+body.inbox .kiot-money { gap: 10px 12px; margin-bottom: 10px; }
+body.inbox .kiot-line {
+  background: transparent;
+  padding: 0;
+  margin: 0 0 8px;
+  border-radius: 0;
+}
+body.inbox .kiot-line-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+body.inbox .kiot-line-tools input[type="search"] {
+  flex: 1 1 140px;
+  width: auto;
+  min-width: 0;
+  margin-top: 0;
+}
+body.inbox .kiot-qty { margin-top: 0; flex: 0 0 auto; font-size: 13px; }
+body.inbox .kiot-qty input { width: 4.5rem; margin: 0; }
+body.inbox .kiot-meta { margin-top: 4px; font-size: 13px; }
+body.inbox .kiot-actions { gap: 8px; }
+
+@media (min-width: 360px) {
+  body.inbox .kiot-grid,
+  body.inbox .kiot-money,
+  body.inbox .grid2,
+  body.inbox .refund-grid,
+  body.inbox .extra-detail .grid,
+  body.inbox .addr-grid3,
+  body.inbox .composer form {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 12px;
+  }
+  body.inbox .field-wide,
+  body.inbox .extra-detail .span-2,
+  body.inbox .composer .span-2,
+  body.inbox .composer form button { grid-column: 1 / -1; }
+}
+@container (min-width: 640px) {
+  body.inbox .kiot-grid { grid-template-columns: 1fr 1fr 1fr; }
+  body.inbox .kiot-grid .field-wide { grid-column: 1 / -1; }
+}
+@media (min-width: 1024px) {
+  body.inbox .addr-grid3 { grid-template-columns: 1fr 1fr 1fr; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   body.hitl .skel-row { animation: none; }
 }

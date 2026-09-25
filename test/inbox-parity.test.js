@@ -220,6 +220,12 @@ test('inbox keeps every pre-redesign control and API trigger', () => {
   assert.doesNotMatch(queue, /id="group-tabs"/);
   assert.doesNotMatch(css, /group-scroll \{[^}]*position:\s*fixed/s);
   assert.match(css, /show-detail #group-tabs \{\s*display:\s*none/);
+  assert.match(js, /kiot-doc-head/);
+  assert.match(js, /kiot-line-tools/);
+  assert.match(js, /field-wide/);
+  assert.match(js, /· từ Zalo/);
+  assert.match(css, /min-width:\s*360px/);
+  assert.match(css, /kiot-grid[\s\S]*grid-template-columns:\s*1fr 1fr/);
 });
 
 function loadPlaywright() {
@@ -513,6 +519,46 @@ test('quick-row hit boxes, brand, and search chip fit the phone', {
     await page.waitForSelector('details.kiot-fold[open] .kiot-panel');
     await page.locator('details.kiot-fold[open] .kiot-panel').scrollIntoViewIfNeeded();
     const kiotBrand = await brandBox();
+    const kiotForm = await page.evaluate(() => {
+      const boxOf = node => {
+        if (!node) return null;
+        const b = node.getBoundingClientRect();
+        return { x: b.x, y: b.y, w: b.width, h: b.height, right: b.right };
+      };
+      const byId = prefix => document.querySelector('#detail [id^="' + prefix + '"]');
+      const wrap = input => input && input.closest('.field-block, label');
+      const name = boxOf(wrap(byId('kiot-name-')));
+      const phone = boxOf(wrap(byId('kiot-phone-')));
+      const addr = boxOf(wrap(byId('kiot-address-')));
+      const invoice = boxOf(document.querySelector('#detail input[name="invoice_code"]'));
+      const savedPhone = document.querySelector('#detail input[name="customer_phone"]');
+      const kiotPhone = byId('kiot-phone-');
+      const hint = document.querySelector('#detail .kiot-name-hint');
+      const docBtn = document.querySelector('#detail .kiot-docs button');
+      const fillBtn = [...document.querySelectorAll('#detail button')].find(btn => btn.textContent.includes('Điền vào đơn'));
+      const input = byId('kiot-name-');
+      const search = document.querySelector('#detail .kiot-line-tools input[type="search"]');
+      const qty = document.querySelector('#detail .kiot-qty');
+      const view = document.documentElement.clientWidth;
+      return {
+        overflow: document.documentElement.scrollWidth > view + 1,
+        name, phone, addr, invoice,
+        sameRow: !!(name && phone && Math.abs(name.y - phone.y) < 8 && phone.x >= name.right - 2),
+        addrWide: !!(addr && name && addr.w > name.w * 1.5),
+        inputH: input ? Math.round(input.getBoundingClientRect().height) : 0,
+        inputFont: input ? parseFloat(getComputedStyle(input).fontSize) : 0,
+        docH: docBtn ? Math.round(docBtn.getBoundingClientRect().height) : 0,
+        docY: docBtn ? Math.round(docBtn.getBoundingClientRect().top) : 0,
+        fillY: fillBtn ? Math.round(fillBtn.getBoundingClientRect().top) : 0,
+        hint: hint ? hint.textContent.trim() : '',
+        hintInLabel: !!(hint && hint.closest('label')),
+        savedPhoneName: savedPhone ? savedPhone.getAttribute('name') : '',
+        kiotPhoneName: kiotPhone ? kiotPhone.getAttribute('name') : '',
+        searchY: search ? Math.round(search.getBoundingClientRect().top) : 0,
+        qtyY: qty ? Math.round(qty.getBoundingClientRect().top) : 0,
+        confirm: [...document.querySelectorAll('#detail button')].some(btn => /Xác nhận tạo/.test(btn.textContent)),
+      };
+    });
 
     for (const [key, box] of Object.entries(brands)) {
       assert.equal(box.truncated, false, key + ' h1 ' + box.scroll + '/' + box.client + ' ' + box.text);
@@ -525,6 +571,20 @@ test('quick-row hit boxes, brand, and search chip fit the phone', {
     assert.notEqual(kiotBrand.version, 'none', 'kiot version ' + kiotBrand.version);
     assert.match(kiotBrand.versionText, /1\.0\.0/);
     assert.match(kiotBrand.text, /omni sale dmf/i);
+    assert.equal(kiotForm.overflow, false);
+    assert.equal(kiotForm.sameRow, true, 'name/phone row ' + JSON.stringify({ name: kiotForm.name, phone: kiotForm.phone }));
+    assert.equal(kiotForm.addrWide, true, 'address width ' + (kiotForm.addr && kiotForm.addr.w));
+    assert.ok(kiotForm.invoice, 'invoice field missing');
+    assert.ok(kiotForm.inputH >= 38 && kiotForm.inputH <= 44, 'input height ' + kiotForm.inputH);
+    assert.ok(kiotForm.inputFont >= 16, 'input font ' + kiotForm.inputFont);
+    assert.ok(kiotForm.docH >= 44, 'doc toggle height ' + kiotForm.docH);
+    assert.ok(Math.abs(kiotForm.docY - kiotForm.fillY) < 16, 'toggle/fill tops ' + kiotForm.docY + '/' + kiotForm.fillY);
+    assert.equal(kiotForm.hintInLabel, true);
+    assert.match(kiotForm.hint, /từ Zalo/);
+    assert.equal(kiotForm.savedPhoneName, 'customer_phone');
+    assert.equal(kiotForm.kiotPhoneName, null);
+    assert.ok(Math.abs(kiotForm.searchY - kiotForm.qtyY) < 16, 'product row ' + kiotForm.searchY + '/' + kiotForm.qtyY);
+    assert.equal(kiotForm.confirm, true);
     assert.equal(brands['list-390'].version, 'inline-block');
     assert.equal(brands['list-alert-390'].version, 'inline-block');
     assert.equal(brands['detail-390'].search, 'none');

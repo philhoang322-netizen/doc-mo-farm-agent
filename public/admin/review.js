@@ -1451,7 +1451,7 @@
     main.appendChild(el('div', { class: 'draft-label' }, [
       el('label', { for: 'draft-reply', text: 'Bản nháp trả lời' }),
     ]));
-    const reply = el('textarea', { id: 'draft-reply', name: 'draft_reply', rows: '8' });
+    const reply = el('textarea', { id: 'draft-reply', name: 'draft_reply', rows: '4' });
     reply.value = s.dirty ? (s.reply || '') : (d.draft_reply || '');
     if (locked) reply.disabled = true;
     reply.addEventListener('input', () => {
@@ -1460,6 +1460,7 @@
       s.dirty = true;
       persistReplies();
     });
+    autoGrow(reply, 4);
     main.appendChild(el('div', { class: 'field-block' }, [reply]));
     main.appendChild(el('p', { id: 'reply-error', class: 'reply-error', hidden: 'hidden' }));
     if (!locked) main.appendChild(learnToggle(s));
@@ -1931,7 +1932,6 @@
       lookupTimer: null,
     };
     const panel = el('section', { class: 'kiot-panel', id: 'kiot-panel-' + pid });
-    panel.appendChild(el('h4', { text: 'Tạo đơn KiotViet' }));
     panel.appendChild(el('p', {
       class: 'kiot-lead',
       text: 'Điền nhanh hoặc chọn từng món. Chưa tạo trên KiotViet cho đến khi bạn bấm xác nhận. Tin khách không tự gửi.',
@@ -1944,9 +1944,10 @@
       'aria-label': 'Nhập nhanh sản phẩm và số lượng',
     });
     quick.addEventListener('input', () => { state.touched.quick = true; dirty = true; state.quote = null; });
+    autoGrow(quick, 2);
     const quickBtn = el('button', { type: 'button', class: 'btn btn-sm', text: 'Điền vào đơn' });
     quickBtn.addEventListener('click', () => runQuick());
-    panel.appendChild(el('div', { class: 'kiot-quick-row' }, [quick, quickBtn]));
+    panel.appendChild(quick);
     const quickMsg = el('p', { class: 'kiot-msg', hidden: 'hidden' });
     panel.appendChild(quickMsg);
 
@@ -1982,17 +1983,19 @@
     orderBtn.addEventListener('click', () => setDoc('order'));
     docRow.appendChild(invoiceBtn);
     docRow.appendChild(orderBtn);
-    panel.appendChild(docRow);
+    panel.appendChild(el('div', { class: 'kiot-doc-head' }, [quickBtn, docRow]));
 
     const grid = el('div', { class: 'kiot-grid' });
     const seeded = seededKiotName(d);
     const nameInput = kiotInput('Tên khách', seeded.name, 'kiot-name-' + pid);
-    const nameHint = el('p', { class: 'kiot-name-hint', text: seeded.hint });
+    const nameHint = el('span', { class: 'kiot-name-hint', text: hintSuffix(seeded.hint) });
     nameHint.hidden = !seeded.hint;
-    nameInput.wrap.appendChild(nameHint);
+    const nameLabel = nameInput.wrap.querySelector('label');
+    if (nameLabel) nameLabel.appendChild(nameHint);
     const phoneInput = kiotInput('SĐT tra KiotViet', d.customer_phone || '', 'kiot-phone-' + pid, { type: 'tel', inputmode: 'tel' });
     const invoiceInput = adoptDraftField('invoice_code');
     const addrInput = kiotInput('Địa chỉ giao', addressText(d), 'kiot-address-' + pid);
+    addrInput.wrap.classList.add('field-wide');
     nameInput.input.addEventListener('input', () => {
       state.touched.name = true;
       dirty = true;
@@ -2029,6 +2032,7 @@
     discountInput.input.addEventListener('input', () => { state.quote = null; paintTotals(); });
     shipInput.input.addEventListener('input', () => { state.touched.ship = true; state.quote = null; paintTotals(); });
     noteInput.input.addEventListener('input', () => { dirty = true; });
+    noteInput.wrap.classList.add('field-wide');
     moneyRow.appendChild(discountInput.wrap);
     moneyRow.appendChild(shipInput.wrap);
     panel.appendChild(moneyRow);
@@ -2153,7 +2157,9 @@
       head.appendChild(remove);
       row.appendChild(head);
 
+      let tools = null;
       if (!line.sku) {
+        tools = el('div', { class: 'kiot-line-tools' });
         if (line.status === 'ambiguous' && line.candidates && line.candidates.length) {
           const pick = el('select', { 'aria-label': 'Chọn sản phẩm cho ' + (line.phrase || 'dòng') });
           pick.appendChild(el('option', { value: '', text: 'Có vài món khớp — chọn một' }));
@@ -2190,7 +2196,8 @@
           paintSearch(results, line);
           line._timer = setTimeout(() => fillSearch(query, results, line), 250);
         });
-        row.appendChild(search);
+        tools.appendChild(search);
+        row.appendChild(tools);
         row.appendChild(results);
       }
 
@@ -2218,7 +2225,13 @@
       qty.addEventListener('input', keepQty);
       qty.addEventListener('change', keepQty);
       qtyWrap.appendChild(qty);
-      row.appendChild(qtyWrap);
+      if (!tools) {
+        const bare = el('div', { class: 'kiot-line-tools' });
+        bare.appendChild(qtyWrap);
+        row.appendChild(bare);
+      } else {
+        tools.appendChild(qtyWrap);
+      }
 
       const meta = el('div', { class: 'kiot-meta' });
       meta.appendChild(el('span', { text: line.price != null ? vnd(line.price) : 'Giá —' }));
@@ -2468,7 +2481,7 @@
       if (!panel.isConnected) return;
       if (!state.touched.name && data.customer_name) {
         nameInput.input.value = data.customer_name;
-        nameHint.textContent = data.name_hint || '';
+        nameHint.textContent = hintSuffix(data.name_hint || '');
         nameHint.hidden = !data.name_hint;
       }
       if (!state.touched.phone && data.phone) phoneInput.input.value = data.phone;
@@ -2592,6 +2605,29 @@
       name: own.name,
       hint: own.source === 'fb' ? 'lấy từ Tên FB' : 'lấy từ Tên Zalo',
     };
+  }
+
+  function autoGrow(area, minLines) {
+    if (!area) return;
+    const fit = () => {
+      area.style.height = 'auto';
+      const style = getComputedStyle(area);
+      const line = parseFloat(style.lineHeight) || 22;
+      const pad = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      const border = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0);
+      const min = Math.ceil(line * minLines + pad + border);
+      area.style.height = Math.max(min, area.scrollHeight) + 'px';
+    };
+    area.addEventListener('input', fit);
+    requestAnimationFrame(fit);
+  }
+
+  function hintSuffix(hint) {
+    const text = String(hint || '').trim();
+    if (!text) return '';
+    if (/zalo/i.test(text)) return '· từ Zalo';
+    if (/fb/i.test(text)) return '· từ FB';
+    return '· ' + text.replace(/^lấy từ\s+/i, '');
   }
 
   function kiotInput(label, value, id, opts) {

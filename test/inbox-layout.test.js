@@ -189,7 +189,8 @@ test('390px inbox fits, keeps 44px targets, and starts the first card high', {
       assert.ok(tab.left >= -1 && tab.right <= metrics.view + 1, tab.text + ' right=' + tab.right);
     });
     const smallReal = metrics.small.filter(item => !(item.cls.includes('learn-check') && item.h >= 44));
-    assert.deepEqual(smallReal.filter(item => item.h < 44 || (item.tag === 'BUTTON' && item.h < 44 && item.w < 24)), []);
+    const fieldTag = item => item.tag === 'INPUT' || item.tag === 'TEXTAREA' || item.tag === 'SELECT';
+    assert.deepEqual(smallReal.filter(item => (fieldTag(item) ? item.h < 40 : item.h < 44)), []);
     metrics.inputFonts.forEach(size => assert.ok(parseFloat(size) >= 16, size));
     assert.equal(metrics.replyFont, '16px');
     assert.equal(metrics.primaryBg, 'rgb(15, 90, 53)');
