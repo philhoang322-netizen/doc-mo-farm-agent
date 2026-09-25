@@ -14,6 +14,7 @@ const catalog = require('./catalog');
 const db = require('./database');
 const quickEntry = require('./quickEntry');
 const channelNames = require('./channelNames');
+const customerLink = require('./customerLink');
 
 const BANK_BLOCK = 'HTX Nong Trai Doc Mo\nVCB 1058 43 7590';
 
@@ -592,6 +593,17 @@ async function prepareOrCreate(id, body, actorName) {
       });
     } catch (err) {
       console.error('Kiot customer code save skipped:', err.message);
+    }
+    try {
+      await customerLink.note({
+        phone,
+        name: customerName || draft.customer_name,
+        channel: draft.channel,
+        userId: draft.customer_user_id,
+        kiotCustomerId: created.customerId || kiotId || null,
+      });
+    } catch (err) {
+      console.error('Customer link skipped:', err.message);
     }
 
     let saved = null;

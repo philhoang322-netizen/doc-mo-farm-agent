@@ -12,6 +12,7 @@ const audit = require('./audit');
 const kiotInbox = require('./kiotInbox');
 const inboxSync = require('./inboxSync');
 const kiotviet = require('./kiotviet');
+const customerLink = require('./customerLink');
 const roster = require('./roster');
 const handover = require('./handover');
 const rosterPage = require('./rosterPage');
@@ -242,6 +243,20 @@ function sendAsset(name, type) {
   };
 }
 
+async function withProfiles(payload) {
+  const rows = payload && Array.isArray(payload.drafts) ? payload.drafts : [];
+  payload.drafts = await Promise.all(rows.map(async (draft) => {
+    try {
+      const view = await customerLink.viewForDraft(draft);
+      return { ...draft, customer_profile: view.profile, customer_history: view.history };
+    } catch (err) {
+      console.error('Customer profile skipped:', err.message);
+      return draft;
+    }
+  }));
+  return payload;
+}
+
 async function attachChannelNames(payload) {
   const rows = payload && payload.drafts;
   if (!Array.isArray(rows)) return payload;
@@ -282,7 +297,7 @@ async function list(req, res) {
       hop: typeof q.hop === 'string' && q.hop ? q.hop : null,
       viewer,
     });
-    res.json(await attachChannelNames(payload));
+    res.json(await withProfiles(await attachChannelNames(payload)));
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : 'Không tải được danh sách' });
   }
@@ -596,6 +611,76 @@ async function kiotCreate(req, res) {
   }
 }
 
+async function customerCard(req, res) {
+  try {
+    const draft = await drafts.getDraft(req.params.id);
+    if (!draft) return res.status(404).json({ error: 'Không thấy bản nháp' });
+    res.json(await customerLink.viewForDraft(draft));
+  } catch (e) {
+    console.error('Customer profile failed:', e.message);
+    res.status(500).json({ error: 'Không tải được hồ sơ khách' });
+  }
+}
+
+async function customerLinkSave(req, res) {
+  try {
+    const draft = await drafts.getDraft(req.body && req.body.draft_id);
+    if (!draft) return res.status(404).json({ error: 'Không thấy bản nháp' });
+    const phone = db.normalizePhone(req.body && req.body.phone);
+    if (!phone) return res.status(400).json({ error: 'Số điện thoại chưa đúng' });
+    const name = typeof req.body?.name === 'string' ? req.body.name : draft.customer_name;
+    const saved = await customerLink.note({
+      phone,
+      name,
+      channel: draft.channel,
+      userId: draft.customer_user_id,
+    });
+    if (!saved) return res.status(400).json({ error: 'Không gắn được hồ sơ' });
+    if (draft.customer_phone !== phone) {
+      await drafts.updateDraft(draft.id, { customer_phone: phone, customer_name: name || draft.customer_name }, {
+        actorName: actorNameFrom(req),
+      });
+    }
+    await audit.record({
+      actor: audit.managerActor(actorNameFrom(req)),
+      action: 'customer.linked',
+      entity_type: 'customer',
+      entity_id: phone,
+      after: customerLink.present(saved),
+      meta: { draft_id: draft.id, channel: draft.channel },
+    });
+    const fresh = await drafts.getDraft(draft.id);
+    res.json(await customerLink.viewForDraft(fresh || draft));
+  } catch (e) {
+    const status = e.status || 500;
+    res.status(status).json({ error: e.status ? e.message : 'Không gắn được hồ sơ' });
+  }
+}
+
+async function customerUnlink(req, res) {
+  try {
+    const phone = db.normalizePhone(req.body && req.body.phone);
+    const channel = String((req.body && req.body.channel) || '');
+    if (!phone) return res.status(400).json({ error: 'Số điện thoại chưa đúng' });
+    if (!['zalo', 'messenger', 'kiot'].includes(channel)) {
+      return res.status(400).json({ error: 'Kênh không hợp lệ' });
+    }
+    const saved = await customerLink.unlink({ phone, channel });
+    if (!saved) return res.status(404).json({ error: 'Không thấy hồ sơ' });
+    await audit.record({
+      actor: audit.managerActor(actorNameFrom(req)),
+      action: 'customer.unlinked',
+      entity_type: 'customer',
+      entity_id: phone,
+      after: { ...customerLink.present(saved), removed: channel },
+    });
+    res.json({ profile: customerLink.present(saved) });
+  } catch (e) {
+    const status = e.status || 500;
+    res.status(status).json({ error: e.status ? e.message : 'Không gỡ được hồ sơ' });
+  }
+}
+
 async function resumeCustomer(req, res) {
   const raw = req.body && req.body.external_key;
   const key = typeof raw === 'string' ? raw.trim() : '';
@@ -798,6 +883,9 @@ function mount(app) {
   app.get('/admin/api/drafts/:id/kiotviet', requireApi, kiotPrefill);
   app.post('/admin/api/drafts/:id/kiotviet', requireApi, kiotCreate);
   app.post('/admin/api/customers/resume', requireApi, resumeCustomer);
+  app.get('/admin/api/drafts/:id/customer', requireApi, customerCard);
+  app.post('/admin/api/customers/link', requireApi, customerLinkSave);
+  app.post('/admin/api/customers/unlink', requireApi, customerUnlink);
 }
 
 function fallback(req, res) {

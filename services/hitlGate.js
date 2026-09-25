@@ -22,6 +22,7 @@ const drafts = require('./drafts');
 const stations = require('./stations');
 const triage = require('./triage');
 const bizLine = require('./bizLine');
+const customerLink = require('./customerLink');
 
 const FALSEY = /^(0|false|no|off)$/i;
 
@@ -141,9 +142,11 @@ async function releaseToCustomer(p, text, extra = {}) {
     outbound = bizLine.DV_CLARIFY;
   }
 
+  const heardPhone = customerLink.phonesIn(`${p.text || ''}\n${source || ''}`)[0] || null;
   const draft = await drafts.createDraft({
     channel,
     customer_user_id: userId,
+    customer_phone: heardPhone,
     customer_name: clip(extra.customer_name || p.senderName, 200),
     customer_intent: clip(routed.storedIntent, 1000),
     customer_query: clip(typeof p.text === 'string' ? p.text : source, 2000),
@@ -159,6 +162,18 @@ async function releaseToCustomer(p, text, extra = {}) {
     triage_level: triaged.level,
     triage_label: triaged.label,
   });
+  if (heardPhone) {
+    try {
+      await customerLink.note({
+        phone: heardPhone,
+        name: extra.customer_name || p.senderName,
+        channel,
+        userId,
+      });
+    } catch (err) {
+      console.error('Customer link skipped:', err.message);
+    }
+  }
 
   let acked = false;
   // Messenger and Urgent stay silent until Approve & Send.

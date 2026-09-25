@@ -747,6 +747,118 @@
     if (!selectedId) showPlaceholder();
   }
 
+  const CUST_LABEL = { zalo: 'Zalo', messenger: 'Facebook', kiot: 'KiotViet' };
+
+  function vnd(n) {
+    return Number(n || 0).toLocaleString('vi-VN') + 'đ';
+  }
+
+  function customerPanel(d) {
+    const box = el('div', { class: 'cust-panel' });
+    box.addEventListener('click', (ev) => ev.stopPropagation());
+    box.appendChild(renderCustomer(d, {
+      profile: d.customer_profile || null,
+      history: d.customer_history || { available: false, reason: 'no_phone' },
+    }, () => reloadCustomer(d, box)));
+    return box;
+  }
+
+  function reloadCustomer(d, box) {
+    api('/admin/api/drafts/' + encodeURIComponent(d.id) + '/customer').then(data => {
+      d.customer_profile = data.profile;
+      d.customer_history = data.history;
+      box.textContent = '';
+      box.appendChild(renderCustomer(d, data, () => reloadCustomer(d, box)));
+    }).catch(err => {
+      box.appendChild(el('div', { class: 'cust-err', text: err.message || 'Chưa tải được hồ sơ khách' }));
+    });
+  }
+
+  function renderCustomer(d, data, reload) {
+    const profile = data && data.profile;
+    const history = data && data.history;
+    const wrap = el('div', { class: 'cust-body' });
+    const name = (profile && profile.name) || d.customer_name || 'Khách chưa có tên';
+    const phone = (profile && profile.phone) || d.customer_phone || '';
+    wrap.appendChild(el('div', { class: 'cust-name', text: phone ? name + ' · ' + phone : name }));
+    const channels = (profile && profile.channels) || [];
+    const chips = el('div', { class: 'cust-channels' });
+    if (!channels.length) chips.appendChild(el('span', { class: 'cust-muted', text: 'Chưa gắn kênh' }));
+    channels.forEach(channel => {
+      const chip = el('span', { class: 'cust-chip' });
+      chip.appendChild(document.createTextNode(CUST_LABEL[channel] || channel));
+      const drop = el('button', { type: 'button', class: 'cust-x', text: 'bỏ' });
+      drop.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        api('/admin/api/customers/unlink', {
+          method: 'POST',
+          body: JSON.stringify({ phone: profile.phone, channel }),
+        }).then(reload).catch(err => { statusNote(wrap, err.message); });
+      });
+      chip.appendChild(drop);
+      chips.appendChild(chip);
+    });
+    wrap.appendChild(chips);
+    wrap.appendChild(historyLine(history));
+    const form = el('form', { class: 'cust-link' });
+    const input = el('input', {
+      type: 'text',
+      name: 'phone',
+      placeholder: 'Gắn số điện thoại',
+      maxlength: '20',
+      value: phone,
+    });
+    input.value = phone;
+    input.addEventListener('click', (ev) => ev.stopPropagation());
+    const go = el('button', { type: 'submit', class: 'btn btn-sm', text: 'Gắn' });
+    form.appendChild(input);
+    form.appendChild(go);
+    form.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      api('/admin/api/customers/link', {
+        method: 'POST',
+        body: JSON.stringify({ draft_id: d.id, phone: input.value, name: d.customer_name || '' }),
+      }).then(reload).catch(err => { statusNote(wrap, err.message); });
+    });
+    wrap.appendChild(form);
+    return wrap;
+  }
+
+  function statusNote(wrap, message) {
+    const old = wrap.querySelector('.cust-err');
+    if (old) old.remove();
+    wrap.appendChild(el('div', { class: 'cust-err', text: message || 'Không lưu được' }));
+  }
+
+  function historyLine(history) {
+    const box = el('div', { class: 'cust-history' });
+    if (!history || history.available !== true) {
+      const reason = history && history.reason;
+      const text = reason === 'no_phone'
+        ? 'Nhập số để xem lịch sử mua.'
+        : (reason === 'unconfigured' ? 'Chưa nối KiotViet.' : 'Chưa lấy được lịch sử mua.');
+      box.appendChild(el('span', { class: 'cust-muted', text }));
+      return box;
+    }
+    if (!history.total_spent && !(history.orders || []).length) {
+      box.appendChild(el('span', { class: 'cust-muted', text: 'Chưa có đơn trên KiotViet.' }));
+      return box;
+    }
+    const bits = [
+      'Tổng ' + vnd(history.total_spent),
+      history.last_purchase ? 'lần cuối ' + history.last_purchase : '',
+      (history.unpaid_count ? history.unpaid_count + ' hóa đơn chưa thanh toán' : 'không nợ hóa đơn'),
+    ].filter(Boolean).join(' · ');
+    box.appendChild(el('div', { text: bits }));
+    (history.orders || []).forEach(order => {
+      const line = [order.date, order.code, vnd(order.total), order.unpaid ? 'chưa thanh toán' : ''].filter(Boolean).join(' · ');
+      box.appendChild(el('div', { class: 'cust-order', text: line }));
+    });
+    return box;
+  }
+
   function buildCard(d) {
       const s = ensureCard(d);
       if (!s.dirty) s.reply = d.draft_reply || d.ai_suggested_draft || '';
@@ -789,6 +901,7 @@
         'data-draft-id': d.id,
       });
       card.appendChild(btn);
+      card.appendChild(customerPanel(d));
 
       const openReply = d.approval_status !== 'SENT' && d.approval_status !== 'REJECTED' && !d.deleted_at;
       const replyLabel = el('div', { class: 'draft-label' }, [
