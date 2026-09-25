@@ -49,11 +49,15 @@ test('Messenger and Zalo names are cached, and a Graph error does not block', as
     customer_user_id: 'fb_1001',
     customer_name: 'Khách cũ',
   });
-  assert.equal(missed[0].source, 'id');
-  assert.equal(missed[0].text, 'fb_1001');
+  assert.equal(missed[0].text, 'Tên FB: Khách cũ');
+  assert.equal(missed.some(line => line.source === 'id'), false);
   assert.equal(graphCalls, 1);
-  const again = await names.forDraft({ channel: 'messenger', customer_user_id: 'fb_1001' });
-  assert.equal(again[0].text, 'fb_1001');
+  const again = await names.forDraft({
+    channel: 'messenger',
+    customer_user_id: 'fb_1001',
+    customer_name: 'Khách cũ',
+  });
+  assert.equal(again[0].text, 'Tên FB: Khách cũ');
   assert.equal(graphCalls, 1);
 
   messenger.graphHttp.get = async () => ({
@@ -97,7 +101,8 @@ test('Messenger and Zalo names are cached, and a Graph error does not block', as
     customer_user_id: 'zalo-miss',
     customer_name: 'Tên cũ',
   });
-  assert.equal(quiet[0].text, 'zalo-miss');
+  assert.equal(quiet[0].text, 'Tên Zalo: Tên cũ');
+  assert.equal(quiet.some(line => line.text === 'zalo-miss'), false);
 
   await names.remember('linked-1', {
     zalo: { name: 'Chị Hoa', avatar: 'https://example.com/hoa.jpg', fetched_at: new Date().toISOString() },
@@ -157,6 +162,34 @@ test('header priority is Kiot name and code, then channel, then phone, then id',
   const phone = names.headerLines({ phone: '0901234567', channelId: 'fb_1' });
   assert.equal(phone[0].text, '0901234567');
   assert.equal(phone[0].source, 'phone');
+
+  const stored = names.headerLines({
+    storedName: 'Trần Tuyết',
+    storedSource: 'fb',
+    phone: '0901234567',
+    channelId: 'fb_28343541935308908',
+  });
+  assert.equal(stored[0].text, 'Tên FB: Trần Tuyết');
+  assert.equal(stored.some(line => line.source === 'id'), false);
+
+  const profileBeforeStored = names.headerLines({
+    channels: [{ source: 'fb', label: 'Tên FB', name: 'Graph Name', via: 'profile' }],
+    storedName: 'Trần Tuyết',
+    storedSource: 'fb',
+    channelId: 'fb_1',
+  });
+  assert.equal(profileBeforeStored[0].text, 'Tên FB: Graph Name');
+
+  const storedBeforeThread = names.headerLines({
+    channels: [{ source: 'fb', label: 'Tên FB', name: 'Từ hội thoại', via: 'thread' }],
+    storedName: 'Trần Tuyết',
+    storedSource: 'fb',
+    phone: '0901234567',
+    channelId: 'fb_28343541935308908',
+  });
+  assert.equal(storedBeforeThread[0].text, 'Tên FB: Trần Tuyết');
+  assert.equal(storedBeforeThread.some(line => String(line.text).includes('Từ hội thoại')), false);
+  assert.equal(storedBeforeThread.some(line => line.source === 'id'), false);
 
   const idOnly = names.headerLines({ channelId: 'fb_9' });
   assert.equal(idOnly[0].text, 'fb_9');
@@ -276,6 +309,105 @@ test('a created Kiot customer code stays on the conversation without another loo
     assert.equal(lines[1].text, 'Tên FB: FB đã lưu');
   } finally {
     kiotviet.findCustomerByPhone = realFind;
+    restore();
+  }
+});
+
+test('a stored Messenger name shows when the Graph profile fails, and the id is not cached', async () => {
+  const errors = [];
+  const orig = console.error;
+  console.error = (...args) => { errors.push(args); };
+  const psid = '28343541935308908';
+  const userId = 'fb_' + psid;
+  let profileCalls = 0;
+  let threadCalls = 0;
+  process.env.FB_PAGE_ID = '111';
+  messenger.graphHttp.get = async (url, config) => {
+    assert.equal(String(url).includes('page-token-test'), false);
+    if (String(url).includes('/conversations')) {
+      threadCalls += 1;
+      assert.equal(config.headers.Authorization, 'Bearer page-token-test');
+      assert.equal(config.params.access_token, undefined);
+      return {
+        data: {
+          data: [{
+            participants: {
+              data: [
+                { id: '111', name: 'Doc Mo Farm' },
+                { id: String(config.params.user_id), name: 'Từ hội thoại' },
+              ],
+            },
+            messages: {
+              data: [{ from: { id: String(config.params.user_id), name: 'Từ hội thoại' } }],
+            },
+          }],
+        },
+      };
+    }
+    profileCalls += 1;
+    const err = new Error('(#200) App is in Development mode');
+    err.response = { status: 400, data: { error: { code: 200, message: 'permission and a secret' } } };
+    throw err;
+  };
+  try {
+    const t0 = Date.parse('2026-09-25T05:00:00.000Z');
+    const lines = await names.forDraft({
+      channel: 'messenger',
+      customer_user_id: userId,
+      customer_name: 'Trần Tuyết',
+    }, t0);
+    assert.equal(lines[0].text, 'Tên FB: Trần Tuyết');
+    assert.equal(lines.some(line => String(line.text).includes(psid)), false);
+    assert.equal(profileCalls, 1);
+    assert.equal(threadCalls, 0);
+    const logged = errors.filter(args => args[0] === 'FB profile skipped:');
+    assert.equal(logged.length, 1);
+    assert.equal(logged[0][1].psid, psid);
+    assert.equal(logged[0][1].code, '200');
+    assert.equal(JSON.stringify(logged).includes('page-token-test'), false);
+    assert.equal(JSON.stringify(logged).includes('secret'), false);
+
+    const saved = JSON.parse(fs.readFileSync(process.env.CHANNEL_NAMES_PATH, 'utf8'));
+    assert.equal(saved[userId].fb.name, null);
+    assert.equal(saved[userId].fb.missed, true);
+
+    await names.forDraft({
+      channel: 'messenger',
+      customer_user_id: userId,
+      customer_name: 'Trần Tuyết',
+    }, t0 + 60 * 1000);
+    assert.equal(profileCalls, 1);
+
+    await names.forDraft({
+      channel: 'messenger',
+      customer_user_id: userId,
+      customer_name: 'Trần Tuyết',
+    }, t0 + 16 * 60 * 1000);
+    assert.equal(profileCalls, 2);
+    assert.equal(errors.filter(args => args[0] === 'FB profile skipped:').length, 1);
+
+    const fromThread = await names.forDraft({
+      channel: 'messenger',
+      customer_user_id: 'fb_555001',
+    }, t0);
+    assert.equal(fromThread[0].text, 'Tên FB: Từ hội thoại');
+    assert.equal(fromThread.some(line => line.source === 'id'), false);
+    assert.equal(threadCalls, 1);
+    const threadSaved = JSON.parse(fs.readFileSync(process.env.CHANNEL_NAMES_PATH, 'utf8'));
+    assert.equal(threadSaved.fb_555001.fb.name, 'Từ hội thoại');
+    assert.equal(threadSaved.fb_555001.fb.missed, false);
+    assert.equal(threadSaved.fb_555001.fb.via, 'thread');
+
+    const storedWins = await names.forDraft({
+      channel: 'messenger',
+      customer_user_id: 'fb_555001',
+      customer_name: 'Trần Tuyết',
+    }, t0);
+    assert.equal(storedWins[0].text, 'Tên FB: Trần Tuyết');
+    assert.equal(threadCalls, 1);
+  } finally {
+    console.error = orig;
+    delete process.env.FB_PAGE_ID;
     restore();
   }
 });

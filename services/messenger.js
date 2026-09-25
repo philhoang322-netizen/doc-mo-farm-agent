@@ -895,6 +895,7 @@ module.exports = {
   sendImage,
   customerKey,
   psidFromUserId,
+  pageId,
   pageToken,
   messagesUrl,
   graphHttp,
