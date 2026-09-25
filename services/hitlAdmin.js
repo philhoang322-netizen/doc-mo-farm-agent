@@ -5,7 +5,6 @@
  */
 const fs = require('fs');
 const path = require('path');
-const express = require('express');
 const auth = require('./adminAuth');
 const db = require('./database');
 const drafts = require('./drafts');
@@ -24,6 +23,7 @@ const adminUsers = require('./adminUsers');
 const invoices = require('./invoices');
 const invoiceImage = require('./invoiceImage');
 const faqAdmin = require('./faqAdmin');
+const faqBody = require('./faqBody');
 
 const PUBLIC = path.join(__dirname, '..', 'public', 'admin');
 
@@ -1027,11 +1027,12 @@ function mount(app) {
   app.get('/admin/faq.js', requirePageAsset, sendAsset('faq.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/faq', faqAdmin.page);
   app.get('/admin/api/faq/rules', requireApi, faqAdmin.getRules);
-  app.post('/admin/api/faq/rules', requireApi, faqAdmin.saveRules);
+  app.post('/admin/api/faq/rules', faqBody.json, requireApi, faqAdmin.saveRules);
   app.post(
     '/admin/api/faq/import',
+    faqBody.json,
+    faqBody.text,
     requireApi,
-    express.text({ type: ['text/csv', 'text/plain', 'application/csv'], limit: '3mb' }),
     faqAdmin.importCsv
   );
   app.get('/admin/api/faq', requireApi, faqAdmin.list);

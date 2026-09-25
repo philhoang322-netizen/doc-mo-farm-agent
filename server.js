@@ -24,6 +24,7 @@ const hitl        = require('./services/hitlGate');
 const confidenceGate = require('./services/confidenceGate');
 const audit       = require('./services/audit');
 const messenger   = require('./services/messenger');
+const faqBody     = require('./services/faqBody');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -35,15 +36,18 @@ const PORT = process.env.PORT || 3000;
 // request and does not read or decode it. Its verify hook fills rawBody
 // only when capture did not (tests, or a parser skip) and tags verify_hook.
 app.use('/messenger/webhook', messenger.captureRawBody);
-app.use(express.json({
-  limit: '3mb',
+const jsonParser = express.json({
   verify: (req, _res, buf) => {
     if (!Buffer.isBuffer(req.rawBody)) {
       req.rawBody = buf;
       req.messengerRawSource = 'verify_hook';
     }
   },
-}));
+});
+app.use((req, res, next) => {
+  if (faqBody.skipGlobalJson(req)) return next();
+  return jsonParser(req, res, next);
+});
 app.use(express.urlencoded({ extended: false })); // admin form posts
 app.set('trust proxy', 1);
 
