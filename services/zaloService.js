@@ -84,6 +84,7 @@ async function refreshAccessToken() {
   const { ZALO_APP_ID, ZALO_APP_SECRET } = process.env;
   if (!refreshToken || !ZALO_APP_ID || !ZALO_APP_SECRET) {
     console.error('❌ Cannot refresh Zalo token: missing refresh token / ZALO_APP_ID / ZALO_APP_SECRET');
+    try { require('./healthWatch').noteFailure('zalo', 'token'); } catch (_) {}
     return false;
   }
   try {
@@ -105,12 +106,23 @@ async function refreshAccessToken() {
       // setTokens persists both — the rotated refresh token must not be lost.
       setTokens(res.data.access_token, res.data.refresh_token);
       console.log('🔄 Zalo access token refreshed and saved to database.');
+      try {
+        const health = require('./healthWatch');
+        const expiresIn = Number(res.data.expires_in);
+        if (Number.isFinite(expiresIn) && expiresIn > 0 && expiresIn < 6 * 3600) {
+          health.noteFailure('zalo', 'expiring');
+        } else {
+          health.noteSuccess('zalo');
+        }
+      } catch (_) {}
       return true;
     }
     console.error('❌ Token refresh failed:', JSON.stringify(res.data));
+    try { require('./healthWatch').noteFailure('zalo', 'token'); } catch (_) {}
     return false;
   } catch (err) {
     console.error('❌ Token refresh error:', err.response?.data || err.message);
+    try { require('./healthWatch').noteFailure('zalo', 'token'); } catch (_) {}
     return false;
   }
 }
@@ -129,6 +141,9 @@ async function postMessage(payload, attempt = 1) {
 
   // -216 / -124: invalid or expired access token → try refresh once
   const tokenErrors = [-216, -124, -204];
+  if (data && tokenErrors.includes(data.error)) {
+    try { require('./healthWatch').noteFailure('zalo', 'token'); } catch (_) {}
+  }
   if (attempt === 1 && data && tokenErrors.includes(data.error)) {
     console.warn(`⚠️  Zalo token error ${data.error} (${data.message}). Refreshing...`);
     const ok = await refreshAccessToken();

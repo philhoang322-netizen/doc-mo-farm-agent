@@ -594,6 +594,14 @@ app.get('/debug/merge-all', async (req, res) => {
   }
 });
 
+// GET /health — per-integration status for an external uptime monitor.
+// No auth and no secrets. 503 when something we have seen is degraded.
+app.get('/health', (req, res) => {
+  const healthWatch = require('./services/healthWatch');
+  const body = healthWatch.publicView();
+  res.status(body.status === 'ok' ? 200 : 503).json(body);
+});
+
 // GET /debug/health?key=... — one look at everything that can silently rot.
 // Same data the scheduled self-check uses. Add &run=1 to force a full pass
 // (repairs + alert) instead of a read-only snapshot.
@@ -1128,6 +1136,7 @@ app.use('/admin', hitlAdmin.fallback);
 
 selfCheck.start();
 followup.start();
+require('./services/healthWatch').start();
 
 app.listen(PORT, () => {
   console.log(`🚀 Doc Mo Farm AI Agent running on port ${PORT}`);

@@ -54,22 +54,30 @@ function setTransportForTests(fn) {
 
 async function anthropicCreate(client, params) {
   const prepared = prepareOutbound('anthropic', params);
-  if (transport) {
-    const response = await transport(prepared);
+  try {
+    const response = transport
+      ? await transport(prepared)
+      : await client.messages.create(prepared.body);
+    try { require('./healthWatch').noteSuccess('llm'); } catch (_) {}
     return { response, piiReport: prepared.report };
+  } catch (err) {
+    try { require('./healthWatch').noteFailure('llm', 'exception'); } catch (_) {}
+    throw err;
   }
-  const response = await client.messages.create(prepared.body);
-  return { response, piiReport: prepared.report };
 }
 
 async function openaiChat(client, params) {
   const prepared = prepareOutbound('openai', params);
-  if (transport) {
-    const response = await transport(prepared);
+  try {
+    const response = transport
+      ? await transport(prepared)
+      : await client.chat.completions.create(prepared.body);
+    try { require('./healthWatch').noteSuccess('llm'); } catch (_) {}
     return { response, piiReport: prepared.report };
+  } catch (err) {
+    try { require('./healthWatch').noteFailure('llm', 'exception'); } catch (_) {}
+    throw err;
   }
-  const response = await client.chat.completions.create(prepared.body);
-  return { response, piiReport: prepared.report };
 }
 
 module.exports = {

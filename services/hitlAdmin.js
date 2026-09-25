@@ -557,6 +557,9 @@ function mount(app) {
   app.get('/admin/api/channels', requireApi, channels);
   app.post('/admin/api/channels', requireApi, createChannel);
   app.get('/admin/api/stats', requireApi, stats);
+  app.get('/admin/api/health', requireApi, (req, res) => {
+    res.json(require('./healthWatch').adminView());
+  });
   app.get('/admin/api/drafts', requireApi, list);
   app.post('/admin/api/drafts', requireApi, create);
   app.patch('/admin/api/drafts/:id', requireApi, patch);

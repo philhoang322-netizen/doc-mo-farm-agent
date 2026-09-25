@@ -687,6 +687,8 @@ async function selectGraphVerifiedEvents(body, log) {
       } else {
         console.error('messenger_graph_verify_failed', verdict.log);
         record({ type: 'messenger_graph_verify_failed', ...verdict.log });
+        try { require('./healthWatch').noteFailure('messenger', 'graph_verify'); } catch (_) {}
+        try { require('./healthWatch').noteGraphResult(verdict.log); } catch (_) {}
       }
     }
     if (kept.length) entries.push({ ...entry, messaging: kept });
@@ -845,13 +847,16 @@ function mount(app, deps) {
           ...detail,
         });
         log({ type: 'messenger_skip_verify_enabled', ...detail });
+        try { require('./healthWatch').noteFailure('messenger', 'verify'); } catch (_) {}
       } else if (verifyMode() === 'hmac_or_graph') {
         console.error('messenger_bad_signature', detail);
         log({ type: 'messenger_bad_signature', ...detail });
+        try { require('./healthWatch').noteFailure('messenger', 'verify'); } catch (_) {}
         graphGate = true;
       } else {
         console.error('messenger_bad_signature', detail);
         log({ type: 'messenger_bad_signature', ...detail });
+        try { require('./healthWatch').noteFailure('messenger', 'verify'); } catch (_) {}
         return res.status(403).json({ ok: false, error: 'bad_signature' });
       }
     }

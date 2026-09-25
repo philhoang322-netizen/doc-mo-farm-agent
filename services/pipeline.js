@@ -64,6 +64,7 @@ async function handleMessage(p) {
   return ops.withLock(`${p.channel}:${p.externalKey}`, async () => {
     try {
       await noteInbound(p, p.text);
+      try { require('./healthWatch').noteSuccess('pipeline'); } catch (_) {}
       if (p.typing) p.typing(p.replyTo).catch(() => {});
 
       let customer = await db.getOrCreateCustomer(p.externalKey, p.senderName);
@@ -312,6 +313,7 @@ async function handleMessage(p) {
     } catch (err) {
       console.error(`Pipeline error (${p.channel}):`, err);
       log({ type: 'error', channel: p.channel, error: err.message });
+      try { require('./healthWatch').noteFailure('pipeline', 'exception'); } catch (_) {}
       // Same gate as a normal reply: the apology is customer-facing content.
       // With approval on, it becomes a draft. With approval off, it is sent.
       try {
@@ -645,6 +647,7 @@ async function handleFollow(p) {
 }
 
 async function noteInbound(p, text) {
+  try { require('./healthWatch').noteInbound(p.channel); } catch (_) { /* health must not block a draft */ }
   const conversation = String(p.externalKey || '').trim();
   if (!conversation) return;
   await audit.record({

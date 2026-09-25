@@ -2208,12 +2208,51 @@
     if (document.visibilityState === 'visible') load({ background: true });
   });
 
+  function ictStamp(iso) {
+    if (!iso) return 'chưa có';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return 'chưa có';
+    return new Intl.DateTimeFormat('vi-VN', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      hour: '2-digit',
+      minute: '2-digit',
+      day: '2-digit',
+      month: '2-digit',
+      hourCycle: 'h23',
+    }).format(d);
+  }
+
+  async function paintHealth() {
+    const el = document.getElementById('health-banner');
+    if (!el) return;
+    try {
+      const res = await fetch('/admin/api/health', {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const alerts = data.alerts || [];
+      const rows = data.integrations || [];
+      el.hidden = false;
+      el.classList.toggle('bad', alerts.length > 0);
+      el.textContent = '';
+      alerts.forEach(a => el.appendChild(elFn('p', { class: 'health-alert', text: a.text })));
+      const line = rows.map(r => r.label + ' ' + ictStamp(r.lastSuccessAt)).join(' · ');
+      el.appendChild(elFn('p', { class: 'health-times', text: line || 'Chưa có mốc thành công.' }));
+    } catch (_) { /* a health miss must not touch the inbox */ }
+  }
+
+  function elFn(tag, attrs, children) { return el(tag, attrs, children); }
+
   function startPolling() {
     const pollMs = Number(new URLSearchParams(location.search).get('pollms'));
     const interval = Number.isFinite(pollMs) && pollMs >= 200 && pollMs <= 60000 ? pollMs : 20000;
     setInterval(() => {
       if (document.visibilityState === 'visible' && !busy) load({ background: true });
     }, interval);
+    paintHealth();
+    setInterval(() => { if (document.visibilityState === 'visible') paintHealth(); }, 60000);
   }
 
   syncTabs();
