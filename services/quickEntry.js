@@ -48,13 +48,14 @@ function isWeightUnit(unit) {
   return u === 'kg' || u === 'g' || u === 'lang' || u.includes('kg');
 }
 
-const UNIT_WORD = 'kg|g|gr|gram|ky|ký|ki|lạng|lang|l|ml';
+const UNIT_WORD = 'kg|gram|gr|ky|ký|ki|lạng|lang|ml|g|l';
+const UNIT_TOKEN = '(?:' + UNIT_WORD + ')(?![a-zA-Z0-9])';
 const LEADING = new RegExp(
-  '^(\\d+(?:[.,]\\d+)?)\\s*(' + UNIT_WORD + ')?\\s*(?:x\\s+)?(.+)$',
+  '^(\\d+(?:[.,]\\d+)?)\\s*(' + UNIT_TOKEN + ')?\\s*(?:x\\s+)?(.+)$',
   'i'
 );
 const TRAILING = new RegExp(
-  '^(.+?)\\s+(?:x\\s*)?(\\d+(?:[.,]\\d+)?)\\s*(' + UNIT_WORD + ')?$',
+  '^(.+?)\\s+(?:x\\s*)?(\\d+(?:[.,]\\d+)?)\\s*(' + UNIT_TOKEN + ')?$',
   'i'
 );
 

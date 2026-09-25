@@ -624,30 +624,7 @@ async function publicInvoice(req, res) {
     }
     row = await invoices.backfillCustomerCode(row);
     const img = `/hd/${encodeURIComponent(row.code)}/anh?t=${encodeURIComponent(invoices.sign(row.code))}`;
-    const total = Math.round(row.total).toLocaleString('vi-VN');
-    const phone = row.customer_phone ? escapeHtml(row.customer_phone) : '';
-    const stamp = row.created_at ? new Intl.DateTimeFormat('vi-VN', {
-      timeZone: 'Asia/Ho_Chi_Minh', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
-    }).format(new Date(row.created_at)) : '';
-    const meta = [phone, stamp, `Tổng ${total}đ`, 'VCB 1058437590', `nội dung CK: ${escapeHtml(row.code)}`].filter(Boolean).join(' · ');
-    res.type('html').send(`<!doctype html>
-<html lang="vi"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(row.code)}</title>
-<style>
-  body { margin: 0; background: #f6f3ee; color: #1c1712; font: 17px/1.45 "Be Vietnam Pro", sans-serif; }
-  main { max-width: 720px; margin: 0 auto; padding: 16px; }
-  .id-row { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 8px; min-width: 0; }
-  .id-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 22px; font-weight: 700; }
-  .id-code { flex: 0 0 auto; white-space: nowrap; font-size: 15px; font-weight: 600; color: #0f5a35; }
-  .id-when { flex: 0 0 auto; white-space: nowrap; font-size: 13px; font-weight: 600; color: #5c564e; }
-  .meta { margin: 6px 0 10px; color: #5c564e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  img { width: 100%; height: auto; background: #fff; border-radius: 12px; }
-</style></head><body><main>
-${invoiceImage.headerHtml(row)}
-<p class="meta">${meta}</p>
-<img src="${img}" alt="Hoá đơn ${escapeHtml(row.code)}">
-</main></body></html>`);
+    res.type('html').send(invoiceImage.pageHtml(row, img));
   } catch (e) {
     console.error('Public invoice failed:', e.message);
     res.status(500).type('html').send('Không mở được hoá đơn');
@@ -1026,6 +1003,7 @@ function mount(app) {
   app.get('/admin/inbox-refresh.js', requirePageAsset, sendAsset('inbox-refresh.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/inbox-order.js', requirePageAsset, sendAsset('inbox-order.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/kiot-picker.js', requirePageAsset, sendAsset('kiot-picker.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/kiot-lines.js', requirePageAsset, sendAsset('kiot-lines.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/card-time.js', requirePageAsset, sendAsset('card-time.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/undo-delete.js', requirePageAsset, sendAsset('undo-delete.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/send-once.js', requirePageAsset, sendAsset('send-once.js', 'text/javascript; charset=utf-8'));

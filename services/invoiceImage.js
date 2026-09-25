@@ -169,6 +169,54 @@ function headerHtml(invoice) {
   return `<div class="id-row">${bits.join('')}</div>`;
 }
 
+function moneyText(n) {
+  return `${Math.round(Number(n) || 0).toLocaleString('vi-VN')}đ`;
+}
+
+/** Every line under the one-row header. The header itself stays name + Mã KH + Mã HĐ. */
+function linesHtml(invoice) {
+  const items = Array.isArray(invoice && invoice.items) ? invoice.items : [];
+  const rows = items.map(item => {
+    const name = escHtml(item.name || item.product_name || 'Sản phẩm');
+    const qty = escHtml(item.quantity ?? '');
+    const amount = item.amount != null ? item.amount : Number(item.price) * Number(item.quantity);
+    return `<li><span>${name} × ${qty}</span><span>${moneyText(amount)}</span></li>`;
+  }).join('');
+  const total = Math.round(Number(invoice && invoice.total) || 0);
+  return `<ul class="inv-lines">${rows}</ul><p class="inv-total">Tổng ${moneyText(total)}</p>`;
+}
+
+function pageHtml(row, imgSrc) {
+  const total = Math.round(Number(row && row.total) || 0).toLocaleString('vi-VN');
+  const phone = row && row.customer_phone ? escHtml(row.customer_phone) : '';
+  const stamp = row && row.created_at ? new Intl.DateTimeFormat('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+  }).format(new Date(row.created_at)) : '';
+  const code = escHtml(row && row.code);
+  const meta = [phone, stamp, `Tổng ${total}đ`, 'VCB 1058437590', `nội dung CK: ${code}`].filter(Boolean).join(' · ');
+  return `<!doctype html>
+<html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${code}</title>
+<style>
+  body { margin: 0; background: #f6f3ee; color: #1c1712; font: 17px/1.45 "Be Vietnam Pro", sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 16px; }
+  .id-row { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 8px; min-width: 0; }
+  .id-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 22px; font-weight: 700; }
+  .id-code { flex: 0 0 auto; white-space: nowrap; font-size: 15px; font-weight: 600; color: #0f5a35; }
+  .meta { margin: 6px 0 10px; color: #5c564e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .inv-lines { list-style: none; margin: 0 0 8px; padding: 0; }
+  .inv-lines li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid #e7e1d8; }
+  .inv-total { margin: 8px 0 12px; font-size: 20px; font-weight: 700; }
+  img { width: 100%; height: auto; background: #fff; border-radius: 12px; }
+</style></head><body><main>
+${headerHtml(row)}
+<p class="meta">${meta}</p>
+${linesHtml(row)}
+<img src="${escHtml(imgSrc || '')}" alt="Hoá đơn ${code}">
+</main></body></html>`;
+}
+
 function drawHeader(ctx, slots, y) {
   for (const key of ['name', 'kh', 'hd', 'date']) {
     const slot = slots[key];
@@ -313,4 +361,4 @@ async function render(invoice) {
   return pngBuffer(img);
 }
 
-module.exports = { render, headerHtml, layoutHeader, FARM, WIDTH };
+module.exports = { render, headerHtml, linesHtml, pageHtml, layoutHeader, FARM, WIDTH };

@@ -1958,12 +1958,15 @@
 
   function kiotPanel(d, prefix) {
     const pid = prefix ? String(prefix) : 'detail';
+    const savedKiot = (ensureCard(d).kiot && window.kiotLines)
+      ? window.kiotLines.restore(ensureCard(d).kiot)
+      : null;
     const state = {
-      document: 'invoice',
-      lines: [blankKiotLine()],
+      document: savedKiot ? savedKiot.document : 'invoice',
+      lines: savedKiot && savedKiot.lines.length ? savedKiot.lines : [blankKiotLine()],
       quote: null,
       submitting: false,
-      touched: {},
+      touched: savedKiot ? Object.assign({}, savedKiot.touched) : {},
       existing: kiotMark(d),
       acknowledge: false,
       kiotCustomer: null,
@@ -1981,7 +1984,7 @@
       placeholder: '1 xuc xich, 2 nước nghệ lên men',
       'aria-label': 'Nhập nhanh sản phẩm và số lượng',
     });
-    quick.addEventListener('input', () => { state.touched.quick = true; dirty = true; state.quote = null; });
+    quick.addEventListener('input', () => { state.touched.quick = true; dirty = true; state.quote = null; rememberKiot(); });
     autoGrow(quick, 2);
     const quickBtn = el('button', { type: 'button', class: 'btn btn-sm', text: 'Điền vào đơn' });
     quickBtn.addEventListener('click', () => runQuick());
@@ -2017,6 +2020,7 @@
       invoiceBtn.classList.toggle('active', kind === 'invoice');
       orderBtn.classList.toggle('active', kind === 'order');
       paintSummary();
+      if (typeof rememberKiot === 'function') rememberKiot();
     }
     invoiceBtn.addEventListener('click', () => setDoc('invoice'));
     orderBtn.addEventListener('click', () => setDoc('order'));
@@ -2040,14 +2044,16 @@
       dirty = true;
       nameHint.textContent = '';
       nameHint.hidden = true;
+      rememberKiot();
     });
     phoneInput.input.addEventListener('input', () => {
       state.touched.phone = true;
       dirty = true;
       state.quote = null;
       scheduleKiotLookup();
+      rememberKiot();
     });
-    addrInput.input.addEventListener('input', () => { state.touched.address = true; dirty = true; });
+    addrInput.input.addEventListener('input', () => { state.touched.address = true; dirty = true; rememberKiot(); });
     grid.appendChild(nameInput.wrap);
     grid.appendChild(phoneInput.wrap);
     if (invoiceInput) grid.appendChild(invoiceInput.wrap);
@@ -2056,10 +2062,12 @@
 
     const linesEl = el('div', { class: 'kiot-lines' });
     panel.appendChild(linesEl);
-    const addBtn = el('button', { type: 'button', class: 'btn btn-sm', text: 'Thêm dòng' });
+    const addBtn = el('button', { type: 'button', class: 'btn btn-sm kiot-add', text: 'Thêm dòng' });
+    addBtn.textContent = '+ Thêm sản phẩm';
     addBtn.addEventListener('click', () => {
-      state.lines.push(blankKiotLine());
+      state.lines = window.kiotLines ? window.kiotLines.addLine(state.lines) : state.lines.concat([blankKiotLine()]);
       state.quote = null;
+      dirty = true;
       paintLines();
     });
     panel.appendChild(addBtn);
@@ -2068,9 +2076,9 @@
     const discountInput = kiotInput('Giảm giá (đ)', '0', 'kiot-discount-' + pid, { inputmode: 'decimal' });
     const shipInput = kiotInput('Phí ship (đ)', '0', 'kiot-ship-' + pid, { inputmode: 'decimal' });
     const noteInput = kiotInput('Ghi chú', '', 'kiot-note-' + pid);
-    discountInput.input.addEventListener('input', () => { state.quote = null; paintTotals(); });
-    shipInput.input.addEventListener('input', () => { state.touched.ship = true; state.quote = null; paintTotals(); });
-    noteInput.input.addEventListener('input', () => { dirty = true; });
+    discountInput.input.addEventListener('input', () => { state.quote = null; paintTotals(); rememberKiot(); });
+    shipInput.input.addEventListener('input', () => { state.touched.ship = true; state.quote = null; paintTotals(); rememberKiot(); });
+    noteInput.input.addEventListener('input', () => { dirty = true; rememberKiot(); });
     noteInput.wrap.classList.add('field-wide');
     moneyRow.appendChild(discountInput.wrap);
     moneyRow.appendChild(shipInput.wrap);
@@ -2150,6 +2158,35 @@
       }
     }
 
+    function lineAmountText(line) {
+      const amount = window.kiotLines ? window.kiotLines.lineAmount(line) : null;
+      if (amount == null) {
+        const price = Number(line.price);
+        const qty = Number(line.quantity);
+        if (!Number.isFinite(price) || !Number.isFinite(qty)) return 'Thành tiền —';
+        return 'Thành tiền ' + vnd(price * qty);
+      }
+      return 'Thành tiền ' + vnd(amount);
+    }
+
+    function rememberKiot() {
+      if (!window.kiotLines) return;
+      const s = ensureCard(d);
+      s.kiot = window.kiotLines.snapshot({
+        document: state.document,
+        lines: state.lines,
+        quick: quick.value,
+        name: nameInput.input.value,
+        phone: phoneInput.input.value,
+        address: addrInput.input.value,
+        discount: discountInput.input.value,
+        ship: shipInput.input.value,
+        note: noteInput.input.value,
+        touched: state.touched,
+      });
+      s.kiotDirty = true;
+    }
+
     function showError(text) {
       if (!text) {
         err.classList.add('hidden');
@@ -2161,6 +2198,7 @@
     }
 
     function payloadLines() {
+      if (window.kiotLines) return window.kiotLines.payloadLines(state.lines);
       return state.lines.filter(line => line.sku || line.name || line.phrase).map(line => ({
         sku: line.sku || '',
         product_name: line.name || line.phrase || '',
@@ -2176,6 +2214,9 @@
     }
 
     function localTotal() {
+      if (window.kiotLines) {
+        return window.kiotLines.orderTotal(state.lines, moneyVal(discountInput.input), moneyVal(shipInput.input));
+      }
       const sub = state.lines.reduce((sum, line) => {
         const price = Number(line.price);
         const qty = Number(line.quantity);
@@ -2187,7 +2228,7 @@
 
     function paintTotals() {
       const ready = state.lines.some(line => line.sku && line.price != null);
-      totals.textContent = ready ? 'Tổng tạm tính: ' + vnd(localTotal()) : 'Chọn sản phẩm để thấy giá KiotViet.';
+      totals.textContent = ready ? ('Tổng ' + vnd(localTotal())) : 'Chọn sản phẩm để thấy giá KiotViet.';
     }
 
     function paintSummary() {
@@ -2223,9 +2264,11 @@
 
     function paintLines() {
       linesEl.textContent = '';
+      linesEl.dataset.count = String(state.lines.length);
       state.lines.forEach((line, index) => linesEl.appendChild(lineRow(line, index)));
       paintTotals();
       paintSummary();
+      rememberKiot();
     }
 
     function lineRow(line, index) {
@@ -2241,9 +2284,11 @@
       } else {
         head.appendChild(el('strong', { text: 'Sản phẩm' }));
       }
-      const remove = el('button', { type: 'button', class: 'kiot-remove', text: 'Xoá' });
+      const remove = el('button', { type: 'button', class: 'kiot-remove', text: 'Xoá', 'aria-label': 'Bỏ dòng này' });
       remove.addEventListener('click', () => {
-        state.lines.splice(index, 1);
+        state.lines = window.kiotLines
+          ? window.kiotLines.removeLine(state.lines, index)
+          : state.lines.filter((_, i) => i !== index);
         if (!state.lines.length) state.lines.push(blankKiotLine());
         state.quote = null;
         dirty = true;
@@ -2265,7 +2310,9 @@
           pick.addEventListener('change', () => {
             const cand = line.candidates[Number(pick.value)];
             if (!cand) return;
-            applyProduct(line, cand);
+            state.lines = window.kiotLines
+              ? window.kiotLines.chooseProduct(state.lines, index, cand)
+              : (applyProduct(line, cand), state.lines);
             state.quote = null;
             dirty = true;
             paintLines();
@@ -2275,7 +2322,7 @@
         const search = el('input', { type: 'search', placeholder: 'Tìm tên hoặc mã KiotViet', 'aria-label': 'Tìm sản phẩm', autocomplete: 'off' });
         search.value = line.query || '';
         const results = el('div', { class: 'kiot-results' });
-        paintSearch(results, line);
+        paintSearch(results, line, index);
         search.addEventListener('input', () => {
           line.query = search.value;
           dirty = true;
@@ -2284,12 +2331,12 @@
           if (String(query || '').trim().length < 2) {
             line.searchPhase = 'idle';
             line.hits = [];
-            paintSearch(results, line);
+            paintSearch(results, line, index);
             return;
           }
           line.searchPhase = 'loading';
-          paintSearch(results, line);
-          line._timer = setTimeout(() => fillSearch(query, results, line), 250);
+          paintSearch(results, line, index);
+          line._timer = setTimeout(() => fillSearch(query, results, line, index), 250);
         });
         tools.appendChild(search);
         row.appendChild(tools);
@@ -2310,11 +2357,14 @@
         const shown = window.kiotPicker ? window.kiotPicker.qtyText(qty.value) : String(qty.value || '1');
         if (qty.value !== shown) qty.value = shown;
         line.quantity = window.kiotPicker ? window.kiotPicker.normalizeQty(shown) : (Number(shown) || 1);
+        if (window.kiotLines) window.kiotLines.restock(line);
         state.quote = null;
         dirty = true;
         paintTotals();
         const totalEl = row.querySelector('.kiot-line-total');
-        if (totalEl) totalEl.textContent = line.price != null && Number.isFinite(line.quantity) ? vnd(line.price * line.quantity) : '—';
+        if (totalEl) totalEl.textContent = lineAmountText(line);
+        const stockEl = row.querySelector('.kiot-stock');
+        if (stockEl) stockEl.textContent = line.sku ? stockText(line.stock) : '';
         confirmBtn.disabled = true;
       };
       qty.addEventListener('input', keepQty);
@@ -2329,11 +2379,8 @@
       }
 
       const meta = el('div', { class: 'kiot-meta' });
-      meta.appendChild(el('span', { text: line.price != null ? vnd(line.price) : 'Giá —' }));
-      meta.appendChild(el('span', {
-        class: 'kiot-line-total',
-        text: line.price != null && Number.isFinite(Number(line.quantity)) ? vnd(line.price * line.quantity) : '—',
-      }));
+      meta.appendChild(el('span', { class: 'kiot-unit', text: line.price != null ? ('Đơn giá ' + vnd(line.price)) : 'Đơn giá —' }));
+      meta.appendChild(el('span', { class: 'kiot-line-total', text: lineAmountText(line) }));
       const stockCls = line.stock && line.stock.level === 'blocked' ? 'bad' : line.stock && line.stock.level === 'low' ? 'warn' : '';
       meta.appendChild(el('span', { class: 'kiot-stock ' + stockCls, text: line.sku ? stockText(line.stock) : '' }));
       row.appendChild(meta);
@@ -2361,16 +2408,16 @@
       return bits.join(' · ') || 'Sản phẩm';
     }
 
-    function paintSearch(box, line) {
+    function paintSearch(box, line, index) {
       box.textContent = '';
       const note = window.kiotPicker ? window.kiotPicker.searchNote(line.searchPhase) : '';
       if (note) box.appendChild(el('p', { class: 'kiot-search-note', text: note }));
       (line.hits || []).slice(0, 8).forEach(product => {
         const btn = el('button', { type: 'button', class: 'kiot-hit', text: hitText(product) });
         btn.addEventListener('click', () => {
-          applyProduct(line, product);
-          line.hits = [];
-          line.searchPhase = 'idle';
+          state.lines = window.kiotLines
+            ? window.kiotLines.chooseProduct(state.lines, index, product)
+            : (applyProduct(line, product), state.lines);
           state.quote = null;
           dirty = true;
           paintLines();
@@ -2379,12 +2426,12 @@
       });
     }
 
-    async function fillSearch(q, box, line) {
+    async function fillSearch(q, box, line, index) {
       const query = String(q || '').trim();
       if (query.length < 2) {
         line.searchPhase = 'idle';
         line.hits = [];
-        paintSearch(box, line);
+        paintSearch(box, line, index);
         return;
       }
       if (String(line.query || '').trim() !== query) return;
@@ -2394,12 +2441,12 @@
         const products = (data.products || []).slice(0, 8);
         line.hits = products;
         line.searchPhase = products.length ? 'ok' : 'empty';
-        paintSearch(box, line);
+        paintSearch(box, line, index);
       } catch (e) {
         if (String(line.query || '').trim() !== query) return;
         line.hits = [];
         line.searchPhase = 'error';
-        paintSearch(box, line);
+        paintSearch(box, line, index);
       }
     }
 
@@ -2413,19 +2460,21 @@
           body: JSON.stringify({ text: quick.value }),
         });
         const rows = data.lines || [];
-        state.lines = rows.length ? rows.map(row => ({
-          sku: row.sku || '',
-          name: row.name || '',
-          unit: row.unit || '',
-          price: row.price,
-          quantity: row.quantity || 1,
-          phrase: row.phrase || '',
-          status: row.status || 'unmatched',
-          warning: row.warning || '',
-          stock: row.stock || null,
-          candidates: row.candidates || [],
-          query: row.status === 'unmatched' ? (row.phrase || '') : '',
-        })) : [blankKiotLine()];
+        state.lines = window.kiotLines
+          ? window.kiotLines.applyQuick(state.lines, rows)
+          : (rows.length ? rows.map(row => ({
+            sku: row.sku || '',
+            name: row.name || '',
+            unit: row.unit || '',
+            price: row.price,
+            quantity: row.quantity || 1,
+            phrase: row.phrase || '',
+            status: row.status || 'unmatched',
+            warning: row.warning || '',
+            stock: row.stock || null,
+            candidates: row.candidates || [],
+            query: row.status === 'unmatched' ? (row.phrase || '') : '',
+          })) : [blankKiotLine()]);
         state.quote = null;
         dirty = true;
         const ambiguous = state.lines.filter(line => line.status === 'ambiguous').length;
@@ -2490,16 +2539,19 @@
         });
         if (!confirm) {
           state.quote = data;
-          (data.lines || []).forEach((row, i) => {
-            const line = state.lines[i];
-            if (!line) return;
-            if (row.price != null) line.price = row.price;
-            if (row.sku) line.sku = row.sku;
-            if (row.name) line.name = row.name;
-            if (row.unit) line.unit = row.unit;
-            if (row.stock) line.stock = row.stock;
-            if (row.missing) line.status = 'unmatched';
-          });
+          if (window.kiotLines) state.lines = window.kiotLines.mergeQuote(state.lines, data.lines || []);
+          else {
+            (data.lines || []).forEach((row, i) => {
+              const line = state.lines[i];
+              if (!line) return;
+              if (row.price != null) line.price = row.price;
+              if (row.sku) line.sku = row.sku;
+              if (row.name) line.name = row.name;
+              if (row.unit) line.unit = row.unit;
+              if (row.stock) line.stock = row.stock;
+              if (row.missing) line.status = 'unmatched';
+            });
+          }
           paintLines();
           if (data.error) showError(data.error);
           return;
@@ -2571,15 +2623,25 @@
       }, 400);
     }
 
+    if (savedKiot) {
+      if (savedKiot.name) nameInput.input.value = savedKiot.name;
+      if (savedKiot.phone) phoneInput.input.value = savedKiot.phone;
+      if (savedKiot.address) addrInput.input.value = savedKiot.address;
+      if (savedKiot.quick) quick.value = savedKiot.quick;
+      if (savedKiot.discount != null) discountInput.input.value = savedKiot.discount;
+      if (savedKiot.ship != null) shipInput.input.value = savedKiot.ship;
+      if (savedKiot.note) noteInput.input.value = savedKiot.note;
+      if (savedKiot.document === 'order') setDoc('order');
+    }
     paintLines();
     api('/admin/api/drafts/' + d.id + '/kiotviet').then(data => {
       if (!panel.isConnected) return;
-      if (!state.touched.name && data.customer_name) {
+      if (!state.touched.name && data.customer_name && !(savedKiot && savedKiot.name)) {
         nameInput.input.value = data.customer_name;
         nameHint.textContent = hintSuffix(data.name_hint || '');
         nameHint.hidden = !data.name_hint;
       }
-      if (!state.touched.phone && data.phone) phoneInput.input.value = data.phone;
+      if (!state.touched.phone && data.phone && !(savedKiot && savedKiot.phone)) phoneInput.input.value = data.phone;
       if (data.kiot_customer_id || data.kiot_customer_code) {
         state.kiotCustomer = {
           id: data.kiot_customer_id || null,
@@ -2588,10 +2650,13 @@
           phone: data.phone || phoneInput.input.value.trim(),
         };
       }
-      if (!state.touched.address && data.address) addrInput.input.value = data.address;
-      if (!state.touched.quick && data.quick_text) quick.value = data.quick_text;
-      if (!state.touched.ship && data.shipping_fee != null) shipInput.input.value = String(data.shipping_fee);
+      if (!state.touched.address && data.address && !(savedKiot && savedKiot.address)) addrInput.input.value = data.address;
+      if (!state.touched.quick && data.quick_text && !(savedKiot && savedKiot.quick)) quick.value = data.quick_text;
+      if (!state.touched.ship && data.shipping_fee != null && !(savedKiot && savedKiot.touched && savedKiot.touched.ship)) {
+        shipInput.input.value = String(data.shipping_fee);
+      }
       if (data.existing) showExisting(data.existing);
+      rememberKiot();
     }).catch(() => {});
     return panel;
   }
@@ -2617,6 +2682,7 @@
   }
 
   function blankKiotLine() {
+    if (window.kiotLines) return window.kiotLines.blankLine();
     return {
       sku: '',
       name: '',

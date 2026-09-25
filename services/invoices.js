@@ -460,7 +460,7 @@ async function pngFor(code) {
   if (!row || row.document_type !== 'invoice') return null;
   row = await backfillCustomerCode(row);
   const cached = images.get(row.code);
-  const stamp = `${row.amount_paid}|${row.total}|${row.customer_name}|${row.customer_code || ''}`;
+  const stamp = `${row.amount_paid}|${row.total}|${row.customer_name}|${row.customer_code || ''}|${JSON.stringify(row.items || [])}`;
   if (cached && cached.stamp === stamp) return cached.buffer;
   const buffer = await invoiceImage.render({
     ...row,
