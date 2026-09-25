@@ -84,7 +84,7 @@ test('typing in the order form survives several refresh cycles', { skip: !puppet
   });
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 1100, height: 640 });
+    await page.setViewport({ width: 1280, height: 800 });
     await page.goto(base + '/admin', { waitUntil: 'domcontentloaded' });
     await page.type('input[name="password"]', 'secret');
     await Promise.all([
@@ -92,7 +92,7 @@ test('typing in the order form survives several refresh cycles', { skip: !puppet
       page.click('button[type="submit"]'),
     ]);
     await page.goto(base + '/admin?pollms=400&nhom=zalo&hop=pending', { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.card-reply');
+    await page.waitForSelector('.msg-card');
     await page.evaluate(() => (document.fonts && document.fonts.ready) || Promise.resolve());
 
     const scrollToAnchor = () => page.evaluate(() => {
@@ -122,9 +122,11 @@ test('typing in the order form survives several refresh cycles', { skip: !puppet
 
     await page.evaluate(() => {
       const card = [...document.querySelectorAll('.msg-card')].find(node => node.innerText.includes('Mốc A'));
-      card.querySelector('details.kiot-fold summary').click();
+      card.querySelector('.msg').click();
     });
-    await page.waitForSelector('details.kiot-fold[open] [id^="kiot-name-"]');
+    await page.waitForSelector('#detail details.kiot-fold summary');
+    await page.click('#detail details.kiot-fold summary');
+    await page.waitForSelector('#detail details.kiot-fold[open] [id^="kiot-name-"]');
     async function replaceField(selector, text) {
       await page.click(selector);
       await page.evaluate(sel => {
@@ -141,9 +143,7 @@ test('typing in the order form survives several refresh cycles', { skip: !puppet
     await page.click('details.kiot-fold[open] textarea.kiot-quick');
     await page.keyboard.type('1 trứng gà');
     await page.evaluate(() => {
-      const card = document.querySelector('details.kiot-fold[open]').closest('.msg-card');
-      const reply = card.querySelector('.card-reply');
-      reply.focus();
+      document.querySelector('#draft-reply').focus();
     });
     await page.keyboard.type(' GIU');
     await page.evaluate(() => {
@@ -152,7 +152,7 @@ test('typing in the order form survives several refresh cycles', { skip: !puppet
       window.__keepName = name;
     });
     const typed = await page.evaluate(() => {
-      const card = document.querySelector('details.kiot-fold[open]').closest('.msg-card');
+      const card = [...document.querySelectorAll('.msg-card')].find(node => node.innerText.includes('Mốc A'));
       card.id = 'anchor-card';
       const top = card.getBoundingClientRect().top;
       window.scrollBy(0, 0);
@@ -162,7 +162,7 @@ test('typing in the order form survives several refresh cycles', { skip: !puppet
         address: document.querySelector('[id^="kiot-address-"]').value,
         note: document.querySelector('[id^="kiot-note-"]').value,
         quick: document.querySelector('textarea.kiot-quick').value,
-        reply: card.querySelector('.card-reply').value,
+        reply: document.querySelector('#draft-reply').value,
         scrollY: window.scrollY,
         top,
         count: document.querySelectorAll('.msg-card').length,
@@ -192,13 +192,13 @@ test('typing in the order form survives several refresh cycles', { skip: !puppet
         address: document.querySelector('[id^="kiot-address-"]').value,
         note: document.querySelector('[id^="kiot-note-"]').value,
         quick: document.querySelector('textarea.kiot-quick').value,
-        reply: card.querySelector('.card-reply').value,
+        reply: document.querySelector('#draft-reply').value,
         sameNode: name === window.__keepName && name.dataset.keep === 'yes',
         scrollY: window.scrollY,
         top: card.getBoundingClientRect().top,
         count: document.querySelectorAll('.msg-card').length,
         nav: performance.getEntriesByType('navigation')[0].type,
-        open: !!card.querySelector('details.kiot-fold[open]'),
+        open: !!document.querySelector('#detail details.kiot-fold[open]'),
       };
     });
     assert.equal(held.name, typed.name);
@@ -218,14 +218,14 @@ test('typing in the order form survives several refresh cycles', { skip: !puppet
     await page.waitForFunction(() => document.querySelectorAll('.msg-card').length === 7, { timeout: 8000 });
     const applied = await page.evaluate(() => {
       const card = document.getElementById('anchor-card');
-      const name = card.querySelector('[id^="kiot-name-"]');
+      const name = document.querySelector('#detail [id^="kiot-name-"]');
       return {
         name: name.value,
-        phone: card.querySelector('[id^="kiot-phone-"]').value,
-        address: card.querySelector('[id^="kiot-address-"]').value,
-        note: card.querySelector('[id^="kiot-note-"]').value,
-        quick: card.querySelector('textarea.kiot-quick').value,
-        reply: card.querySelector('.card-reply').value,
+        phone: document.querySelector('#detail [id^="kiot-phone-"]').value,
+        address: document.querySelector('#detail [id^="kiot-address-"]').value,
+        note: document.querySelector('#detail [id^="kiot-note-"]').value,
+        quick: document.querySelector('#detail textarea.kiot-quick').value,
+        reply: document.querySelector('#draft-reply').value,
         sameNode: name === window.__keepName,
         top: card.getBoundingClientRect().top,
         hasF: [...document.querySelectorAll('.msg-card')].some(node => node.innerText.includes('Mốc F')),

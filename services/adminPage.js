@@ -3,6 +3,7 @@
  * the farm opens it on a phone, so no build step and no external assets.
  */
 const db = require('./database');
+const brand = require('./brand');
 
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, c =>
@@ -238,9 +239,9 @@ async function render(key, flash = null) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
-<title>Dốc Mơ Farm — Quản trị</title>
+<title>Quản trị — ${esc(brand.PRODUCT_NAME)}</title>
 <style>
-  :root { --bg:#faf8f5; --ink:#100d0a; --soft:#3a352e; --line:#e6e0d7; --green:#3f6b4c;
+  :root { --bg:#faf8f5; --ink:#100d0a; --soft:#3a352e; --line:#e6e0d7; --green:#0f5a35;
           --warn:#a8760a; --card:#fff;
           --sp:20px; --radius:14px; }
   * { box-sizing:border-box }
@@ -341,7 +342,7 @@ async function render(key, flash = null) {
 </style></head>
 <body>
 <header class="wrap">
-  <h1>🌿 Dốc Mơ Farm — Quản trị</h1>
+  <h1>${esc(brand.PRODUCT_NAME)} ${esc(brand.versionLabel())}</h1>
   <div class="sub">Cập nhật ${new Date().toLocaleString('vi-VN')} ·
     <span id="auto">Tự làm mới mỗi 60 giây, dừng khi bạn đang nhập</span> ·
     <a href="#" onclick="location.reload();return false">Làm mới ngay</a> ·

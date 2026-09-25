@@ -4,6 +4,7 @@
  * the draft review queue.
  */
 const { MODE_TEXT } = require('./handover');
+const brand = require('./brand');
 
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, c => (
@@ -91,14 +92,14 @@ function render({ shifts, handoffs, flash, error }) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
-<meta name="theme-color" content="#3f6b4c">
-<title>Ca trực — Omni Sale DMF</title>
+<meta name="theme-color" content="#0f5a35">
+<title>Ca trực — ${esc(brand.PRODUCT_NAME)}</title>
 <link rel="stylesheet" href="/admin/review.css">
 </head>
 <body>
 <header class="top">
   <div>
-    <p class="brand">Omni Sale DMF</p>
+    <p class="brand">${esc(brand.PRODUCT_NAME)} ${esc(brand.versionLabel())}</p>
     <h1>Ca trực &amp; bàn giao</h1>
     <p class="sub">Giờ Việt Nam (Asia/Ho_Chi_Minh). Khi cần người thật, hội thoại giao cho người đang trong ca — ưu tiên người online. Ngoài giờ thì ca kế tiếp, hoặc chủ farm nếu chưa cấu hình ca.</p>
   </div>
