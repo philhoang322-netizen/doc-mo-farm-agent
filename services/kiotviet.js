@@ -159,7 +159,14 @@ async function findProduct({ sku, name }) {
 // ------------------------------------------------------------------
 // Customers
 // ------------------------------------------------------------------
-async function findOrCreateCustomer({ name, phone }) {
+/** Lookup only. Does not create a KiotViet customer. */
+async function findCustomerByPhone(phone) {
+  if (!phone || !enabled()) return null;
+  const found = await call('get', '/customers', { params: { contactNumber: phone, pageSize: 1 } });
+  return found?.data?.[0] || null;
+}
+
+async function findOrCreateCustomer({ name, phone, comments }) {
   if (!phone) return null;
   try {
     const found = await call('get', '/customers', { params: { contactNumber: phone, pageSize: 1 } });
@@ -168,9 +175,10 @@ async function findOrCreateCustomer({ name, phone }) {
     console.warn('KiotViet customer lookup failed:', e.message);
   }
   try {
-    const created = await call('post', '/customers', {
-      data: { name: name || `Khách Zalo ${phone}`, contactNumber: phone },
-    });
+    const data = { name: name || `Khách Zalo ${phone}`, contactNumber: phone };
+    const note = String(comments || '').trim();
+    if (note) data.comments = note.slice(0, 500);
+    const created = await call('post', '/customers', { data });
     return created?.data || created;
   } catch (e) {
     console.warn('KiotViet customer create failed:', e.message);
@@ -559,6 +567,7 @@ async function createSaleDocument({
   shippingFee = 0,
   lines = [],
   description,
+  customerComment,
 } = {}) {
   if (!enabled()) return { ok: false, error: 'KiotViet chưa cấu hình' };
   const kind = documentType === 'order' ? 'order' : 'invoice';
@@ -593,7 +602,11 @@ async function createSaleDocument({
     }
     if (!details.length) return { ok: false, error: 'Đơn không có dòng hàng hợp lệ' };
 
-    const customer = await findOrCreateCustomer({ name: customerName, phone });
+    const customer = await findOrCreateCustomer({
+      name: customerName,
+      phone,
+      comments: customerComment,
+    });
     if (!customer || !customer.id) {
       return { ok: false, error: 'Không tạo được khách KiotViet theo số điện thoại' };
     }
@@ -658,5 +671,5 @@ module.exports = {
   enabled, pushOrder, findProduct, loadProducts, ping, getToken,
   getOnHand, sellableFromInventories,
   searchProducts, aliasFor, saleBranchId, salePayload, createSaleDocument,
-  listProductsForMatch, DEFAULT_SALE_BRANCH_ID,
+  listProductsForMatch, findCustomerByPhone, DEFAULT_SALE_BRANCH_ID,
 };

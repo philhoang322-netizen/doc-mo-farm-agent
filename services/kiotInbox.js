@@ -13,6 +13,7 @@ const shipping = require('./shipping');
 const catalog = require('./catalog');
 const db = require('./database');
 const quickEntry = require('./quickEntry');
+const channelNames = require('./channelNames');
 
 const BANK_BLOCK = 'HTX Nong Trai Doc Mo\nVCB 1058 43 7590';
 
@@ -192,10 +193,27 @@ async function prefill(id) {
   const text = [draft.customer_query, draft.customer_intent, draft.draft_reply].filter(Boolean).join('\n');
   const ship = shippingFeeFor(facts.address);
   const suggested = suggestLines(text);
+  let kiotName = '';
+  if (facts.phone) {
+    try {
+      const found = await kiotviet.findCustomerByPhone(facts.phone);
+      kiotName = found && found.name ? String(found.name) : '';
+    } catch (_) { /* a missing POS name must not block the form */ }
+  }
+  let names = [];
+  try {
+    names = await channelNames.forDraft(draft);
+  } catch (_) { names = []; }
+  const chosen = channelNames.formName({
+    kiotName,
+    channelNames: names,
+    draftName: facts.name || '',
+  });
   return {
     status: 200,
     body: {
-      customer_name: facts.name || '',
+      customer_name: chosen.name,
+      name_hint: chosen.hint,
       phone: facts.phone || '',
       address: facts.address || '',
       shipping_fee: ship,
@@ -509,9 +527,14 @@ async function prepareOrCreate(id, body, actorName) {
       note || null,
     ].filter(Boolean).join(' | ').slice(0, 500);
 
+    let customerComment = '';
+    try {
+      customerComment = channelNames.kiotComment(await channelNames.forDraft(draft));
+    } catch (_) { customerComment = ''; }
     const created = await kiotviet.createSaleDocument({
       documentType: kind,
       customerName: customerName || draft.customer_name,
+      customerComment,
       phone,
       address,
       note,

@@ -773,10 +773,12 @@
       if (d.decline_hint && d.inbox_status !== 'declined') {
         tags.appendChild(el('span', { class: 'tag tag-refund', text: 'Gợi ý: Từ chối' }));
       }
-      btn.appendChild(el('div', { class: 'msg-top' }, [
-        el('span', { class: 'msg-name', text: d.customer_name || 'Khách chưa có tên' }),
-        el('span', { class: 'msg-time', text: when(d.created_at) }),
-      ]));
+      const top = el('div', { class: 'msg-top' });
+      const nameBox = el('div', { class: 'msg-names' });
+      channelNameNodes(d).forEach(node => nameBox.appendChild(node));
+      top.appendChild(nameBox);
+      top.appendChild(el('span', { class: 'msg-time', text: when(d.created_at) }));
+      btn.appendChild(top);
       btn.appendChild(el('div', { class: 'msg-kicker', text: 'Khách nhắn' }));
       btn.appendChild(el('div', { class: 'msg-customer', text: snippet(d) || '—' }));
       btn.appendChild(tags);
@@ -917,9 +919,8 @@
 
     const body = el('div', { class: 'detail-body' });
     const code = d.customer_code || f.kiot_ref || '';
-    const nameRow = el('div', { class: 'name-row' }, [
-      el('h3', { text: d.customer_name || 'Khách chưa có tên' }),
-    ]);
+    const nameRow = el('div', { class: 'name-row' });
+    channelNameNodes(d).forEach(node => nameRow.appendChild(node));
     if (code) {
       nameRow.appendChild(el('span', { class: 'cust-code', title: 'Mã khách hàng', text: code }));
     }
@@ -1434,10 +1435,19 @@
     panel.appendChild(docRow);
 
     const grid = el('div', { class: 'kiot-grid' });
-    const nameInput = kiotInput('Tên khách', d.customer_name || '', 'kiot-name-' + pid);
+    const seeded = seededKiotName(d);
+    const nameInput = kiotInput('Tên khách', seeded.name, 'kiot-name-' + pid);
+    const nameHint = el('p', { class: 'kiot-name-hint', text: seeded.hint });
+    nameHint.hidden = !seeded.hint;
+    nameInput.wrap.appendChild(nameHint);
     const phoneInput = kiotInput('Số điện thoại', d.customer_phone || '', 'kiot-phone-' + pid);
     const addrInput = kiotInput('Địa chỉ giao', addressText(d), 'kiot-address-' + pid);
-    nameInput.input.addEventListener('input', () => { state.touched.name = true; dirty = true; });
+    nameInput.input.addEventListener('input', () => {
+      state.touched.name = true;
+      dirty = true;
+      nameHint.textContent = '';
+      nameHint.hidden = true;
+    });
     phoneInput.input.addEventListener('input', () => { state.touched.phone = true; dirty = true; state.quote = null; });
     addrInput.input.addEventListener('input', () => { state.touched.address = true; dirty = true; });
     grid.appendChild(nameInput.wrap);
@@ -1807,7 +1817,11 @@
     paintLines();
     api('/admin/api/drafts/' + d.id + '/kiotviet').then(data => {
       if (!panel.isConnected) return;
-      if (!state.touched.name && data.customer_name) nameInput.input.value = data.customer_name;
+      if (!state.touched.name && data.customer_name) {
+        nameInput.input.value = data.customer_name;
+        nameHint.textContent = data.name_hint || '';
+        nameHint.hidden = !data.name_hint;
+      }
       if (!state.touched.phone && data.phone) phoneInput.input.value = data.phone;
       if (!state.touched.address && data.address) addrInput.input.value = data.address;
       if (!state.touched.quick && data.quick_text) quick.value = data.quick_text;
@@ -1830,6 +1844,31 @@
       stock: null,
       candidates: [],
       query: '',
+    };
+  }
+
+  function channelNameNodes(d) {
+    const names = Array.isArray(d.channel_names) ? d.channel_names.filter(item => item && item.name) : [];
+    if (!names.length) {
+      return [el('span', { class: 'msg-name', text: d.customer_name || 'Khách chưa có tên' })];
+    }
+    return names.map(item => {
+      const bit = el('span', { class: 'msg-channel-name' });
+      if (item.avatar && /^https:\/\//.test(item.avatar)) {
+        bit.appendChild(el('img', { class: 'msg-avatar', alt: '', src: item.avatar }));
+      }
+      bit.appendChild(el('span', { text: (item.label || 'Tên') + ': ' + item.name }));
+      return bit;
+    });
+  }
+
+  function seededKiotName(d) {
+    const names = Array.isArray(d.channel_names) ? d.channel_names : [];
+    const own = names.find(item => item && item.own && item.name) || names.find(item => item && item.name);
+    if (!own) return { name: d.customer_name || '', hint: '' };
+    return {
+      name: own.name,
+      hint: own.source === 'fb' ? 'lấy từ Tên FB' : 'lấy từ Tên Zalo',
     };
   }
 

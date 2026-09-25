@@ -501,6 +501,10 @@ body.hitl .msg {
 body.hitl .msg.selected { background: #fff; border-color: #4f9a6d; box-shadow: 0 0 0 3px var(--green-soft); }
 body.hitl .msg-top { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 3px; }
 body.hitl .msg-name { font-weight: 650; font-size: 1.0625rem; }
+body.hitl .msg-names { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+body.hitl .msg-channel-name { display: inline-flex; align-items: center; gap: 6px; font-weight: 650; }
+body.hitl .msg-avatar { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; }
+body.hitl .kiot-name-hint { margin: 2px 0 0; color: #6d645b; font-size: 12px; }
 body.hitl .msg-time { font-size: 0.875rem; font-weight: 600; color: var(--muted); white-space: nowrap; }
 body.hitl .msg-preview {
   margin: 2px 0 11px; color: var(--ink-soft); font-size: 1rem; line-height: 1.45;

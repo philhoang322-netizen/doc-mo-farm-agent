@@ -16,6 +16,7 @@ const roster = require('./roster');
 const handover = require('./handover');
 const rosterPage = require('./rosterPage');
 const brand = require('./brand');
+const channelNames = require('./channelNames');
 
 const PUBLIC = path.join(__dirname, '..', 'public', 'admin');
 
@@ -215,10 +216,19 @@ function sendAsset(name, type) {
   };
 }
 
+async function attachChannelNames(payload) {
+  const rows = payload && payload.drafts;
+  if (!Array.isArray(rows)) return payload;
+  await Promise.all(rows.map(async (draft) => {
+    draft.channel_names = await channelNames.forDraft(draft);
+  }));
+  return payload;
+}
+
 async function list(req, res) {
   try {
     const q = req.query || {};
-    res.json(await drafts.listDrafts({
+    const payload = await drafts.listDrafts({
       status: typeof q.status === 'string' && q.status ? q.status : null,
       ops: typeof q.ops === 'string' && q.ops ? q.ops : null,
       type: typeof q.type === 'string' && q.type ? q.type : null,
@@ -228,7 +238,8 @@ async function list(req, res) {
       nhom: typeof q.nhom === 'string' && q.nhom ? q.nhom : null,
       zline: typeof q.zline === 'string' && q.zline ? q.zline : null,
       hop: typeof q.hop === 'string' && q.hop ? q.hop : null,
-    }));
+    });
+    res.json(await attachChannelNames(payload));
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : 'Không tải được danh sách' });
   }
