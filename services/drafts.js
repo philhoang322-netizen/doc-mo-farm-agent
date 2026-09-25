@@ -844,6 +844,7 @@ function normalizeListQuery(query) {
     nhom: query.nhom || null,
     zline: query.zline || null,
     hop: query.hop || null,
+    viewer: query.viewer || null,
   };
 }
 
@@ -859,6 +860,12 @@ function matchesScope(d, q) {
   if (q.platform && d.channel !== q.platform) return false;
   if (q.nhom && groupOf(d) !== q.nhom) return false;
   if (q.nhom === 'zalo' && q.zline && d.biz_line !== q.zline) return false;
+  if (q.viewer === 'sale' && groupOf(d) === 'fb-dv') return false;
+  if (q.viewer === 'dv') {
+    const group = groupOf(d);
+    const zaloDv = d.channel === 'zalo' && d.biz_line === 'dv';
+    if (group !== 'fb-dv' && !zaloDv) return false;
+  }
   return true;
 }
 

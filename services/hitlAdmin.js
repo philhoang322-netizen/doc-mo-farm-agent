@@ -17,6 +17,8 @@ const handover = require('./handover');
 const rosterPage = require('./rosterPage');
 const brand = require('./brand');
 const channelNames = require('./channelNames');
+const access = require('./access');
+const adminUsers = require('./adminUsers');
 
 const PUBLIC = path.join(__dirname, '..', 'public', 'admin');
 
@@ -124,8 +126,11 @@ function loginHtml(error) {
     <h1><span id="product-name">{{PRODUCT_NAME}}</span> <span class="ver" id="app-version">{{VERSION_LABEL}}</span></h1>
     <p class="sub">Duyệt tin nội bộ. Nhập mật khẩu quản trị để xem bản nháp trước khi gửi.</p>
     ${error ? `<p class="err">${esc(error)}</p>` : ''}
+    <label>Tên đăng nhập
+      <input name="username" autocomplete="username" maxlength="40" placeholder="Để trống nếu dùng mật khẩu quản trị">
+    </label>
     <label>Mật khẩu
-      <input type="password" name="password" autocomplete="current-password" autofocus required maxlength="200">
+      <input type="password" name="password" autocomplete="current-password" required maxlength="200">
     </label>
     <button type="submit">Vào trang duyệt</button>
   </form>
@@ -151,17 +156,23 @@ function unconfiguredHtml() {
 </body></html>`);
 }
 
-function requireApi(req, res, next) {
-  guard(res);
-  if (badOrigin(req)) return res.status(403).json({ error: 'Yêu cầu khác trang bị chặn' });
-  if (!auth.passwordConfigured()) {
-    return res.status(503).json({ error: 'Chưa cấu hình ADMIN_PASSWORD' });
+async function requireApi(req, res, next) {
+  try {
+    guard(res);
+    if (badOrigin(req)) return res.status(403).json({ error: 'Yêu cầu khác trang bị chặn' });
+    if (!auth.passwordConfigured()) {
+      return res.status(503).json({ error: 'Chưa cấu hình ADMIN_PASSWORD' });
+    }
+    if (!auth.isAuthed(req)) {
+      res.set('WWW-Authenticate', `Basic realm="${brand.PRODUCT_NAME}", charset="UTF-8"`);
+      return res.status(401).json({ error: 'Chưa đăng nhập' });
+    }
+    const actor = await who(req);
+    if (!actor) return res.status(401).json({ error: 'Chưa đăng nhập' });
+    next();
+  } catch (err) {
+    next(err);
   }
-  if (!auth.isAuthed(req)) {
-    res.set('WWW-Authenticate', `Basic realm="${brand.PRODUCT_NAME}", charset="UTF-8"`);
-    return res.status(401).json({ error: 'Chưa đăng nhập' });
-  }
-  next();
 }
 
 function requirePageAsset(req, res, next) {
@@ -179,11 +190,15 @@ async function page(req, res) {
   if (!auth.passwordAuthed(req)) {
     return res.status(200).type('html').send(loginHtml(null));
   }
+  if (!await who(req)) {
+    auth.clearSessionCookie(res);
+    return res.status(200).type('html').send(loginHtml('Tài khoản đã khóa hoặc không còn.'));
+  }
   const html = await fs.promises.readFile(path.join(PUBLIC, 'review.html'), 'utf8');
   res.type('html').send(brand.applyTemplate(html));
 }
 
-function login(req, res) {
+async function login(req, res) {
   guard(res);
   if (badOrigin(req)) return res.status(403).type('html').send(loginHtml('Không gửi được từ trang khác.'));
   if (!auth.passwordConfigured()) {
@@ -194,6 +209,17 @@ function login(req, res) {
     return res.status(429).type('html').send(loginHtml('Thử lại sau một phút.'));
   }
   const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+  if (username) {
+    const user = await adminUsers.authenticate(username, password);
+    if (!user) {
+      noteFail(ip);
+      return res.status(401).type('html').send(loginHtml('Tên hoặc mật khẩu chưa đúng.'));
+    }
+    noteOk(ip);
+    auth.setSessionCookie(req, res, user);
+    return res.redirect(303, '/admin');
+  }
   if (!password || password.length > 500 || !auth.safeEqual(password, process.env.ADMIN_PASSWORD)) {
     noteFail(ip);
     return res.status(401).type('html').send(loginHtml('Mật khẩu chưa đúng.'));
@@ -225,9 +251,25 @@ async function attachChannelNames(payload) {
   return payload;
 }
 
+async function who(req) {
+  return access.principal(req);
+}
+
+function deny(res) {
+  return res.status(403).json({ error: 'Không đủ quyền' });
+}
+
+async function auditActor(req) {
+  const p = await who(req);
+  if (p && p.source === 'user') return access.actor(p);
+  return audit.managerActor(actorNameFrom(req));
+}
+
 async function list(req, res) {
   try {
     const q = req.query || {};
+    const p = await who(req);
+    const viewer = p && p.role !== 'manager' ? p.role : null;
     const payload = await drafts.listDrafts({
       status: typeof q.status === 'string' && q.status ? q.status : null,
       ops: typeof q.ops === 'string' && q.ops ? q.ops : null,
@@ -238,6 +280,7 @@ async function list(req, res) {
       nhom: typeof q.nhom === 'string' && q.nhom ? q.nhom : null,
       zline: typeof q.zline === 'string' && q.zline ? q.zline : null,
       hop: typeof q.hop === 'string' && q.hop ? q.hop : null,
+      viewer,
     });
     res.json(await attachChannelNames(payload));
   } catch (e) {
@@ -270,6 +313,7 @@ async function channels(req, res) {
 
 async function createChannel(req, res) {
   try {
+    if (!access.canManageUsers(await who(req))) return deny(res);
     const channel = await drafts.addChannel(req.body && req.body.name);
     res.status(201).json({ channel });
   } catch (e) {
@@ -280,8 +324,9 @@ async function createChannel(req, res) {
 
 async function create(req, res) {
   try {
+    if (!access.canManageUsers(await who(req))) return deny(res);
     const draft = await drafts.createDraft(req.body, {
-      actor: audit.managerActor(actorNameFrom(req)),
+      actor: await auditActor(req),
     });
     res.status(201).json({ draft });
   } catch (e) {
@@ -293,8 +338,12 @@ async function create(req, res) {
 
 async function moveLine(req, res) {
   try {
+    const p = await who(req);
+    if (!access.canMove(p)) return deny(res);
+    const existing = await drafts.getDraft(req.params.id);
+    if (!existing || !access.canSee(p, existing)) return res.status(404).json({ error: 'Không thấy tin' });
     const draft = await drafts.moveBizLine(req.params.id, req.body && req.body.biz_line, {
-      actor: audit.managerActor(actorNameFrom(req)),
+      actor: await auditActor(req),
     });
     if (!draft) return res.status(404).json({ error: 'Không thấy tin' });
     res.json({ draft });
@@ -306,8 +355,12 @@ async function moveLine(req, res) {
 
 async function removeDraft(req, res) {
   try {
+    const p = await who(req);
+    if (!access.canDelete(p)) return deny(res);
+    const existing = await drafts.getDraft(req.params.id);
+    if (!existing || !access.canSee(p, existing)) return res.status(404).json({ error: 'Không thấy tin' });
     const draft = await drafts.softDelete(req.params.id, {
-      actor: audit.managerActor(actorNameFrom(req)),
+      actor: await auditActor(req),
     });
     if (!draft) return res.status(404).json({ error: 'Không thấy tin' });
     res.json({ draft });
@@ -319,8 +372,9 @@ async function removeDraft(req, res) {
 
 async function restoreOne(req, res) {
   try {
+    if (!access.canDelete(await who(req))) return deny(res);
     const draft = await drafts.restoreDraft(req.params.id, {
-      actor: audit.managerActor(actorNameFrom(req)),
+      actor: await auditActor(req),
     });
     if (!draft) return res.status(404).json({ error: 'Không thấy tin' });
     res.json({ draft });
@@ -332,8 +386,12 @@ async function restoreOne(req, res) {
 
 async function setFolder(req, res) {
   try {
+    const p = await who(req);
+    if (!access.canMove(p)) return deny(res);
+    const existing = await drafts.getDraft(req.params.id);
+    if (!existing || !access.canSee(p, existing)) return res.status(404).json({ error: 'Không thấy tin' });
     const draft = await drafts.setInboxStatus(req.params.id, req.body && req.body.inbox_status, {
-      actor: audit.managerActor(actorNameFrom(req)),
+      actor: await auditActor(req),
       auto: false,
       orderCode: req.body && req.body.order_code,
     });
@@ -347,6 +405,7 @@ async function setFolder(req, res) {
 
 async function syncInbox(req, res) {
   try {
+    if (!access.canManageUsers(await who(req))) return deny(res);
     const result = await inboxSync.syncMissed();
     if (result.rate_limited) {
       return res.status(429).json({
@@ -365,7 +424,15 @@ async function syncInbox(req, res) {
 
 async function patch(req, res) {
   try {
-    const result = await drafts.updateDraft(req.params.id, req.body, {
+    const p = await who(req);
+    const existing = await drafts.getDraft(req.params.id);
+    if (!existing || !access.canSee(p, existing)) return res.status(404).json({ error: 'Không thấy bản nháp' });
+    const body = req.body || {};
+    if (body.send === true && !await access.canSend(p)) return deny(res);
+    const refund = body.review_form && body.review_form.refund_decision;
+    if (refund && !access.canRefund(p)) return deny(res);
+    const result = await drafts.updateDraft(req.params.id, body, {
+      actor: p && p.source === 'user' ? access.actor(p) : undefined,
       actorName: actorNameFrom(req),
     });
     if (!result) return res.status(404).json({ error: 'Không thấy bản nháp' });
@@ -403,6 +470,7 @@ async function auditPage(req, res) {
   if (!auth.passwordAuthed(req)) {
     return res.status(200).type('html').send(loginHtml(null));
   }
+  if (!access.canManageUsers(await who(req))) return res.status(403).type('html').send('Không đủ quyền');
   const html = await fs.promises.readFile(path.join(PUBLIC, 'audit.html'), 'utf8');
   res.type('html').send(html);
 }
@@ -413,6 +481,7 @@ async function rosterView(req, res) {
     return res.status(503).type('html').send(unconfiguredHtml());
   }
   if (!auth.passwordAuthed(req)) return res.redirect(303, '/admin');
+  if (!access.canManageUsers(await who(req))) return res.status(403).type('html').send('Không đủ quyền');
   try {
     const html = rosterPage.render({
       shifts: await roster.list(),
@@ -432,6 +501,7 @@ async function rosterSave(req, res) {
   if (badOrigin(req)) return res.status(403).type('text/plain').send('Forbidden');
   if (!auth.passwordConfigured()) return res.status(503).type('text/plain').send('ADMIN_PASSWORD is not configured');
   if (!auth.passwordAuthed(req)) return res.status(401).type('text/plain').send('Unauthorized');
+  if (!access.canManageUsers(await who(req))) return res.status(403).type('text/plain').send('Không đủ quyền');
   const back = (params) => res.redirect(303, `/admin/roster?${params}`);
   try {
     const action = String(req.body?.action || 'save');
@@ -512,7 +582,13 @@ async function kiotCustomer(req, res) {
 
 async function kiotCreate(req, res) {
   try {
-    const result = await kiotInbox.prepareOrCreate(req.params.id, req.body, actorNameFrom(req));
+    const p = await who(req);
+    if (!access.canKiot(p)) return deny(res);
+    const existing = await drafts.getDraft(req.params.id);
+    if (!existing || !access.canSee(p, existing)) return res.status(404).json({ error: 'Không thấy bản nháp' });
+    const discount = req.body && req.body.discount;
+    if (!access.canDiscount(p, discount)) return deny(res);
+    const result = await kiotInbox.prepareOrCreate(req.params.id, req.body, p && p.source === 'user' ? access.actor(p) : actorNameFrom(req));
     res.status(result.status).json(result.body);
   } catch (e) {
     console.error('Kiot create failed:', e.message);
@@ -543,11 +619,159 @@ async function resumeCustomer(req, res) {
   }
 }
 
+function roleOptions(selected) {
+  return ['manager', 'sale', 'dv'].map(role =>
+    `<option value="${role}"${role === selected ? ' selected' : ''}>${role}</option>`
+  ).join('');
+}
+
+function usersHtml(data, error) {
+  const rows = (data.users || []).map(user =>
+    `<tr>
+      <td>${esc(user.display_name || user.username)}<br><small>${esc(user.username)}</small></td>
+      <td>${user.disabled ? 'khóa' : 'mở'}</td>
+      <td>
+        <form method="post" action="/admin/users">
+          <input type="hidden" name="action" value="role">
+          <input type="hidden" name="id" value="${esc(user.id)}">
+          <select name="role">${roleOptions(user.role)}</select>
+          <button type="submit">Lưu vai trò</button>
+        </form>
+      </td>
+      <td>
+        <form method="post" action="/admin/users">
+          <input type="hidden" name="action" value="password">
+          <input type="hidden" name="id" value="${esc(user.id)}">
+          <input type="password" name="password" minlength="8" placeholder="Mật khẩu mới" required>
+          <button type="submit">Đổi mật khẩu</button>
+        </form>
+      </td>
+      <td>
+        <form method="post" action="/admin/users">
+          <input type="hidden" name="action" value="disable">
+          <input type="hidden" name="id" value="${esc(user.id)}">
+          <input type="hidden" name="disabled" value="${user.disabled ? '0' : '1'}">
+          <button type="submit">${user.disabled ? 'Mở khóa' : 'Khóa'}</button>
+        </form>
+      </td>
+    </tr>`
+  ).join('');
+  return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>Người dùng</title>
+  <link rel="stylesheet" href="/admin/review.css"></head><body class="hitl"><div class="wrap">
+  <p><a href="/admin">← Hàng chờ</a></p>
+  <h1>Người dùng</h1>
+  ${error ? `<p>${esc(error)}</p>` : ''}
+  <p>Duyệt &amp; Gửi cho sale/dv: <b>${data.staffCanSend ? 'bật' : 'tắt (chỉ quản lý)'}</b>. Giảm giá sale tối đa ${data.discountLimit}đ. Hoàn tiền, khiếu nại, xóa, và giảm giá lớn vẫn chỉ quản lý.</p>
+  <form method="post" action="/admin/users">
+    <input type="hidden" name="action" value="send-policy">
+    <button type="submit">${data.staffCanSend ? 'Chỉ quản lý được gửi' : 'Cho sale/dv gửi tin thường'}</button>
+  </form>
+  <form method="post" action="/admin/users">
+    <input type="hidden" name="action" value="create">
+    <input name="username" placeholder="Tên đăng nhập" required maxlength="40">
+    <input name="display_name" placeholder="Tên hiển thị" maxlength="80">
+    <input type="password" name="password" placeholder="Mật khẩu" required minlength="8">
+    <select name="role"><option value="sale">sale</option><option value="dv">dv</option><option value="manager">manager</option></select>
+    <button type="submit">Thêm</button>
+  </form>
+  <table><thead><tr><th>Tên</th><th>Trạng thái</th><th>Vai trò</th><th>Mật khẩu</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+  </div></body></html>`;
+}
+
+async function usersView(req, res) {
+  guard(res);
+  if (!auth.passwordAuthed(req)) return res.redirect(303, '/admin');
+  if (!access.canManageUsers(await who(req))) return res.status(403).type('html').send('Không đủ quyền');
+  const users = await adminUsers.list();
+  res.type('html').send(usersHtml({
+    users,
+    staffCanSend: await adminUsers.staffCanSend(),
+    discountLimit: access.discountLimit(),
+  }, typeof req.query.err === 'string' ? req.query.err : ''));
+}
+
+async function usersSave(req, res) {
+  guard(res);
+  if (badOrigin(req)) return res.status(403).type('text/plain').send('Forbidden');
+  if (!auth.passwordAuthed(req)) return res.status(401).type('text/plain').send('Unauthorized');
+  if (!access.canManageUsers(await who(req))) return res.status(403).type('text/plain').send('Không đủ quyền');
+  try {
+    const action = String(req.body?.action || '');
+    const actor = await auditActor(req);
+    if (action === 'send-policy') {
+      const next = !(await adminUsers.staffCanSend());
+      await adminUsers.setStaffCanSend(next);
+      await audit.record({
+        actor,
+        action: 'admin.send_policy',
+        entity_type: 'admin_user',
+        entity_id: 'staff_can_send',
+        after: { staff_can_send: next },
+      });
+    } else if (action === 'create') {
+      const created = await adminUsers.create({
+        username: req.body?.username,
+        password: req.body?.password,
+        role: req.body?.role,
+        display_name: req.body?.display_name,
+      });
+      await audit.record({
+        actor,
+        action: 'admin.user_created',
+        entity_type: 'admin_user',
+        entity_id: created.id,
+        after: { username: created.username, role: created.role },
+      });
+    } else if (action === 'role') {
+      const updated = await adminUsers.setRole(req.body?.id, req.body?.role);
+      if (!updated) throw Object.assign(new Error('Không thấy người dùng'), { status: 404 });
+      await audit.record({
+        actor,
+        action: 'admin.user_role',
+        entity_type: 'admin_user',
+        entity_id: updated.id,
+        after: { username: updated.username, role: updated.role },
+      });
+    } else if (action === 'disable') {
+      const off = String(req.body?.disabled || '') === '1';
+      const updated = await adminUsers.setDisabled(req.body?.id, off);
+      if (!updated) throw Object.assign(new Error('Không thấy người dùng'), { status: 404 });
+      await audit.record({
+        actor,
+        action: 'admin.user_disabled',
+        entity_type: 'admin_user',
+        entity_id: updated.id,
+        after: { username: updated.username, disabled: updated.disabled },
+      });
+    } else if (action === 'password') {
+      const updated = await adminUsers.setPassword(req.body?.id, req.body?.password);
+      if (!updated) throw Object.assign(new Error('Không thấy người dùng'), { status: 404 });
+      await audit.record({
+        actor,
+        action: 'admin.user_password',
+        entity_type: 'admin_user',
+        entity_id: updated.id,
+        after: { username: updated.username },
+      });
+    }
+    res.redirect(303, '/admin/users');
+  } catch (e) {
+    res.redirect(303, '/admin/users?err=' + encodeURIComponent(e.message || 'Không lưu được'));
+  }
+}
+
 function mount(app) {
   app.post('/admin/login', login);
   app.post('/admin/logout', logout);
   app.get('/admin/roster', rosterView);
   app.post('/admin/roster', rosterSave);
+  app.get('/admin/users', usersView);
+  app.post('/admin/users', usersSave);
+  app.get('/admin/api/session', requireApi, async (req, res) => {
+    const p = await who(req);
+    if (!p) return res.status(401).json({ error: 'Chưa đăng nhập' });
+    res.json(await access.sessionPayload(p));
+  });
   app.get('/admin/review.css', requirePageAsset, sendAsset('review.css', 'text/css; charset=utf-8'));
   app.get('/admin/inbox-refresh.js', requirePageAsset, sendAsset('inbox-refresh.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/review.js', requirePageAsset, sendAsset('review.js', 'text/javascript; charset=utf-8'));
