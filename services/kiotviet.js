@@ -458,45 +458,73 @@ function productPrice(p) {
 }
 
 function publicProduct(p) {
+  const qty = sellableFromInventories(p && p.inventories, saleBranchId());
+  const available = qty ? qty.available : (p && p.available != null ? Number(p.available) : null);
   return {
     id: p.id,
     code: p.code || null,
     name: p.fullName || p.name || null,
     price: productPrice(p),
     unit: p.unit || null,
+    available: Number.isFinite(available) ? available : null,
   };
+}
+
+/** Accent-insensitive name or code match. "xúc xích" matches "xuc xich". */
+function rankProducts(products, query, limit = 8) {
+  const q = String(query || '').trim().slice(0, 80);
+  if (q.length < 2) return [];
+  const want = Math.min(30, Math.max(1, Number(limit) || 8));
+  const upper = q.toUpperCase();
+  const queryKey = normName(q);
+  const hits = [];
+  const seen = new Set();
+  for (const raw of products || []) {
+    if (!raw) continue;
+    const code = String(raw.code || '').toUpperCase();
+    const nameKey = normName(raw.name || raw.fullName || '');
+    const codeHit = code.includes(upper);
+    const nameHit = queryKey && nameKey.includes(queryKey);
+    if (!codeHit && !nameHit) continue;
+    const key = String(raw.id != null ? raw.id : code || nameKey);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    hits.push(raw);
+    if (hits.length >= want) break;
+  }
+  return hits;
 }
 
 /**
  * Search the live product list by code or name. "heo trắng" uses aliasFor
  * so a catalog SKU wins when the farm has mapped that name.
  */
-async function searchProducts(query, limit = 12) {
+async function searchProducts(query, limit = 8) {
   const q = String(query || '').trim().slice(0, 80);
   if (!q) return [];
   const cache = await loadProducts();
   const alias = aliasFor(q);
-  const want = Math.min(30, Math.max(1, Number(limit) || 12));
+  const want = Math.min(30, Math.max(1, Number(limit) || 8));
+  const shaped = [...cache.byCode.values()].map(publicProduct);
   const hits = [];
   const seen = new Set();
-  const push = (p) => {
-    if (!p || seen.has(p.id)) return;
-    seen.add(p.id);
-    hits.push(publicProduct(p));
-  };
-  if (alias && alias.sku && cache.byCode.has(String(alias.sku).toUpperCase())) {
-    push(cache.byCode.get(String(alias.sku).toUpperCase()));
+  if (alias && alias.sku) {
+    const sku = String(alias.sku).toUpperCase();
+    const aliased = shaped.find(p => String(p.code || '').toUpperCase() === sku);
+    if (aliased) {
+      hits.push(aliased);
+      seen.add(aliased.id);
+    }
   }
-  const upper = q.toUpperCase();
-  const queryKey = normName(q);
   const aliasKey = alias ? normName(alias.name) : '';
-  for (const p of cache.byCode.values()) {
-    const code = String(p.code || '').toUpperCase();
-    const nameKey = normName(p.fullName || p.name);
-    const codeHit = upper.length >= 2 && code.includes(upper);
-    const nameHit = queryKey.length >= 2 && nameKey.includes(queryKey);
-    const aliasHit = aliasKey.length >= 2 && nameKey.includes(aliasKey);
-    if (codeHit || nameHit || aliasHit) push(p);
+  const ranked = rankProducts(shaped, q, want);
+  const extra = aliasKey
+    ? rankProducts(shaped, alias.name, want)
+    : [];
+  for (const p of ranked.concat(extra)) {
+    if (seen.has(p.id)) continue;
+    seen.add(p.id);
+    hits.push(p);
     if (hits.length >= want) break;
   }
   return hits;
@@ -716,7 +744,7 @@ async function listProductsForMatch() {
 module.exports = {
   enabled, pushOrder, findProduct, loadProducts, ping, getToken,
   getOnHand, sellableFromInventories,
-  searchProducts, aliasFor, saleBranchId, salePayload, createSaleDocument,
+  searchProducts, rankProducts, aliasFor, saleBranchId, salePayload, createSaleDocument,
   listProductsForMatch, findCustomerByPhone, findOrCreateCustomer, listInvoicesByCustomer,
   DEFAULT_SALE_BRANCH_ID,
 };

@@ -21,6 +21,7 @@ const trainingLog = require('./trainingLog');
 const triage = require('./triage');
 const bizLine = require('./bizLine');
 const inboxStatus = require('./inboxStatus');
+const inboxOrder = require('../public/admin/inbox-order');
 
 const STATUSES = ['PENDING_REVIEW', 'APPROVED', 'REJECTED', 'SENT'];
 const STATUS_SET = new Set(STATUSES);
@@ -771,8 +772,8 @@ async function backfillMessengerLines(rows) {
   }
 }
 
-function groupOf(d) {
-  if (!d || d.deleted_at) return null;
+function groupKey(d) {
+  if (!d) return null;
   if (d.channel === 'zalo') return 'zalo';
   if (d.channel === 'messenger' && d.biz_line === 'dv') return 'fb-dv';
   if (d.channel === 'messenger') return 'fb-sale';
@@ -858,11 +859,11 @@ function matchesScope(d, q) {
   if (q.type && d.message_type !== q.type) return false;
   if (q.triage && d.triage_level !== q.triage) return false;
   if (q.platform && d.channel !== q.platform) return false;
-  if (q.nhom && groupOf(d) !== q.nhom) return false;
+  if (q.nhom && groupKey(d) !== q.nhom) return false;
   if (q.nhom === 'zalo' && q.zline && d.biz_line !== q.zline) return false;
-  if (q.viewer === 'sale' && groupOf(d) === 'fb-dv') return false;
+  if (q.viewer === 'sale' && groupKey(d) === 'fb-dv') return false;
   if (q.viewer === 'dv') {
-    const group = groupOf(d);
+    const group = groupKey(d);
     const zaloDv = d.channel === 'zalo' && d.biz_line === 'dv';
     if (group !== 'fb-dv' && !zaloDv) return false;
   }
@@ -908,10 +909,16 @@ async function listDrafts(query) {
     if (q.status && d.approval_status !== q.status) return false;
     return true;
   };
+  const passesList = (d, query) => {
+    if (!matchesScope(d, query)) return false;
+    if (query.status && d.approval_status !== query.status) return false;
+    if (query.ops && opsStatus(d) !== query.ops) return false;
+    return true;
+  };
   const triageCounts = { hot: 0, urgent: 0, normal: 0 };
-  for (const d of salesScoped) {
-    if (!inOps(d)) continue;
-    if (q.platform && d.channel !== q.platform) continue;
+  const triageQuery = { ...q, triage: null };
+  for (const d of all) {
+    if (!passesList(d, triageQuery)) continue;
     if (Object.prototype.hasOwnProperty.call(triageCounts, d.triage_level)) {
       triageCounts[d.triage_level] += 1;
     }
@@ -923,13 +930,40 @@ async function listDrafts(query) {
     if (d.channel === 'zalo' || d.channel === 'messenger') platformCounts[d.channel] += 1;
   }
   const groupCounts = { zalo: 0, fbSale: 0, fbDv: 0 };
+  const groupQuery = {
+    ...q, nhom: null, zline: null, triage: null, type: null, platform: null,
+  };
+  for (const d of all) {
+    if (!passesList(d, groupQuery)) continue;
+    const g = groupKey(d);
+    if (g === 'zalo') groupCounts.zalo += 1;
+    else if (g === 'fb-sale') groupCounts.fbSale += 1;
+    else if (g === 'fb-dv') groupCounts.fbDv += 1;
+  }
+  const pendingGroupCounts = { zalo: 0, fbSale: 0, fbDv: 0 };
+  const pendingGroupQuery = {
+    ...q,
+    nhom: null,
+    zline: null,
+    triage: null,
+    type: null,
+    platform: null,
+    hop: 'pending',
+    ops: 'pending',
+    status: null,
+  };
+  for (const d of all) {
+    if (!passesList(d, pendingGroupQuery)) continue;
+    const g = groupKey(d);
+    if (g === 'zalo') pendingGroupCounts.zalo += 1;
+    else if (g === 'fb-sale') pendingGroupCounts.fbSale += 1;
+    else if (g === 'fb-dv') pendingGroupCounts.fbDv += 1;
+  }
   const folderCounts = { pending: 0, sent: 0, bought: 0, hesitant: 0, declined: 0, deleted: 0 };
   const pendingIds = [];
-  const hopFilter = q.hop && q.hop !== 'deleted' ? q.hop : 'pending';
   for (const d of all) {
     if (q.salesChannel && (d.sales_channel || 'farm') !== q.salesChannel) continue;
-    const g = d.channel === 'zalo' ? 'zalo' : (d.channel === 'messenger' && d.biz_line === 'dv' ? 'fb-dv' : (d.channel === 'messenger' ? 'fb-sale' : null));
-    if (q.nhom && g !== q.nhom) continue;
+    if (q.nhom && groupKey(d) !== q.nhom) continue;
     if (d.deleted_at) {
       folderCounts.deleted += 1;
       continue;
@@ -937,18 +971,10 @@ async function listDrafts(query) {
     const folder = inboxStatus.inferFolder(d);
     if (folderCounts[folder] != null) folderCounts[folder] += 1;
     if (folder === 'pending') pendingIds.push(d.id);
-    if (folder === hopFilter && g === 'zalo') groupCounts.zalo += 1;
-    else if (folder === hopFilter && g === 'fb-sale') groupCounts.fbSale += 1;
-    else if (folder === hopFilter && g === 'fb-dv') groupCounts.fbDv += 1;
   }
-  const scoped = all.filter(d => matchesScope(d, q));
-  const drafts = scoped
-    .filter(d => {
-      if (q.status && d.approval_status !== q.status) return false;
-      if (q.ops && opsStatus(d) !== q.ops) return false;
-      return true;
-    })
-    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+  const drafts = all
+    .filter(d => passesList(d, q))
+    .sort(inboxOrder.compare)
     .slice(0, 200);
   return {
     drafts,
@@ -956,6 +982,7 @@ async function listDrafts(query) {
     triageCounts,
     platformCounts,
     groupCounts,
+    pendingGroupCounts,
     folderCounts,
     pendingIds,
     storage: db.DB_ENABLED ? 'postgres' : 'memory',

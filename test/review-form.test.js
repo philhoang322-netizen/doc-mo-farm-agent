@@ -56,7 +56,7 @@ test('admin queue markup matches the approved HITL screen', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin', 'review.html'), 'utf8');
   const js = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin', 'review.js'), 'utf8');
   assert.match(html, /Hàng chờ duyệt/);
-  assert.match(html, /data-ops="pending"/);
+  assert.match(html, /data-folder="pending"/);
   assert.match(html, /Cài đặt kênh/);
   assert.match(html, /data-triage="hot"/);
   assert.match(html, /data-triage="urgent"/);

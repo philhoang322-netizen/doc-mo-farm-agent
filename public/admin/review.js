@@ -90,9 +90,10 @@
     deleted: 'Đã xóa',
   };
   const folderTabs = [...document.querySelectorAll('[data-folder]')];
-  let nhom = Object.prototype.hasOwnProperty.call(GROUP_LABEL, params.get('nhom'))
-    ? params.get('nhom')
-    : (params.get('platform') === 'messenger' ? 'fb-sale' : 'zalo');
+  const nhomParam = params.get('nhom');
+  const nhomInUrl = nhomParam != null && Object.prototype.hasOwnProperty.call(GROUP_LABEL, nhomParam);
+  let nhom = nhomInUrl ? nhomParam : '';
+  let chooseNhom = !nhomInUrl;
   let zline = params.get('zline') === 'sale' || params.get('zline') === 'dv' ? params.get('zline') : '';
   let folder = Object.prototype.hasOwnProperty.call(FOLDER_LABEL, params.get('hop')) ? params.get('hop') : 'pending';
   let folderCounts = { pending: 0, sent: 0, bought: 0, hesitant: 0, declined: 0, deleted: 0 };
@@ -201,7 +202,8 @@
 
   triageTabs.forEach(btn => {
     btn.addEventListener('click', () => {
-      const next = btn.dataset.triage || '';
+      let next = btn.dataset.triage || '';
+      if (btn.id === 'hot-chip' && triage === 'hot') next = '';
       if (next === triage) return;
       guardSwitch(() => { triage = next; });
     });
@@ -231,9 +233,34 @@
     });
   });
 
-  document.getElementById('more-filters').addEventListener('click', () => {
-    document.getElementById('extra-filters').classList.toggle('hidden');
-  });
+  const filterPanel = document.getElementById('filter-panel');
+  const filterToggle = document.getElementById('filter-toggle');
+  if (filterToggle && filterPanel) {
+    filterToggle.addEventListener('click', () => {
+      const open = filterPanel.hidden;
+      filterPanel.hidden = !open;
+      filterToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    document.addEventListener('click', (e) => {
+      if (filterPanel.hidden) return;
+      if (e.target.closest('#filter-panel') || e.target.closest('#filter-toggle')) return;
+      filterPanel.hidden = true;
+      filterToggle.setAttribute('aria-expanded', 'false');
+    });
+  }
+
+  function clearFilter(key) {
+    guardSwitch(() => {
+      if (key === 'triage' || key === 'all') triage = '';
+      if (key === 'type' || key === 'all') messageType = '';
+      if (key === 'zline' || key === 'all') zline = '';
+      if (key === 'ops' || key === 'all') ops = 'pending';
+      if (key === 'kenh' || key === 'all') {
+        salesChannel = 'farm';
+        renderChannels();
+      }
+    });
+  }
 
   document.getElementById('channel-settings-toggle').addEventListener('click', () => {
     document.getElementById('channel-panel').classList.toggle('hidden');
@@ -335,8 +362,13 @@
         b.textContent = String(n);
       }
     });
+    const hotChip = document.getElementById('hot-chip');
+    if (hotChip) hotChip.hidden = !(triageCounts.hot > 0);
+    const typeRow = document.getElementById('types');
+    if (typeRow) typeRow.hidden = nhom !== 'zalo';
     const zaloLine = document.getElementById('zalo-line');
     if (zaloLine) zaloLine.hidden = nhom !== 'zalo';
+    paintActiveFilters();
     zlineTabs.forEach(btn => {
       const on = (btn.dataset.zline || '') === zline;
       btn.setAttribute('aria-selected', on ? 'true' : 'false');
@@ -349,6 +381,36 @@
       const b = btn.querySelector('.count');
       if (b) b.textContent = String(folderCounts[btn.dataset.folder] || 0);
     });
+  }
+
+  function paintActiveFilters() {
+    const box = document.getElementById('active-filters');
+    if (!box) return;
+    box.textContent = '';
+    const items = [];
+    if (TRIAGE_LABEL[triage]) items.push({ key: 'triage', label: TRIAGE_LABEL[triage] });
+    if (TYPE_LABEL[messageType]) items.push({ key: 'type', label: TYPE_LABEL[messageType] });
+    if (nhom === 'zalo' && (zline === 'sale' || zline === 'dv')) {
+      items.push({ key: 'zline', label: zline === 'dv' ? 'DV' : 'Sale' });
+    }
+    if (ops && ops !== 'pending' && OPS_LABEL[ops]) items.push({ key: 'ops', label: OPS_LABEL[ops] });
+    if (salesChannel && salesChannel !== 'farm') {
+      const ch = channels.find(c => c.id === salesChannel);
+      items.push({ key: 'kenh', label: ch ? ch.name : salesChannel });
+    }
+    if (!items.length) {
+      box.hidden = true;
+      return;
+    }
+    box.hidden = false;
+    items.forEach(item => {
+      const btn = el('button', { type: 'button', class: 'active-chip', text: item.label + ' ×' });
+      btn.addEventListener('click', () => clearFilter(item.key));
+      box.appendChild(btn);
+    });
+    const clear = el('button', { type: 'button', class: 'clear-filters', text: 'Xóa lọc' });
+    clear.addEventListener('click', () => clearFilter('all'));
+    box.appendChild(clear);
   }
 
   function ictClock(date) {
@@ -461,7 +523,7 @@
 
   function renderChannels() {
     channelEl.textContent = '';
-    channels.forEach(c => {
+    channels.filter(c => !window.inboxOrder || window.inboxOrder.showChannelChip(c)).forEach(c => {
       const on = c.id === salesChannel;
       const btn = el('button', {
         type: 'button',
@@ -560,6 +622,35 @@
     window.scrollBy(0, delta);
   }
 
+  function findCard(id) {
+    if (!id) return null;
+    const safe = window.CSS && CSS.escape ? CSS.escape(id) : id;
+    return listEl.querySelector('.msg-card[data-draft-id="' + safe + '"]');
+  }
+
+  function slotBefore(d) {
+    const idx = drafts.findIndex(item => item && item.id === d.id);
+    for (let i = idx + 1; i < drafts.length; i++) {
+      const node = findCard(drafts[i] && drafts[i].id);
+      if (node) return node;
+    }
+    return null;
+  }
+
+  function repositionChanged() {
+    if (!window.inboxOrder) return;
+    drafts.forEach(d => {
+      const node = findCard(d.id);
+      if (!node) return;
+      const key = window.inboxOrder.stamp(d);
+      if (node.dataset.sortKey === key) return;
+      node.dataset.sortKey = key;
+      const before = slotBefore(d);
+      if (before && before !== node) listEl.insertBefore(node, before);
+      else if (!before) listEl.appendChild(node);
+    });
+  }
+
   function insertMissing() {
     const have = new Set(renderedIds());
     const fresh = drafts.filter(d => d && d.id && !have.has(d.id));
@@ -602,12 +693,23 @@
         api('/admin/api/stats?kenh=' + encodeURIComponent(salesChannel)),
       ]);
       if (seq !== loadSeq) return;
-      const incoming = data.drafts || [];
+      const incoming = window.inboxOrder ? window.inboxOrder.sort(data.drafts || []) : (data.drafts || []);
       counts = data.counts || {};
       triageCounts = data.triageCounts || triageCounts;
-      groupCounts = data.groupCounts || groupCounts;
+      groupCounts = data.pendingGroupCounts || data.groupCounts || groupCounts;
       folderCounts = data.folderCounts || folderCounts;
       loadedOnce = true;
+      if (chooseNhom) {
+        chooseNhom = false;
+        const hidden = {};
+        groupTabs.forEach(btn => { if (btn.hidden) hidden[btn.dataset.nhom] = true; });
+        nhom = window.inboxOrder
+          ? window.inboxOrder.defaultGroup(groupCounts, hidden)
+          : 'zalo';
+        rememberUrl();
+        syncTabs();
+        return load(opts);
+      }
       const hold = editingHold();
       const mutation = window.inboxRefresh
         ? window.inboxRefresh.listMutation(mode, hold)
@@ -628,6 +730,7 @@
       queuedDrafts = null;
       if (mutation === 'insert') {
         renderStats(stats);
+        repositionChanged();
         insertMissing();
         paintNew(0);
         restoreAnchor(anchor);
@@ -900,6 +1003,7 @@
         class: 'msg-card' + (d.id === selectedId ? ' selected' : ''),
         'data-draft-id': d.id,
       });
+      if (window.inboxOrder) card.dataset.sortKey = window.inboxOrder.stamp(d);
       card.appendChild(btn);
       card.appendChild(customerPanel(d));
 
@@ -1738,14 +1842,24 @@
           });
           row.appendChild(pick);
         }
-        const search = el('input', { type: 'search', placeholder: 'Tìm tên hoặc mã KiotViet', 'aria-label': 'Tìm sản phẩm' });
+        const search = el('input', { type: 'search', placeholder: 'Tìm tên hoặc mã KiotViet', 'aria-label': 'Tìm sản phẩm', autocomplete: 'off' });
         search.value = line.query || '';
         const results = el('div', { class: 'kiot-results' });
+        paintSearch(results, line);
         search.addEventListener('input', () => {
           line.query = search.value;
           dirty = true;
           clearTimeout(line._timer);
-          line._timer = setTimeout(() => fillSearch(search.value, results, line), 250);
+          const query = search.value;
+          if (String(query || '').trim().length < 2) {
+            line.searchPhase = 'idle';
+            line.hits = [];
+            paintSearch(results, line);
+            return;
+          }
+          line.searchPhase = 'loading';
+          paintSearch(results, line);
+          line._timer = setTimeout(() => fillSearch(query, results, line), 250);
         });
         row.appendChild(search);
         row.appendChild(results);
@@ -1753,17 +1867,27 @@
 
       const qtyWrap = el('label', { class: 'kiot-qty' });
       qtyWrap.appendChild(document.createTextNode('SL / KL'));
-      const qty = el('input', { type: 'number', min: '0.001', step: '0.001', 'aria-label': 'Số lượng hoặc khối lượng' });
-      qty.value = line.quantity == null ? '1' : String(line.quantity);
-      qty.addEventListener('input', () => {
-        line.quantity = Number(qty.value);
+      const qty = el('input', {
+        type: 'number',
+        min: '0',
+        step: '1',
+        inputmode: 'decimal',
+        'aria-label': 'Số lượng hoặc khối lượng',
+      });
+      qty.value = window.kiotPicker ? window.kiotPicker.qtyText(line.quantity == null ? 1 : line.quantity) : '1';
+      const keepQty = () => {
+        const shown = window.kiotPicker ? window.kiotPicker.qtyText(qty.value) : String(qty.value || '1');
+        if (qty.value !== shown) qty.value = shown;
+        line.quantity = window.kiotPicker ? window.kiotPicker.normalizeQty(shown) : (Number(shown) || 1);
         state.quote = null;
         dirty = true;
         paintTotals();
         const totalEl = row.querySelector('.kiot-line-total');
         if (totalEl) totalEl.textContent = line.price != null && Number.isFinite(line.quantity) ? vnd(line.price * line.quantity) : '—';
         confirmBtn.disabled = true;
-      });
+      };
+      qty.addEventListener('input', keepQty);
+      qty.addEventListener('change', keepQty);
       qtyWrap.appendChild(qty);
       row.appendChild(qtyWrap);
 
@@ -1791,29 +1915,54 @@
       if (product.stock) line.stock = product.stock;
     }
 
-    async function fillSearch(q, box, line) {
+    function hitText(product) {
+      const bits = [];
+      if (product.name) bits.push(product.name);
+      if (product.code) bits.push(product.code);
+      if (product.price != null) bits.push(vnd(product.price));
+      if (product.available != null) bits.push('Tồn ' + product.available);
+      return bits.join(' · ') || 'Sản phẩm';
+    }
+
+    function paintSearch(box, line) {
       box.textContent = '';
+      const note = window.kiotPicker ? window.kiotPicker.searchNote(line.searchPhase) : '';
+      if (note) box.appendChild(el('p', { class: 'kiot-search-note', text: note }));
+      (line.hits || []).slice(0, 8).forEach(product => {
+        const btn = el('button', { type: 'button', class: 'kiot-hit', text: hitText(product) });
+        btn.addEventListener('click', () => {
+          applyProduct(line, product);
+          line.hits = [];
+          line.searchPhase = 'idle';
+          state.quote = null;
+          dirty = true;
+          paintLines();
+        });
+        box.appendChild(btn);
+      });
+    }
+
+    async function fillSearch(q, box, line) {
       const query = String(q || '').trim();
-      if (query.length < 2) return;
+      if (query.length < 2) {
+        line.searchPhase = 'idle';
+        line.hits = [];
+        paintSearch(box, line);
+        return;
+      }
+      if (String(line.query || '').trim() !== query) return;
       try {
         const data = await api('/admin/api/kiotviet/products?q=' + encodeURIComponent(query));
-        (data.products || []).forEach(product => {
-          const btn = el('button', {
-            type: 'button',
-            class: 'kiot-hit',
-            text: (product.code || '') + ' · ' + (product.name || '') + ' · ' + vnd(product.price),
-          });
-          btn.addEventListener('click', () => {
-            applyProduct(line, product);
-            state.quote = null;
-            dirty = true;
-            paintLines();
-          });
-          box.appendChild(btn);
-        });
-        if (!(data.products || []).length) box.appendChild(el('p', { class: 'kiot-warn', text: 'Không thấy món này trên KiotViet.' }));
+        if (String(line.query || '').trim() !== query) return;
+        const products = (data.products || []).slice(0, 8);
+        line.hits = products;
+        line.searchPhase = products.length ? 'ok' : 'empty';
+        paintSearch(box, line);
       } catch (e) {
-        box.appendChild(el('p', { class: 'kiot-warn', text: e.message }));
+        if (String(line.query || '').trim() !== query) return;
+        line.hits = [];
+        line.searchPhase = 'error';
+        paintSearch(box, line);
       }
     }
 
@@ -2042,6 +2191,8 @@
       stock: null,
       candidates: [],
       query: '',
+      hits: [],
+      searchPhase: 'idle',
     };
   }
 
