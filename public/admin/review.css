@@ -1062,6 +1062,16 @@ body.hitl button.card-del { color: var(--red); }
 body.hitl .msg-actions,
 body.hitl .detail-actions { display: flex; flex-wrap: wrap; gap: 0; width: 100%; }
 body.hitl .detail-actions { width: auto; margin: 0 0 var(--space-2); }
+body.inbox .detail-quick {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0;
+  overflow-x: auto;
+  margin: 0 0 var(--space-2);
+}
+body.inbox .detail-quick .detail-actions,
+body.inbox .detail-quick .status-actions { flex: 0 0 auto; width: auto; margin: 0; }
 
 body.hitl .cust-fold,
 body.hitl .kiot-fold {
@@ -1075,7 +1085,8 @@ body.hitl .kiot-fold {
   position: relative;
 }
 body.hitl .kiot-fold[open] { z-index: 4; }
-body.inbox details.kiot-fold:not([open]) > :not(summary) { display: none; }
+body.inbox details.kiot-fold:not([open]) > :not(summary),
+body.inbox details.cust-fold:not([open]) > :not(summary) { display: none; }
 body.hitl .cust-fold summary,
 body.hitl .kiot-fold summary,
 body.hitl .queue-stats summary,

@@ -1078,11 +1078,11 @@
     });
     wrap.appendChild(chips);
     wrap.appendChild(historyLine(history));
-    const form = el('form', { class: 'cust-link' });
+    const form = el('div', { class: 'cust-link' });
     const input = el('input', {
       type: 'tel',
       inputmode: 'tel',
-      name: 'phone',
+      name: 'link_phone',
       placeholder: 'Gắn số điện thoại',
       maxlength: '20',
       autocomplete: 'tel',
@@ -1091,17 +1091,21 @@
     });
     input.value = phone;
     input.addEventListener('click', (ev) => ev.stopPropagation());
-    const go = el('button', { type: 'submit', class: 'btn btn-sm', text: 'Gắn' });
-    form.appendChild(input);
-    form.appendChild(go);
-    form.addEventListener('submit', (ev) => {
+    const go = el('button', { type: 'button', class: 'btn btn-sm', text: 'Gắn' });
+    const linkPhone = (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
       api('/admin/api/customers/link', {
         method: 'POST',
         body: JSON.stringify({ draft_id: d.id, phone: input.value, name: d.customer_name || '' }),
       }).then(reload).catch(err => { statusNote(wrap, err.message); });
+    };
+    go.addEventListener('click', linkPhone);
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') linkPhone(ev);
     });
+    form.appendChild(input);
+    form.appendChild(go);
     wrap.appendChild(form);
     return wrap;
   }
@@ -1369,6 +1373,7 @@
     const main = el('div', { class: 'detail-main' });
     const side = el('div', { class: 'detail-side' });
     body.appendChild(meta);
+    body.appendChild(customerPanel(d));
     const want = el('div', { class: 'want-box' });
     want.appendChild(el('span', { text: 'Khách đang muốn' }));
     const wantText = el('div', { class: 'msg-customer' });
@@ -1407,6 +1412,12 @@
     main.appendChild(el('div', { class: 'field-block' }, [reply]));
     main.appendChild(el('p', { id: 'reply-error', class: 'reply-error', hidden: 'hidden' }));
     if (!locked) main.appendChild(learnToggle(cardStateForReply));
+    if (!d.deleted_at) {
+      const quick = el('div', { class: 'detail-quick' });
+      quick.appendChild(lineActions(d, 'detail-actions'));
+      quick.appendChild(statusActions(d));
+      main.appendChild(quick);
+    }
 
     const phoneField = blockField('customer_phone', 'Số điện thoại', d.customer_phone, {
       disabled: locked, placeholder: 'Nếu có', type: 'tel', inputmode: 'tel', autocomplete: 'tel',
