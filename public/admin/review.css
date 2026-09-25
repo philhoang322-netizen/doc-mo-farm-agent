@@ -522,6 +522,7 @@ body.hitl .health-chip {
   border-radius: var(--radius-sm);
   box-shadow: none;
 }
+body.inbox button#detail-back { display: none; }
 body.hitl .health-chip { width: auto; padding: 0 8px; color: var(--muted); font-weight: 650; font-size: 14px; }
 body.hitl .health-dot {
   width: 10px;
@@ -1074,6 +1075,7 @@ body.hitl .kiot-fold {
   position: relative;
 }
 body.hitl .kiot-fold[open] { z-index: 4; }
+body.inbox details.kiot-fold:not([open]) > :not(summary) { display: none; }
 body.hitl .cust-fold summary,
 body.hitl .kiot-fold summary,
 body.hitl .queue-stats summary,
@@ -1450,6 +1452,7 @@ body.hitl .qr { max-width: 220px; }
     bottom: 0;
   }
   body.inbox .back { display: inline-flex; }
+  body.inbox.show-detail button#detail-back { display: inline-flex; }
   body.inbox .kiot-actions .btn { width: 100%; }
 }
 

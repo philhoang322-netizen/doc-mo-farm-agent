@@ -37,6 +37,7 @@ test('inbox uses dynamic viewport, safe areas, and 16px inputs', () => {
 test('PR #23 inbox hooks stay in the markup', () => {
   assert.match(html, /id="toast"/);
   assert.match(html, /id="undo-toasts"/);
+  assert.match(html, /aria-label="Quay lại danh sách"/);
   assert.match(html, /id="refresh-now"/);
   assert.match(html, /id="hot-chip"/);
   assert.match(html, /id="group-tabs"/);

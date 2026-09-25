@@ -1341,12 +1341,9 @@
     const refund = isRefund(d);
     const addrOn = showAddress(d);
     const f = formOf(d);
-    const back = el('button', { type: 'button', class: 'btn btn-sm back', text: '← Danh sách' });
-    back.addEventListener('click', () => closeDetail(false));
 
     const form = el('form', { class: 'draft-form' });
     form.addEventListener('submit', e => e.preventDefault());
-    form.appendChild(back);
 
     const body = el('div', { class: 'detail-body' });
     const code = d.customer_code || f.kiot_ref || '';
@@ -1411,20 +1408,25 @@
     main.appendChild(el('p', { id: 'reply-error', class: 'reply-error', hidden: 'hidden' }));
     if (!locked) main.appendChild(learnToggle(cardStateForReply));
 
-    const grid = el('div', { class: 'grid2' });
-    grid.appendChild(blockField('customer_phone', 'Số điện thoại', d.customer_phone, {
+    const phoneField = blockField('customer_phone', 'Số điện thoại', d.customer_phone, {
       disabled: locked, placeholder: 'Nếu có', type: 'tel', inputmode: 'tel', autocomplete: 'tel',
-    }));
-    grid.appendChild(blockField('invoice_code', 'Mã hoá đơn', d.invoice_code, { disabled: locked, placeholder: 'Ví dụ: HD011637' }));
-    side.appendChild(grid);
+    });
+    const invoiceField = blockField('invoice_code', 'Mã hoá đơn', d.invoice_code, { disabled: locked, placeholder: 'Ví dụ: HD011637' });
     if (me.canKiot) {
       const fold = el('details', { class: 'kiot-fold' });
       fold.open = false;
       fold.appendChild(el('summary', { text: 'Tạo đơn KiotViet' }));
+      fold.appendChild(phoneField);
+      fold.appendChild(invoiceField);
       fold.addEventListener('toggle', () => {
         if (fold.open && !fold.querySelector('.kiot-panel')) fold.appendChild(kiotPanel(d));
       });
       side.appendChild(fold);
+    } else {
+      const grid = el('div', { class: 'grid2' });
+      grid.appendChild(phoneField);
+      grid.appendChild(invoiceField);
+      side.appendChild(grid);
     }
     if (refund) side.appendChild(refundPanel(d, f, locked));
     if (addrOn) side.appendChild(addressPanel(f, locked));
@@ -1928,7 +1930,9 @@
     const nameHint = el('p', { class: 'kiot-name-hint', text: seeded.hint });
     nameHint.hidden = !seeded.hint;
     nameInput.wrap.appendChild(nameHint);
-    const phoneInput = kiotInput('Số điện thoại', d.customer_phone || '', 'kiot-phone-' + pid, { type: 'tel', inputmode: 'tel' });
+    const phoneInput = adoptDraftField('customer_phone', 'kiot-phone-' + pid)
+      || kiotInput('Số điện thoại', d.customer_phone || '', 'kiot-phone-' + pid, { type: 'tel', inputmode: 'tel' });
+    const invoiceInput = adoptDraftField('invoice_code');
     const addrInput = kiotInput('Địa chỉ giao', addressText(d), 'kiot-address-' + pid);
     nameInput.input.addEventListener('input', () => {
       state.touched.name = true;
@@ -1945,6 +1949,7 @@
     addrInput.input.addEventListener('input', () => { state.touched.address = true; dirty = true; });
     grid.appendChild(nameInput.wrap);
     grid.appendChild(phoneInput.wrap);
+    if (invoiceInput) grid.appendChild(invoiceInput.wrap);
     grid.appendChild(addrInput.wrap);
     panel.appendChild(grid);
 
@@ -2461,6 +2466,30 @@
     };
   }
 
+  function stripChannelPrefix(text) {
+    return String(text || '').replace(/^Tên (?:Zalo|FB):\s*/, '');
+  }
+
+  function displayChannelName(item) {
+    if (item.source === 'zalo' || item.source === 'fb') {
+      const name = String(item.name || '').trim();
+      if (name) return name;
+      return stripChannelPrefix(item.text);
+    }
+    return item.text || item.name || '';
+  }
+
+  function adoptDraftField(name, id) {
+    const input = detailEl.querySelector('input[name="' + name + '"]');
+    if (!input) return null;
+    if (id) {
+      input.id = id;
+      const label = input.parentElement && input.parentElement.querySelector('label');
+      if (label) label.htmlFor = id;
+    }
+    return { wrap: input.closest('.field-block'), input };
+  }
+
   function nameFallback(raw) {
     const nodes = [el('span', { class: 'msg-name', text: 'Khách chưa có tên' })];
     if (raw) nodes.push(el('span', { class: 'msg-id', text: raw }));
@@ -2476,7 +2505,7 @@
       const id = String(d.customer_user_id || '').trim();
       const stored = String(d.customer_name || '').trim();
       if (phone && !opaqueId(phone)) return [el('span', { class: 'msg-name', text: phone })];
-      if (stored && !opaqueId(stored)) return [el('span', { class: 'msg-name', text: stored })];
+      if (stored && !opaqueId(stored)) return [el('span', { class: 'msg-name', text: stripChannelPrefix(stored) })];
       return nameFallback(id || stored || phone);
     }
     const onlyOpaque = names.length === 1 && (names[0].source === 'id' || opaqueId(names[0].text || names[0].name));
@@ -2488,7 +2517,7 @@
       if (item.avatar && /^https:\/\//.test(item.avatar)) {
         bit.appendChild(el('img', { class: 'msg-avatar', alt: '', src: item.avatar }));
       }
-      bit.appendChild(el('span', { text: item.text || ((item.label || 'Tên') + ': ' + item.name) }));
+      bit.appendChild(el('span', { text: displayChannelName(item) }));
       return bit;
     });
   }
@@ -2847,6 +2876,9 @@
       if (users) users.hidden = !me.canManageUsers;
     } catch (_) { /* server still enforces the role */ }
   }
+
+  const detailBack = document.getElementById('detail-back');
+  if (detailBack) detailBack.addEventListener('click', () => closeDetail(false));
 
   const menuToggle = document.getElementById('menu-toggle');
   const appMenu = document.getElementById('app-menu');
