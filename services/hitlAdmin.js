@@ -9,6 +9,8 @@ const auth = require('./adminAuth');
 const db = require('./database');
 const drafts = require('./drafts');
 const audit = require('./audit');
+const kiotInbox = require('./kiotInbox');
+const kiotviet = require('./kiotviet');
 const roster = require('./roster');
 const handover = require('./handover');
 const rosterPage = require('./rosterPage');
@@ -377,6 +379,47 @@ async function rosterSave(req, res) {
  * Same effect as the owner command `/mo <external_key>`.
  * Body: { external_key: "fb_…" | "bot_…" | Zalo user id }.
  */
+async function kiotSearch(req, res) {
+  try {
+    if (!kiotviet.enabled()) return res.status(503).json({ error: 'KiotViet chưa cấu hình' });
+    const q = String(req.query.q || '').slice(0, 80);
+    const products = await kiotviet.searchProducts(q);
+    res.json({ products });
+  } catch (e) {
+    res.status(502).json({ error: e.message || 'Không tìm được sản phẩm' });
+  }
+}
+
+async function kiotPrefill(req, res) {
+  try {
+    const result = await kiotInbox.prefill(req.params.id);
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.error('Kiot prefill failed:', e.message);
+    res.status(500).json({ error: 'Không mở được đơn' });
+  }
+}
+
+async function kiotQuick(req, res) {
+  try {
+    const result = await kiotInbox.quickFill(req.body && req.body.text);
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.error('Kiot quick entry failed:', e.message);
+    res.status(500).json({ error: 'Không tách được dòng hàng' });
+  }
+}
+
+async function kiotCreate(req, res) {
+  try {
+    const result = await kiotInbox.prepareOrCreate(req.params.id, req.body, actorNameFrom(req));
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.error('Kiot create failed:', e.message);
+    res.status(500).json({ error: 'Không tạo được đơn KiotViet' });
+  }
+}
+
 async function resumeCustomer(req, res) {
   const raw = req.body && req.body.external_key;
   const key = typeof raw === 'string' ? raw.trim() : '';
@@ -416,6 +459,10 @@ function mount(app) {
   app.get('/admin/api/drafts', requireApi, list);
   app.post('/admin/api/drafts', requireApi, create);
   app.patch('/admin/api/drafts/:id', requireApi, patch);
+  app.get('/admin/api/kiotviet/products', requireApi, kiotSearch);
+  app.post('/admin/api/kiotviet/quick-entry', requireApi, kiotQuick);
+  app.get('/admin/api/drafts/:id/kiotviet', requireApi, kiotPrefill);
+  app.post('/admin/api/drafts/:id/kiotviet', requireApi, kiotCreate);
   app.post('/admin/api/customers/resume', requireApi, resumeCustomer);
 }
 

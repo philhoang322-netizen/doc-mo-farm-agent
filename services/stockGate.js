@@ -135,7 +135,7 @@ function summaryFor(assessment) {
  * @returns {Promise<{decision:'ok'|'low'|'blocked'|'skipped', threshold:number,
  *   lines:object[], draftReply:string|null, summary:string|null}>}
  */
-async function assessItems(items) {
+async function assessItems(items, opts = {}) {
   const limit = threshold();
   const linesIn = Array.isArray(items) ? items : [];
   if (!linesIn.length) {
@@ -158,7 +158,11 @@ async function assessItems(items) {
     const requested = Number(item.quantity);
     let lookup;
     try {
-      lookup = await kiotviet.getOnHand({ sku: item.sku, name: item.product_name });
+      lookup = await kiotviet.getOnHand({
+        sku: item.sku,
+        name: item.product_name,
+        branchId: opts.branchId,
+      });
     } catch (e) {
       lookup = { ok: false, reason: 'lookup_failed', error: e.message };
     }

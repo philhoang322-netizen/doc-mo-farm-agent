@@ -293,11 +293,13 @@ function sellableFromInventories(inventories, branchId) {
  *   branchId?:number, onHand?:number, reserved?:number, available?:number,
  *   reason?:string, error?:string}>}
  */
-async function getOnHand({ sku, name } = {}) {
+async function getOnHand({ sku, name, branchId: branchOverride } = {}) {
   if (!enabled()) return { ok: false, reason: 'disabled' };
   const code = sku ? String(sku).trim() : '';
   try {
-    const branch = await getBranchId();
+    const branch = branchOverride != null && Number(branchOverride) > 0
+      ? Number(branchOverride)
+      : await getBranchId();
     let product = null;
     if (code) {
       try {
@@ -392,7 +394,269 @@ async function ping() {
   }
 }
 
+/** Spoken names that should hit a catalog SKU when the farm has one. */
+function aliasFor(text) {
+  const key = normName(text);
+  if (!key || !key.includes('heotrang')) return null;
+  let sku = null;
+  let name = 'Heo trắng';
+  try {
+    const catalog = require('./catalog');
+    const row = (catalog.rows() || []).find(p => normName(p.name_vi).includes('heotrang'));
+    if (row) {
+      sku = row.sku || null;
+      name = row.name_vi || name;
+    }
+  } catch (_) { /* catalog is optional for a name search */ }
+  return { sku, name };
+}
+
+function productPrice(p) {
+  const n = Number(p && (p.basePrice != null ? p.basePrice : p.price));
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+function publicProduct(p) {
+  return {
+    id: p.id,
+    code: p.code || null,
+    name: p.fullName || p.name || null,
+    price: productPrice(p),
+    unit: p.unit || null,
+  };
+}
+
+/**
+ * Search the live product list by code or name. "heo trắng" uses aliasFor
+ * so a catalog SKU wins when the farm has mapped that name.
+ */
+async function searchProducts(query, limit = 12) {
+  const q = String(query || '').trim().slice(0, 80);
+  if (!q) return [];
+  const cache = await loadProducts();
+  const alias = aliasFor(q);
+  const want = Math.min(30, Math.max(1, Number(limit) || 12));
+  const hits = [];
+  const seen = new Set();
+  const push = (p) => {
+    if (!p || seen.has(p.id)) return;
+    seen.add(p.id);
+    hits.push(publicProduct(p));
+  };
+  if (alias && alias.sku && cache.byCode.has(String(alias.sku).toUpperCase())) {
+    push(cache.byCode.get(String(alias.sku).toUpperCase()));
+  }
+  const upper = q.toUpperCase();
+  const queryKey = normName(q);
+  const aliasKey = alias ? normName(alias.name) : '';
+  for (const p of cache.byCode.values()) {
+    const code = String(p.code || '').toUpperCase();
+    const nameKey = normName(p.fullName || p.name);
+    const codeHit = upper.length >= 2 && code.includes(upper);
+    const nameHit = queryKey.length >= 2 && nameKey.includes(queryKey);
+    const aliasHit = aliasKey.length >= 2 && nameKey.includes(aliasKey);
+    if (codeHit || nameHit || aliasHit) push(p);
+    if (hits.length >= want) break;
+  }
+  return hits;
+}
+
+/** Admin sales use this branch. KIOTVIET_BRANCH_ID wins; otherwise the farm branch. */
+const DEFAULT_SALE_BRANCH_ID = 26947;
+
+function saleBranchId() {
+  const raw = process.env.KIOTVIET_BRANCH_ID;
+  if (raw != null && String(raw).trim() !== '') {
+    const n = Number(String(raw).trim());
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return DEFAULT_SALE_BRANCH_ID;
+}
+
+function moneyAmount(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.round(n);
+}
+
+function documentCode(created) {
+  if (!created || typeof created !== 'object') return null;
+  const code = created.code || created.orderCode || created.invoiceCode
+    || (created.data && (created.data.code || created.data.orderCode || created.data.invoiceCode));
+  return code ? String(code).slice(0, 40) : null;
+}
+
+function documentTotal(created, fallback) {
+  const raw = created && (created.total != null ? created.total : (created.data && created.data.total));
+  const n = Number(raw);
+  if (Number.isFinite(n) && n >= 0) return Math.round(n);
+  return fallback;
+}
+
+/**
+ * Build the Public API body for an invoice (HĐ) or an order (Đặt hàng).
+ * Invoice totalPayment stays 0 so KiotViet does not mark it paid; the
+ * customer transfers after the manager sends the draft.
+ */
+function salePayload({
+  kind, branchId, customerId, customerName, phone, address,
+  discount, shippingFee, description, details,
+}) {
+  const ship = moneyAmount(shippingFee);
+  const off = moneyAmount(discount);
+  const delivery = (address || ship)
+    ? {
+      receiver: customerName || undefined,
+      contactNumber: phone || undefined,
+      address: address || undefined,
+      price: ship,
+    }
+    : null;
+  if (kind === 'order') {
+    const payload = {
+      branchId,
+      purchaseDate: new Date().toISOString(),
+      discount: off,
+      description: description || '',
+      method: 'Transfer',
+      totalPayment: 0,
+      makeInvoice: false,
+      orderDetails: details,
+      customerId,
+    };
+    if (delivery) payload.orderDelivery = delivery;
+    return payload;
+  }
+  const payload = {
+    branchId,
+    purchaseDate: new Date().toISOString(),
+    discount: off,
+    totalPayment: 0,
+    method: 'Transfer',
+    usingCod: false,
+    description: description || '',
+    invoiceDetails: details,
+    customerId,
+  };
+  if (delivery) payload.delivery = delivery;
+  return payload;
+}
+
+/**
+ * Create one invoice or one order from lines the manager already confirmed.
+ * Does not run from the chatbot. pushOrder stays order-only.
+ *
+ * @returns {Promise<{ok:boolean, code?:string, total?:number, documentType?:string,
+ *   branchId?:number, error?:string, missing?:string[]}>}
+ */
+async function createSaleDocument({
+  documentType = 'invoice',
+  customerName,
+  phone,
+  address,
+  note,
+  discount = 0,
+  shippingFee = 0,
+  lines = [],
+  description,
+} = {}) {
+  if (!enabled()) return { ok: false, error: 'KiotViet chưa cấu hình' };
+  const kind = documentType === 'order' ? 'order' : 'invoice';
+  try {
+    const branch = saleBranchId();
+    const details = [];
+    const missing = [];
+    for (const item of lines || []) {
+      const alias = aliasFor(item.product_name || item.name);
+      const sku = item.sku || (alias && alias.sku) || '';
+      const p = sku
+        ? await findProduct({ sku })
+        : await findProduct({ name: item.product_name || item.name || (alias && alias.name) });
+      if (!p) {
+        missing.push(item.product_name || item.sku || 'sản phẩm');
+        continue;
+      }
+      const qty = Number(item.quantity);
+      if (!Number.isFinite(qty) || qty <= 0) {
+        return { ok: false, error: 'Số lượng không hợp lệ' };
+      }
+      details.push({
+        productId: p.id,
+        productCode: p.code,
+        productName: p.fullName || p.name,
+        quantity: qty,
+        price: productPrice(p),
+      });
+    }
+    if (missing.length) {
+      return { ok: false, missing, error: `Chưa có trong KiotViet: ${missing.join(', ')}` };
+    }
+    if (!details.length) return { ok: false, error: 'Đơn không có dòng hàng hợp lệ' };
+
+    const customer = await findOrCreateCustomer({ name: customerName, phone });
+    if (!customer || !customer.id) {
+      return { ok: false, error: 'Không tạo được khách KiotViet theo số điện thoại' };
+    }
+
+    const subtotal = details.reduce((s, d) => s + d.quantity * d.price, 0);
+    const off = moneyAmount(discount);
+    const ship = moneyAmount(shippingFee);
+    if (off > subtotal) return { ok: false, error: 'Giảm giá lớn hơn tiền hàng' };
+    const total = Math.max(0, Math.round(subtotal - off + ship));
+    const desc = String(description || [
+      note || null,
+      address ? `Giao: ${address}` : null,
+    ].filter(Boolean).join(' | ')).slice(0, 500);
+
+    const payload = salePayload({
+      kind,
+      branchId: branch,
+      customerId: customer.id,
+      customerName,
+      phone,
+      address,
+      discount: off,
+      shippingFee: ship,
+      description: desc,
+      details,
+    });
+    const path = kind === 'order' ? '/orders' : '/invoices';
+    const created = await call('post', path, { data: payload });
+    const code = documentCode(created);
+    if (!code) {
+      return { ok: false, error: 'KiotViet không trả mã chứng từ. Kiểm tra trên KiotViet trước khi tạo lại.' };
+    }
+    const charged = documentTotal(created, total);
+    console.log('🧾 KiotViet', kind, 'created:', code);
+    return { ok: true, code, total: charged, documentType: kind, branchId: branch };
+  } catch (e) {
+    console.error('KiotViet createSaleDocument failed:', e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+function matchableProduct(p) {
+  const qty = sellableFromInventories(p && p.inventories, saleBranchId());
+  return {
+    id: p.id,
+    code: p.code || '',
+    name: p.fullName || p.name || '',
+    price: productPrice(p),
+    unit: p.unit || '',
+    isActive: p.isActive !== false && p.allowsSale !== false,
+    available: qty ? qty.available : null,
+  };
+}
+
+/** Cached catalog (10 minutes, see loadProducts) shaped for quick-entry matching. */
+async function listProductsForMatch() {
+  const cache = await loadProducts();
+  return [...cache.byCode.values()].map(matchableProduct);
+}
+
 module.exports = {
   enabled, pushOrder, findProduct, loadProducts, ping, getToken,
   getOnHand, sellableFromInventories,
+  searchProducts, aliasFor, saleBranchId, salePayload, createSaleDocument,
+  listProductsForMatch, DEFAULT_SALE_BRANCH_ID,
 };
