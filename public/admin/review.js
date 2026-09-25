@@ -210,14 +210,9 @@
     const bar = document.getElementById('app-bar');
     if (bar) document.body.style.setProperty('--app-bar-h', bar.offsetHeight + 'px');
     let chrome = 0;
-    if (!isDesktop()) {
-      if (document.body.classList.contains('show-detail')) {
-        const sticky = document.querySelector('#detail .sticky-actions');
-        chrome = sticky ? sticky.offsetHeight : 0;
-      } else {
-        const tabs = document.getElementById('group-tabs');
-        chrome = tabs ? tabs.offsetHeight : 0;
-      }
+    if (!isDesktop() && document.body.classList.contains('show-detail')) {
+      const sticky = document.querySelector('#detail .sticky-actions');
+      chrome = sticky ? sticky.offsetHeight : 0;
     }
     document.body.style.setProperty('--bottom-chrome', chrome + 'px');
   }
@@ -1894,6 +1889,7 @@
     renderList();
     if (!fromPop && detailPushed) {
       detailPushed = false;
+      syncBarHeight();
       history.back();
       return;
     }

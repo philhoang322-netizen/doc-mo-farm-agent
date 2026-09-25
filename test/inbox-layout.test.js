@@ -93,7 +93,7 @@ test('390px inbox fits, keeps 44px targets, and starts the first card high', {
     draft_reply: 'Dạ còn ạ',
     triage_level: 'normal',
   });
-  for (const name of ['Lê An', 'Phạm Bình', 'Đỗ Chi', 'Vũ Dũng', 'Ngô Em']) {
+  for (const name of ['Lê An', 'Phạm Bình', 'Đỗ Chi', 'Vũ Dũng', 'Ngô Em', 'Lý Gia', 'Mai Hà', 'Tô Kha']) {
     await drafts.createDraft({
       channel: 'zalo',
       sales_channel: 'farm',
@@ -200,6 +200,32 @@ test('390px inbox fits, keeps 44px targets, and starts the first card high', {
     assert.ok(metrics.rows >= 5, 'rows on first screen ' + metrics.rows);
     assert.equal(metrics.kiotInList, false);
     assert.equal(metrics.replyShown, false);
+
+    await page.setViewportSize({ width: 402, height: 874 });
+    await page.waitForSelector('.msg-card');
+    const phone = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll('.msg-card')].map(node => {
+        const box = node.getBoundingClientRect();
+        return { top: box.top, bottom: box.bottom, h: box.height };
+      }).filter(box => box.h > 20);
+      const tabs = document.getElementById('group-tabs');
+      const tabStyle = getComputedStyle(tabs);
+      const tabBox = tabs.getBoundingClientRect();
+      const visibleRows = cards.filter(box => box.top >= 0 && box.bottom <= window.innerHeight - 1);
+      return {
+        cardTop: cards.length ? Math.round(cards[0].top) : null,
+        rows: visibleRows.length,
+        tabPosition: tabStyle.position,
+        tabBottom: Math.round(tabBox.bottom),
+        inHeader: tabs.parentElement && tabs.parentElement.id === 'app-bar',
+        paddingBottom: getComputedStyle(document.body).paddingBottom,
+      };
+    });
+    assert.equal(phone.inHeader, true);
+    assert.notEqual(phone.tabPosition, 'fixed');
+    assert.ok(phone.tabBottom < 160, 'channel row bottom ' + phone.tabBottom);
+    assert.ok(phone.cardTop != null && phone.cardTop <= 172, 'first card Y ' + phone.cardTop);
+    assert.ok(phone.rows >= 8, 'visible rows ' + phone.rows + ' first Y ' + phone.cardTop);
   } finally {
     await browser.close();
     server.close();

@@ -40,6 +40,11 @@
       <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
     </button>
   </div>
+  <div class="group-scroll" id="group-tabs" role="tablist" aria-label="Nhóm hộp thư">
+    <button type="button" class="chip queue-tab" role="tab" data-nhom="zalo" aria-selected="true">Zalo OA <span class="count"></span></button>
+    <button type="button" class="chip queue-tab" role="tab" data-nhom="fb-sale">FB-Sale <span class="count"></span></button>
+    <button type="button" class="chip queue-tab" role="tab" data-nhom="fb-dv">FB-DV <span class="count"></span></button>
+  </div>
   <div id="app-menu" class="app-menu" hidden>
     <div class="field actor-field">
       <label for="actor-name">Tên người duyệt</label>
@@ -107,11 +112,6 @@
           <h2>Hàng chờ duyệt</h2>
         </div>
         <div class="toolbar">
-          <div class="group-scroll" id="group-tabs" role="tablist" aria-label="Nhóm hộp thư">
-            <button type="button" class="chip queue-tab" role="tab" data-nhom="zalo" aria-selected="true">Zalo OA <span class="count"></span></button>
-            <button type="button" class="chip queue-tab" role="tab" data-nhom="fb-sale">FB-Sale <span class="count"></span></button>
-            <button type="button" class="chip queue-tab" role="tab" data-nhom="fb-dv">FB-DV <span class="count"></span></button>
-          </div>
           <div class="folder-bar">
             <nav class="folder-row" id="folder-nav" aria-label="Thư mục trạng thái">
               <button type="button" class="folder" data-folder="pending" aria-selected="true">Chờ xử lý <span class="count"></span></button>

@@ -213,6 +213,13 @@ test('inbox keeps every pre-redesign control and API trigger', () => {
   assert.match(css, /folder-row \{[^}]*flex-wrap:\s*wrap/s);
   assert.doesNotMatch(css, /bar-collapsed \.ver/);
   assert.match(js, /aria-label', 'Nóng '/);
+  const header = html.slice(html.indexOf('<header'), html.indexOf('</header>'));
+  assert.match(header, /id="group-tabs"/);
+  assert.match(header, /role="tablist"/);
+  const queue = html.slice(html.indexOf('id="queue"'), html.indexOf('id="list"'));
+  assert.doesNotMatch(queue, /id="group-tabs"/);
+  assert.doesNotMatch(css, /group-scroll \{[^}]*position:\s*fixed/s);
+  assert.match(css, /show-detail #group-tabs \{\s*display:\s*none/);
 });
 
 function loadPlaywright() {
@@ -237,10 +244,20 @@ test('quick-row hit boxes, brand, and search chip fit the phone', {
   const express = require('express');
   const drafts = require('../services/drafts');
   const hitlAdmin = require('../services/hitlAdmin');
-  await drafts.createDraft({
-    channel: 'zalo',
-    sales_channel: 'farm',
-    customer_name: 'Nguyễn Lan',
+    await drafts.createDraft({
+      channel: 'messenger',
+      sales_channel: 'farm',
+      biz_line: 'sale',
+      customer_name: 'FB Khách',
+      customer_user_id: 'fb_khach',
+      customer_query: 'Inbox Facebook',
+      draft_reply: 'Dạ em xem ạ.',
+      triage_level: 'normal',
+    });
+    await drafts.createDraft({
+      channel: 'zalo',
+      sales_channel: 'farm',
+      customer_name: 'Nguyễn Lan',
     customer_user_id: 'zalo_lan',
     customer_phone: '0901234567',
     customer_query: 'Còn nước gừng không anh?',
@@ -443,18 +460,52 @@ test('quick-row hit boxes, brand, and search chip fit the phone', {
       active: document.getElementById('search-toggle').classList.contains('is-active'),
     }));
 
+    async function channelBar() {
+      return page.evaluate(() => {
+        const bar = document.getElementById('group-tabs');
+        const style = getComputedStyle(bar);
+        const box = bar.getBoundingClientRect();
+        const header = document.getElementById('app-bar').getBoundingClientRect();
+        const tabs = [...bar.querySelectorAll('[role="tab"]')].map(btn => {
+          const b = btn.getBoundingClientRect();
+          return {
+            text: btn.innerText.replace(/\s+/g, ' ').trim(),
+            selected: btn.getAttribute('aria-selected'),
+            h: Math.round(b.height),
+            top: Math.round(b.top),
+            bottom: Math.round(b.bottom),
+          };
+        });
+        return {
+          inHeader: bar.parentElement && bar.parentElement.id === 'app-bar',
+          inQueue: !!bar.closest('#queue'),
+          position: style.position,
+          display: style.display,
+          role: bar.getAttribute('role'),
+          top: Math.round(box.top),
+          bottom: Math.round(box.bottom),
+          headerBottom: Math.round(header.bottom),
+          tabs,
+        };
+      });
+    }
+
     const folders = {};
+    const channels = {};
     for (const width of [390, 402, 440]) {
       await page.setViewportSize({ width, height: 900 });
       await page.waitForSelector('#folder-nav .folder');
       folders['list-' + width] = await folderFit();
+      channels['list-' + width] = await channelBar();
     }
     await page.setViewportSize({ width: 1024, height: 800 });
     await page.locator('.msg-card', { hasText: 'Nguyễn Lan' }).locator('.msg').click();
     await page.waitForSelector('#detail .detail-quick');
     folders['detail-1024'] = await folderFit();
+    channels['detail-1024'] = await channelBar();
     await page.setViewportSize({ width: 1280, height: 800 });
     folders['detail-1280'] = await folderFit();
+    channels['detail-1280'] = await channelBar();
     await page.setViewportSize({ width: 402, height: 874 });
     await page.click('#detail-back');
     await page.waitForSelector('#queue .msg', { state: 'visible' });
@@ -506,6 +557,45 @@ test('quick-row hit boxes, brand, and search chip fit the phone', {
         assert.ok(box.h >= 44, key + ' ' + box.text + ' h ' + box.h);
       });
     }
+    for (const key of ['list-402', 'detail-1280']) {
+      const bar = channels[key];
+      assert.equal(bar.inHeader, true, key + ' tabs outside header');
+      assert.equal(bar.inQueue, false, key + ' tabs still in the list pane');
+      assert.notEqual(bar.position, 'fixed', key + ' tabs are a bottom bar');
+      assert.equal(bar.role, 'tablist');
+      assert.equal(bar.display === 'none', false, key + ' tabs hidden');
+      assert.ok(bar.bottom < 220, key + ' tab bottom ' + bar.bottom);
+      assert.equal(bar.tabs.length, 3);
+      bar.tabs.forEach(tab => {
+        assert.equal(tab.h >= 44, true, key + ' ' + tab.text + ' h ' + tab.h);
+        assert.match(tab.text, /\d/);
+      });
+    }
+    assert.equal(channels['list-402'].tabs[0].selected, 'true');
+    await page.setViewportSize({ width: 402, height: 874 });
+    await page.click('#detail-back');
+    await page.waitForSelector('#group-tabs [data-nhom="fb-sale"]', { state: 'visible' });
+    const listBefore = await page.locator('.msg-card').count();
+    await page.click('#group-tabs [data-nhom="fb-sale"]');
+    await page.waitForSelector('.msg-card', { hasText: 'FB Khách' });
+    const switched = await page.evaluate(() => ({
+      selected: document.querySelector('[data-nhom="fb-sale"]').getAttribute('aria-selected'),
+      zalo: document.querySelector('[data-nhom="zalo"]').getAttribute('aria-selected'),
+      url: location.search,
+      names: [...document.querySelectorAll('.msg-card')].map(node => node.innerText).join('\n'),
+      tabsFixed: getComputedStyle(document.getElementById('group-tabs')).position,
+    }));
+    const closedPad = await page.evaluate(() => getComputedStyle(document.body).paddingBottom);
+    assert.equal(closedPad, '0px', 'list keeps a bottom-bar gap after closing detail');
+    assert.equal(switched.selected, 'true');
+    assert.equal(switched.zalo, 'false');
+    assert.match(switched.url, /nhom=fb-sale/);
+    assert.match(switched.names, /FB Khách/);
+    assert.equal(switched.names.includes('Nguyễn Lan'), false);
+    assert.notEqual(switched.tabsFixed, 'fixed');
+    assert.ok(listBefore >= 1);
+    await page.click('#group-tabs [data-nhom="zalo"]');
+    await page.waitForSelector('.msg-card', { hasText: 'Nguyễn Lan' });
   } finally {
     await browser.close();
     server.close();
