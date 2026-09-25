@@ -555,7 +555,7 @@ async function kiotSearch(req, res) {
   try {
     if (!kiotviet.enabled()) return res.status(503).json({ error: 'KiotViet chưa cấu hình' });
     const q = String(req.query.q || '').slice(0, 80);
-    const products = await kiotviet.searchProducts(q);
+    const products = await kiotviet.searchProducts(q, 8);
     res.json({ products });
   } catch (e) {
     res.status(502).json({ error: e.message || 'Không tìm được sản phẩm' });
@@ -859,6 +859,8 @@ function mount(app) {
   });
   app.get('/admin/review.css', requirePageAsset, sendAsset('review.css', 'text/css; charset=utf-8'));
   app.get('/admin/inbox-refresh.js', requirePageAsset, sendAsset('inbox-refresh.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/inbox-order.js', requirePageAsset, sendAsset('inbox-order.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/kiot-picker.js', requirePageAsset, sendAsset('kiot-picker.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/review.js', requirePageAsset, sendAsset('review.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/audit.js', requirePageAsset, sendAsset('audit.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/audit', auditPage);

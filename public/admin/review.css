@@ -487,7 +487,8 @@ body.hitl .card-actions, body.hitl .status-actions {
 }
 body.hitl .learn-toggle { display: flex; align-items: center; gap: 8px; padding: 0 12px 10px; font-weight: 650; }
 body.hitl .learn-toggle input { width: auto; min-height: 0; }
-body.hitl .kiot-fold { margin: 0 10px 12px; background: #fff; border: 1.5px solid var(--line); border-radius: 12px; padding: 8px 10px; }
+body.hitl .kiot-fold { margin: 0 10px 12px; background: #fff; border: 1.5px solid var(--line); border-radius: 12px; padding: 8px 10px; overflow: visible; position: relative; }
+body.hitl .kiot-fold[open] { z-index: 4; }
 body.hitl .kiot-fold summary { cursor: pointer; font-weight: 700; color: var(--green-deep); }
 body.hitl .msg-kicker { font-size: 0.75rem; font-weight: 700; color: var(--muted); margin-top: 4px; }
 body.hitl .msg-customer { white-space: pre-wrap; color: var(--ink); margin: 2px 0 8px; }
@@ -584,7 +585,7 @@ body.hitl .msg-card {
   background: #fff;
   border: 1.5px solid var(--line);
   border-radius: 14px;
-  overflow: hidden;
+  overflow: visible;
 }
 body.hitl .msg-card.selected { border-color: #4f9a6d; box-shadow: 0 0 0 3px var(--green-soft); }
 body.hitl .msg-card .msg { border-radius: 0; }
@@ -657,14 +658,16 @@ body.hitl .kiot-qty input { width: 7rem; margin: 0; }
 body.hitl .kiot-meta { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 8px; font-size: 0.9375rem; }
 body.hitl .kiot-stock.bad { color: var(--red); font-weight: 700; }
 body.hitl .kiot-stock.warn { color: var(--orange); font-weight: 700; }
-body.hitl .kiot-results { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+body.hitl .kiot-results { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; position: relative; z-index: 5; }
+body.hitl .kiot-search-note { margin: 4px 0 0; color: var(--muted); font-size: 0.875rem; font-weight: 650; }
 body.hitl button.kiot-hit {
   text-align: left;
   background: #fff;
   color: var(--ink);
   border: 1px solid var(--line);
   border-radius: 8px;
-  min-height: 40px;
+  min-height: 44px;
+  width: 100%;
   font-weight: 550;
   box-shadow: none;
 }
