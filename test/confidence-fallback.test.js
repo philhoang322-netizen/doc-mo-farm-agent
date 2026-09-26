@@ -218,8 +218,9 @@ describe('confidence fallback', { concurrency: 1 }, () => {
     assert.notEqual(draft.draft_reply, WRONG);
   });
 
-  test('high confidence still auto-sends when approval is off', async () => {
+  test('high confidence stays PENDING_REVIEW when approval flags are off', async () => {
     process.env.HITL_REQUIRE_APPROVAL = 'false';
+    process.env.AUTO_SEND = 'true';
     mockAi(0.91, SALES);
 
     const uid = `oa_high_off_${Date.now()}`;
@@ -229,9 +230,12 @@ describe('confidence fallback', { concurrency: 1 }, () => {
       return true;
     }));
 
-    assert.equal(result.held, false);
-    assert.deepEqual(calls, [SALES]);
-    assert.equal(await draftFor(uid), null);
+    assert.equal(result.held, true);
+    assert.equal(calls.length, 0);
+    const draft = await draftFor(uid);
+    assert.equal(draft.approval_status, 'PENDING_REVIEW');
+    assert.equal(draft.draft_reply, SALES);
+    delete process.env.AUTO_SEND;
   });
 
   test('nonsense and empty intent skip the model and do not draft a sales reply', async () => {

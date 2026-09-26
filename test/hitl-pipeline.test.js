@@ -1,7 +1,7 @@
 /**
  * Inbound text must become a PENDING_REVIEW draft and must not call the
- * Zalo send callback with the AI body when HITL_REQUIRE_APPROVAL is on
- * (the default). false keeps auto-send.
+ * Zalo send callback with the AI body. Auto-send is forbidden: an env
+ * flag cannot turn it back on.
  */
 const path = require('path');
 const os = require('os');
@@ -112,9 +112,10 @@ test('bot channel stores bot_<chatId> and does not send the AI body', async () =
   assert.equal(draft.channel, 'zalo');
 });
 
-test('HITL_ACK_MESSAGE sends only the ack, not the AI body', async () => {
+test('HITL_ACK_MESSAGE cannot send an ack', async () => {
   process.env.HITL_REQUIRE_APPROVAL = 'true';
   process.env.HITL_ACK_MESSAGE = 'Dạ farm đã nhận, nhân viên xem và trả lời sớm ạ';
+  process.env.AUTO_SEND = '1';
   mockAi();
 
   const uid = `oa_ack_${Date.now()}`;
@@ -124,11 +125,13 @@ test('HITL_ACK_MESSAGE sends only the ack, not the AI body', async () => {
     return true;
   }));
 
-  assert.deepEqual(calls.map(c => c.text), [process.env.HITL_ACK_MESSAGE]);
+  assert.equal(calls.length, 0);
+  assert.equal(hitl.ackMessage(), '');
   const draft = await draftFor(uid);
   assert.equal(draft.draft_reply, AI);
   assert.equal(draft.approval_status, 'PENDING_REVIEW');
   delete process.env.HITL_ACK_MESSAGE;
+  delete process.env.AUTO_SEND;
 });
 
 test('blank HITL_ACK_MESSAGE sends nothing', async () => {
@@ -147,10 +150,12 @@ test('blank HITL_ACK_MESSAGE sends nothing', async () => {
   delete process.env.HITL_ACK_MESSAGE;
 });
 
-test('HITL_REQUIRE_APPROVAL=false auto-sends and does not draft', async () => {
+test('HITL_REQUIRE_APPROVAL=false still holds a PENDING_REVIEW draft', async () => {
   process.env.HITL_REQUIRE_APPROVAL = 'false';
+  process.env.AUTO_REPLY = 'on';
+  process.env.BOT_MODE = 'auto';
   delete process.env.HITL_ACK_MESSAGE;
-  assert.equal(hitl.hitlRequired(), false);
+  assert.equal(hitl.hitlRequired(), true);
   mockAi();
 
   const uid = `oa_auto_${Date.now()}`;
@@ -161,11 +166,14 @@ test('HITL_REQUIRE_APPROVAL=false auto-sends and does not draft', async () => {
   }));
 
   assert.equal(result.ok, true);
-  assert.equal(result.held, false);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].to, uid);
-  assert.equal(calls[0].text, AI);
-  assert.equal(await draftFor(uid), null);
+  assert.equal(result.held, true);
+  assert.equal(calls.length, 0);
+  const draft = await draftFor(uid);
+  assert.ok(draft);
+  assert.equal(draft.approval_status, 'PENDING_REVIEW');
+  assert.equal(draft.draft_reply, AI);
+  delete process.env.AUTO_REPLY;
+  delete process.env.BOT_MODE;
 });
 
 test('fallback reply is drafted, not sent, when approval is required', async () => {
@@ -188,7 +196,7 @@ test('fallback reply is drafted, not sent, when approval is required', async () 
   assert.equal(draft.approval_status, 'PENDING_REVIEW');
 });
 
-test('fallback is auto-sent when approval is off', async () => {
+test('fallback stays a draft when approval flags are off', async () => {
   process.env.HITL_REQUIRE_APPROVAL = 'false';
   mockAi(async () => { throw new Error('model down'); });
 
@@ -198,8 +206,11 @@ test('fallback is auto-sent when approval is off', async () => {
     calls.push(text);
     return true;
   }));
-  assert.deepEqual(calls, [pipeline.FALLBACK_REPLY]);
-  assert.equal(await draftFor(uid), null);
+  assert.equal(calls.length, 0);
+  const draft = await draftFor(uid);
+  assert.ok(draft);
+  assert.equal(draft.draft_reply, pipeline.FALLBACK_REPLY);
+  assert.equal(draft.approval_status, 'PENDING_REVIEW');
 });
 
 test('canned quick reply is held when approval is required', async () => {
@@ -242,6 +253,8 @@ test('approve/send still delivers the draft body through zaloService', async () 
     assert.equal(updated.send.sent, true);
     assert.equal(updated.send.via, 'zalo_oa');
     assert.equal(updated.draft.approval_status, 'SENT');
+    assert.equal(updated.draft.reviewed_by, 'manager');
+    assert.ok(updated.draft.reviewed_at);
     assert.deepEqual(sent, [{ to: uid, text: AI }]);
   } finally {
     zaloService.sendTextMessage = originalSend;

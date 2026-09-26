@@ -1,7 +1,6 @@
 require('dotenv').config();
 
 const express = require('express');
-const crypto  = require('crypto');
 const zaloService = require('./services/zaloService');
 const botService  = require('./services/zaloBotService');
 const db          = require('./services/database');
@@ -9,7 +8,6 @@ const aiAgent     = require('./services/aiAgent');
 const faqService  = require('./services/faqService');
 const selfCheck   = require('./services/selfCheck');
 const pipeline    = require('./services/pipeline');
-const notify      = require('./services/notify');
 const ops         = require('./services/ops');
 const adminPage   = require('./services/adminPage');
 const catalog     = require('./services/catalog');
@@ -24,6 +22,7 @@ const hitl        = require('./services/hitlGate');
 const confidenceGate = require('./services/confidenceGate');
 const audit       = require('./services/audit');
 const messenger   = require('./services/messenger');
+const channelIngress = require('./services/channelIngress');
 const faqBody     = require('./services/faqBody');
 
 const app  = express();
@@ -208,8 +207,11 @@ app.get('/debug/test-ai', async (req, res) => {
 app.get('/debug/test-send', async (req, res) => {
   if (!debugAuth(req, res)) return;
   try {
-    const result = await zaloService.sendTextMessage(req.query.uid, req.query.text || 'Test từ Dốc Mơ Farm bot 🌿');
-    res.json({ ok: !!result, zalo_response: result, last_error: zaloService.getLastError() });
+    // AUTO-SEND IS FORBIDDEN until the owner re-enables it in a future PR.
+    res.status(403).json({
+      ok: false,
+      error: 'Không gửi thử được. Tin khách chỉ đi khi bấm Duyệt và gửi trên /admin.',
+    });
   } catch (e) {
     res.json({ ok: false, error: e.message });
   }
@@ -658,81 +660,15 @@ app.get('/bot/info', async (req, res) => {
 // GET /bot/test-send?key=...&chat=...&text=...
 app.get('/bot/test-send', async (req, res) => {
   if (!debugAuth(req, res)) return;
-  const result = await botService.sendMessage(req.query.chat, req.query.text || 'Test Bot Dốc Mơ Farm 🌿');
-  res.json({ ok: !!result, response: result });
+  // AUTO-SEND IS FORBIDDEN until the owner re-enables it in a future PR.
+  res.status(403).json({
+    ok: false,
+    error: 'Không gửi thử được. Tin khách chỉ đi khi bấm Duyệt và gửi trên /admin.',
+  });
 });
 
-// POST /bot/webhook — inbound messages from the Zalo Bot API
-app.post('/bot/webhook', async (req, res) => {
-  // Answer fast; Zalo retries if we are slow.
-  res.status(200).json({ ok: true });
-
-  const secret = process.env.ZALO_BOT_WEBHOOK_SECRET || process.env.ZALO_WEBHOOK_TOKEN;
-  const got = req.headers['x-bot-api-secret-token'];
-  if (secret && got && got !== secret) {
-    logEvent({ type: 'bot_bad_secret' });
-    return;
-  }
-
-  logEvent({ type: 'bot_incoming', body: req.body });
-
-  const body = req.body || {};
-  const msg = body.message || {};
-  const chatId = msg.chat?.id || msg.from?.id;
-  const eventName = String(body.event_name || '');
-
-  const evt = botService.parseTextEvent(body);
-
-  // Owner control commands arrive on the owner's own bot chat.
-  if (evt && chatId && String(chatId) === String(notify.ownerChatId())) {
-    const handled = await handleOwnerCommand(evt.text, (t) => botService.sendMessage(chatId, t));
-    if (handled) {
-      logEvent({ type: 'owner_command', text: evt.text.slice(0, 60) });
-      return;
-    }
-  }
-
-  if (evt) {
-    console.log(`🤖 [bot ${evt.chatId}] ${evt.text}`);
-    await pipeline.handleMessage({
-      channel: 'bot',
-      externalKey: `bot_${evt.chatId}`,
-      replyTo: evt.chatId,
-      text: evt.text,
-      msgId: evt.messageId,
-      senderName: evt.senderName,
-      send: (to, text) => botService.sendMessage(to, text),
-      sendPhoto: (to, url, caption) => botService.sendPhoto(to, url, caption),
-      typing: (to) => botService.sendTyping(to),
-      log: logEvent,
-    });
-    return;
-  }
-
-  // Non-text: image / sticker / audio / video / file
-  const kind = /image/.test(eventName) ? 'image'
-    : /sticker/.test(eventName) ? 'sticker'
-    : /audio|voice/.test(eventName) ? 'audio'
-    : /video/.test(eventName) ? 'video'
-    : /file|document/.test(eventName) ? 'file'
-    : null;
-
-  if (kind && chatId) {
-    await pipeline.handleNonText({
-      channel: 'bot',
-      kind,
-      externalKey: `bot_${chatId}`,
-      replyTo: chatId,
-      msgId: msg.message_id,
-      senderName: msg.from?.display_name,
-      send: (to, text) => botService.sendMessage(to, text),
-      log: logEvent,
-    });
-    return;
-  }
-
-  logEvent({ type: 'bot_skipped', event_name: eventName });
-});
+// POST /bot/webhook and POST /webhook — inbound Zalo. Drafts only.
+channelIngress.mount(app, { pipeline, log: logEvent });
 
 // ============================================================
 // FACEBOOK MESSENGER
@@ -743,199 +679,6 @@ app.post('/bot/webhook', async (req, res) => {
 // ============================================================
 messenger.mount(app, { pipeline, log: logEvent });
 
-// ============================================================
-// OWNER COMMANDS (sent from the farm's own Zalo to the bot)
-//   /mo <id>     resume the AI for that customer
-//   /dung <id>   pause the AI (a person will answer)
-//   /cho         list conversations waiting for a human
-//   /tinhtrang   health snapshot
-// ============================================================
-async function handleOwnerCommand(text, reply) {
-  const t = String(text || '').trim();
-  if (!t.startsWith('/')) return false;
-
-  const [cmd, ...rest] = t.split(/\s+/);
-  const arg = rest.join(' ').trim();
-
-  try {
-    if (cmd === '/mo' || cmd === '/resume') {
-      if (!arg) return reply('Cú pháp: /mo <id khách>'), true;
-      const c = await db.getCustomerByExternalId(arg);
-      if (!c) return reply(`Không tìm thấy khách: ${arg}`), true;
-      await db.resumeBot(c.id);
-      await reply(`✅ Đã mở lại bot cho ${c.display_name || arg}`);
-      return true;
-    }
-
-    if (cmd === '/dung' || cmd === '/pause') {
-      if (!arg) return reply('Cú pháp: /dung <id khách>'), true;
-      const c = await db.getCustomerByExternalId(arg);
-      if (!c) return reply(`Không tìm thấy khách: ${arg}`), true;
-      await db.pauseBot(c.id, 'Chủ farm tạm dừng');
-      await reply(`⏸️ Đã tạm dừng bot cho ${c.display_name || arg}. Mở lại: /mo ${arg}`);
-      return true;
-    }
-
-    if (cmd === '/cho' || cmd === '/waiting') {
-      const rows = await db.listPaused();
-      if (rows.length === 0) return reply('Không có khách nào đang chờ người thật ✅'), true;
-      const lines = rows.map(r => {
-        const id = (r.identities || [])[0]?.external_id || r.id;
-        return `• ${r.display_name || 'Khách'}${r.phone ? ` · ${r.phone}` : ''}\n  ${r.paused_reason || ''}\n  mở lại: /mo ${id}`;
-      });
-      await reply(`⏳ ${rows.length} khách đang chờ:\n\n${lines.join('\n\n')}`);
-      return true;
-    }
-
-    if (cmd === '/tinhtrang' || cmd === '/status') {
-      const h = await selfCheck.run('owner-command');
-      const head = h.healthy ? '💚 Hệ thống bình thường' : `💛 ${h.problems.length} vấn đề`;
-      const c = h.counts || {};
-      await reply(
-        `${head}\n\n` +
-        `👥 Khách: ${c.customers ?? '?'} · 💬 Tin: ${c.messages ?? '?'} · 🛒 Đơn: ${c.orders ?? '?'}\n` +
-        `📨 Tin 24h: ${h.messages_24h ?? '?'}\n` +
-        (h.problems?.length ? `\n${h.problems.map(x => '• ' + x).join('\n')}` : '')
-      );
-      return true;
-    }
-
-    if (cmd === '/help' || cmd === '/lenh') {
-      await reply(
-        'Lệnh dành cho farm:\n' +
-        '/cho — khách đang chờ người thật\n' +
-        '/mo <id> — mở lại bot cho khách\n' +
-        '/dung <id> — tạm dừng bot cho khách\n' +
-        '/tinhtrang — kiểm tra hệ thống\n' +
-        '/baocao — báo cáo kinh doanh hôm nay\n' +
-        '/khach — khách đã hỏi mà chưa mua (tuần này)'
-      );
-      return true;
-    }
-
-    if (cmd === '/baocao' || cmd === '/report') {
-      await reply(await selfCheck.dailyReportText());
-      return true;
-    }
-
-    if (cmd === '/khach' || cmd === '/leads') {
-      await reply(await selfCheck.weeklyLeadsText());
-      return true;
-    }
-  } catch (e) {
-    await reply(`Lỗi lệnh: ${e.message}`);
-    return true;
-  }
-
-  // Anything else starting with "/" from the owner is a mistyped command.
-  // Answering it as a customer question would burn ~6k tokens for nothing.
-  await reply(
-    `Không có lệnh "${esc(cmd)}".\n\n` +
-    'Lệnh hiện có:\n' +
-    '/cho — khách đang chờ người thật\n' +
-    '/mo <id> — mở lại bot cho khách\n' +
-    '/dung <id> — tạm dừng bot cho khách\n' +
-    '/tinhtrang — kiểm tra hệ thống\n' +
-    '/baocao — báo cáo kinh doanh'
-  );
-  return true;
-}
-
-/** Keep a mistyped command from being echoed back with markup. */
-function esc(s) {
-  return String(s || '').replace(/[<>]/g, '').slice(0, 40);
-}
-
-// ============================================================
-// ZALO WEBHOOK — Message Handler (POST)
-// ============================================================
-app.post('/webhook', async (req, res) => {
-  // Respond immediately to Zalo (< 5s required)
-  res.status(200).json({ message: 'ok' });
-
-  logEvent({ type: 'incoming', event_name: req.body?.event_name || (req.body?.events ? 'batch' : 'unknown'), body: req.body });
-
-  try {
-    // Verify signature
-    const signature = req.headers['x-zalo-signature'];
-    if (signature && process.env.ZALO_OA_SECRET_KEY) {
-      const expected = crypto
-        .createHmac('sha256', process.env.ZALO_OA_SECRET_KEY)
-        .update(JSON.stringify(req.body))
-        .digest('base64');
-      if (signature !== expected) {
-        console.warn('⚠️  Invalid webhook signature');
-        return;
-      }
-    }
-
-    // Zalo OA sends ONE event per POST at top level: {event_name, sender, message, ...}
-    // Support both shapes just in case.
-    const events = Array.isArray(req.body.events) ? req.body.events : [req.body];
-
-    for (const event of events) {
-      const name = String(event.event_name || '');
-      const senderId = event.sender?.id;
-      const senderName = event.sender?.display_name || null;
-      const send = (to, text) => zaloService.sendTextMessage(to, text);
-
-      // Our own outbound messages come back as events — ignore them.
-      if (name.startsWith('oa_') || name === 'user_received_message' || name === 'user_seen_message') {
-        logEvent({ type: 'skipped', event_name: name });
-        continue;
-      }
-
-      if (name === 'follow') {
-        await pipeline.handleFollow({
-          channel: 'oa', externalKey: senderId, replyTo: senderId,
-          senderName, send, log: logEvent,
-        });
-        continue;
-      }
-
-      if (name === 'unfollow') {
-        logEvent({ type: 'unfollow', from: senderId });
-        continue;
-      }
-
-      if (name === 'user_send_text') {
-        console.log(`📨 [${senderId}] ${event.message?.text}`);
-        await pipeline.handleMessage({
-          channel: 'oa',
-          externalKey: senderId,
-          replyTo: senderId,
-          text: event.message?.text || '',
-          msgId: event.message?.msg_id,
-          receivedAt: event.timestamp || null,
-          senderName,
-          send,
-          log: logEvent,
-        });
-        continue;
-      }
-
-      const kind = name === 'user_send_image' ? 'image'
-        : name === 'user_send_sticker' ? 'sticker'
-        : name === 'user_send_audio' ? 'audio'
-        : name === 'user_send_video' ? 'video'
-        : name === 'user_send_file' ? 'file'
-        : null;
-
-      if (kind) {
-        await pipeline.handleNonText({
-          channel: 'oa', kind, externalKey: senderId, replyTo: senderId,
-          msgId: event.message?.msg_id, senderName, send, log: logEvent,
-        });
-        continue;
-      }
-
-      logEvent({ type: 'skipped', event_name: name });
-    }
-  } catch (error) {
-    console.error('Webhook processing error:', error);
-    logEvent({ type: 'error', error: error.message });
-  }
-});
 
 // ============================================================
 // CUSTOMERS API
@@ -1151,7 +894,7 @@ app.listen(PORT, () => {
   console.log(`   Test:    POST /chat`);
   console.log(`   FAQ:     GET  /api/faq | POST /api/faq/generate`);
   console.log(`   Drafts:  GET  /admin`);
-  console.log(`   HITL:    ${hitl.hitlRequired() ? 'ON — replies wait as PENDING_REVIEW' : 'OFF — auto-send (HITL_REQUIRE_APPROVAL=false)'}`);
+  console.log('   HITL:    ON — auto-send is forbidden; replies wait as PENDING_REVIEW');
   console.log(`   Confidence: below ${confidenceGate.minConfidence()} → ${confidenceGate.TICKET_STATUS} (AI_CONFIDENCE_MIN)`);
   const piiOn = require('./services/pii').maskingEnabled();
   console.log(`   PII:     ${piiOn ? 'ON — prompts masked before the model' : 'OFF — PII_MASKING_ENABLED is false'}`);

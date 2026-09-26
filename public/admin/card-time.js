@@ -106,9 +106,12 @@
     if (!iso) return null;
     const clock = absolute(iso);
     if (!clock) return null;
+    const reviewer = draft.reviewed_by != null && String(draft.reviewed_by).trim()
+      ? String(draft.reviewed_by).trim()
+      : '';
     return {
       text: 'Gửi: ' + clock,
-      who: senderLabel(draft.sent_by),
+      who: reviewer || senderLabel(draft.sent_by),
     };
   }
 

@@ -114,9 +114,9 @@ test('public health and outbound alerts omit secrets and phone numbers', async (
   };
   try {
     const out = await health.push('Lỗi bearer abcdefghijklmnop cho khách 0901234567');
-    assert.equal(sent[0].id, 'owner-zalo-id');
+    assert.equal(sent.length, 0, 'Zalo OA must not carry a connection alert');
+    assert.equal(out.delivered.zalo, false);
     assert.doesNotMatch(out.text, /abcdefghijklmnop|0901234567/);
-    assert.doesNotMatch(sent[0].text, /abcdefghijklmnop|0901234567/);
     assert.doesNotMatch(posts[0].text, /abcdefghijklmnop|0901234567/);
     assert.match(posts[0].url, /telegram-secret-token/);
     assert.doesNotMatch(out.text, /telegram-secret-token/);

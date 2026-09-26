@@ -4,8 +4,9 @@
  * Both channels used to duplicate this logic, which is how the OA side ended
  * up without de-duplication. Everything now goes through handleMessage():
  * dedup → per-customer lock → paused inbox card (no model) → AI → HITL draft or reply → owner alerts.
- * Customer-facing text goes through services/hitlGate.js (HITL_REQUIRE_APPROVAL,
- * default on) so it is not sent until /admin approves it.
+ * Customer-facing text goes through services/hitlGate.js and stays
+ * PENDING_REVIEW until /admin approves it. AUTO-SEND IS FORBIDDEN until
+ * the owner explicitly re-enables it in a future PR. No env flag can send.
  */
 const db = require('./database');
 const ops = require('./ops');
@@ -88,7 +89,8 @@ async function handleMessage(p) {
         console.error('conversation record skipped:', err.message);
       }
       try { require('./healthWatch').noteSuccess('pipeline'); } catch (_) {}
-      if (p.typing) p.typing(p.replyTo).catch(() => {});
+      // Typing is an outbound customer-channel signal. AUTO-SEND IS FORBIDDEN.
+      // Do not call p.typing.
 
       let customer = await db.getOrCreateCustomer(p.externalKey, p.senderName);
       customer = await learnHonorific(customer, p);
@@ -275,8 +277,8 @@ async function handleMessage(p) {
         tokensUsed,
       });
 
-      // HITL_REQUIRE_APPROVAL (default on): hold this text as PENDING_REVIEW.
-      // Do not call p.send with the AI body. See services/hitlGate.js.
+      // Hold this text as PENDING_REVIEW. Do not call p.send.
+      // AUTO-SEND IS FORBIDDEN until the owner re-enables it in a future PR.
       const release = await hitl.releaseToCustomer(p, reply, {
         intent: p.text,
         forceHold: !!stockHeld,
@@ -366,8 +368,8 @@ async function handleMessage(p) {
       console.error(`Pipeline error (${p.channel}):`, err);
       log({ type: 'error', channel: p.channel, error: err.message });
       try { require('./healthWatch').noteFailure('pipeline', 'exception'); } catch (_) {}
-      // Same gate as a normal reply: the apology is customer-facing content.
-      // With approval on, it becomes a draft. With approval off, it is sent.
+      // The apology is customer-facing content. It becomes a PENDING_REVIEW
+      // draft. AUTO-SEND IS FORBIDDEN; it is not sent.
       try {
         await hitl.releaseToCustomer(p, FALLBACK_REPLY, { intent: p.text });
       } catch (_) {}
@@ -442,7 +444,7 @@ function urgentHuman(p, customer, info, log) {
 /**
  * Bow out gracefully: tell the customer, stop answering, and put the thread
  * in front of a person. Used whenever the bot is more likely to hurt than help.
- * options.forceHold keeps the text as a draft even when auto-send is on.
+ * The text is always a draft. Auto-send is forbidden.
  */
 async function stepAside(p, customer, verdict, log, options = {}) {
   const text = options.reply || drift.message(verdict.signal);
@@ -555,19 +557,14 @@ async function sendAccountInfo(p, log) {
   try {
     const url = vietqr.imageUrl(0, '');
     const text = vietqr.accountInfoMessage();
-    if (hitl.hitlRequired()) {
-      const body = (p.sendPhoto && url) ? text : `${text}\n\n${url || ''}`.trim();
-      await hitl.releaseToCustomer(p, body, {
-        ack: false,
-        intent: p.text,
-        qr_image_url: url || null,
-      });
-    } else if (p.sendPhoto && url) {
-      await p.sendPhoto(p.replyTo, url, text);
-    } else {
-      await p.send(p.replyTo, `${text}\n\n${url || ''}`.trim());
-    }
-    log({ type: 'account_info_sent', channel: p.channel, held: hitl.hitlRequired() });
+    // AUTO-SEND IS FORBIDDEN. Account text and QR stay PENDING_REVIEW.
+    const body = (p.sendPhoto && url) ? text : `${text}\n\n${url || ''}`.trim();
+    await hitl.releaseToCustomer(p, body, {
+      ack: false,
+      intent: p.text,
+      qr_image_url: url || null,
+    });
+    log({ type: 'account_info_sent', channel: p.channel, held: true });
   } catch (e) {
     console.error('Account info send failed:', e.message);
   }
@@ -582,20 +579,15 @@ async function afterOrder(order, p, log, askedTransfer = false) {
     const url = vietqr.imageUrl(order.total, order.order_number);
     if (!cod && url) {
       const caption = vietqr.caption(order);
-      if (hitl.hitlRequired()) {
-        const body = p.sendPhoto ? caption : `${caption}\n\n${url}`;
-        await hitl.releaseToCustomer(p, body, {
-          ack: false,
-          intent: p.text,
-          qr_image_url: p.sendPhoto ? url : null,
-          kiot_summary: order.order_number ? `Đơn ${order.order_number}` : null,
-        });
-      } else if (p.sendPhoto) {
-        await p.sendPhoto(p.replyTo, url, caption);
-      } else {
-        await p.send(p.replyTo, `${caption}\n\n${url}`);
-      }
-      log({ type: 'qr_sent', order: order.order_number, held: hitl.hitlRequired() });
+      // AUTO-SEND IS FORBIDDEN. The payment QR stays PENDING_REVIEW.
+      const body = p.sendPhoto ? caption : `${caption}\n\n${url}`;
+      await hitl.releaseToCustomer(p, body, {
+        ack: false,
+        intent: p.text,
+        qr_image_url: p.sendPhoto ? url : null,
+        kiot_summary: order.order_number ? `Đơn ${order.order_number}` : null,
+      });
+      log({ type: 'qr_sent', order: order.order_number, held: true });
     }
   } catch (e) {
     console.error('QR send failed:', e.message);

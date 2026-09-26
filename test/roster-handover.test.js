@@ -38,7 +38,7 @@ const SUN_03 = new Date('2026-09-27T03:00:00+07:00');
 const SUN_20 = new Date('2026-09-27T20:00:00+07:00');
 
 const sent = [];
-const originalSend = bot.sendMessage;
+const originalSend = bot.sendStaffNotice;
 const originalRespond = aiAgent.respond;
 
 function ictShift(partial) {
@@ -59,14 +59,14 @@ describe('staff roster and handover', { concurrency: 1 }, () => {
     delete process.env.HITL_REQUIRE_APPROVAL;
     delete process.env.HITL_ACK_MESSAGE;
     delete process.env.OWNER_DISPLAY_NAME;
-    bot.sendMessage = async (chatId, text) => {
+    bot.sendStaffNotice = async (chatId, text) => {
       sent.push({ chatId: String(chatId), text: String(text) });
       return { ok: true };
     };
   });
 
   afterEach(() => {
-    bot.sendMessage = originalSend;
+    bot.sendStaffNotice = originalSend;
     aiAgent.respond = originalRespond;
     delete process.env.ALERT_BOT_CHAT_ID;
     delete process.env.ADMIN_PASSWORD;
@@ -373,7 +373,7 @@ describe('staff roster and handover', { concurrency: 1 }, () => {
 });
 
 after(() => {
-  bot.sendMessage = originalSend;
+  bot.sendStaffNotice = originalSend;
   delete process.env.ALERT_BOT_CHAT_ID;
   delete process.env.ADMIN_PASSWORD;
 });
