@@ -500,6 +500,7 @@ function emptyReviewForm() {
     paid_at: null,
     paid_by: null,
     payment_method: null,
+    amount_paid: null,
   };
 }
 
@@ -557,8 +558,12 @@ function cleanReviewForm(value) {
   }
   if (src.payment_status != null && String(src.payment_status).trim() !== '') {
     const pay = String(src.payment_status).trim();
-    if (pay !== 'chua_tt' && pay !== 'da_tt') throw new DraftError(400, 'Trạng thái thanh toán không hợp lệ');
+    if (pay !== 'chua_tt' && pay !== 'da_tt' && pay !== 'mot_phan') throw new DraftError(400, 'Trạng thái thanh toán không hợp lệ');
     out.payment_status = pay;
+  }
+  if (src.amount_paid != null && src.amount_paid !== '') {
+    const paidAmount = Math.round(Number(src.amount_paid));
+    if (Number.isFinite(paidAmount) && paidAmount >= 0) out.amount_paid = paidAmount;
   }
   out.paid_at = cleanShort('paid_at', src.paid_at, 40);
   out.paid_by = cleanShort('paid_by', src.paid_by, 80);
@@ -567,11 +572,12 @@ function cleanReviewForm(value) {
     if (method !== 'transfer' && method !== 'cash' && method !== 'card' && method !== 'mixed') throw new DraftError(400, 'Phương thức thanh toán không hợp lệ');
     out.payment_method = method;
   }
-  if (out.payment_status !== 'da_tt') {
+  if (out.payment_status !== 'da_tt' && out.payment_status !== 'mot_phan') {
     out.paid_at = null;
     out.paid_by = null;
     out.payment_method = null;
-  } else if (!out.payment_method) {
+    out.amount_paid = out.payment_status === 'chua_tt' ? 0 : null;
+  } else if (out.payment_status === 'da_tt' && !out.payment_method) {
     out.payment_method = 'transfer';
   }
   return out;

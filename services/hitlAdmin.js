@@ -805,8 +805,11 @@ async function draftPayment(req, res) {
   const invoice = invoices.present(result.invoice);
   const form = {
     ...previous,
-    payment_status: invoice.payment_status === 'da_tt' ? 'da_tt' : 'chua_tt',
+    payment_status: invoice.payment_status === 'da_tt' || invoice.payment_status === 'mot_phan'
+      ? invoice.payment_status
+      : 'chua_tt',
     payment_method: invoice.payment_method,
+    amount_paid: invoice.amount_paid,
     paid_at: invoice.paid_at,
     paid_by: invoice.paid_by,
   };

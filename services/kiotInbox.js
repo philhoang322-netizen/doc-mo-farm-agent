@@ -595,25 +595,32 @@ async function prepareOrCreate(id, body, actorName) {
         paidBy: paid ? audit.managerActor(actorName) : null,
         kiotPaymentIncluded: paid,
       }, audit.managerActor(actorName));
+      if (recorded && (created.documentType || kind) === 'invoice') {
+        recorded = await invoices.replaceWithKiotRead(recorded.code) || recorded;
+      }
     } catch (err) {
       console.error('Invoice record failed:', err.message);
     }
 
     const isInvoice = (created.documentType || kind) === 'invoice';
+    const payStatus = recorded && (recorded.payment_status === 'da_tt' || recorded.payment_status === 'mot_phan')
+      ? recorded.payment_status
+      : 'chua_tt';
     const link = isInvoice ? invoices.pageUrl(created.code) : '';
     const reply = isInvoice
-      ? paymentDraft({ code: created.code, total: created.total, link, paid })
+      ? paymentDraft({ code: created.code, total: created.total, link, paid: payStatus === 'da_tt' })
       : orderAck({ code: created.code, total: created.total });
     const summary = `${created.code} · ${formatVnd(created.total)}`;
     const nextForm = {
       ...(draft.review_form || {}),
       kiot_code: created.code,
-      kiot_total: String(created.total),
+      kiot_total: String((recorded && recorded.total) || created.total),
       kiot_kind: created.documentType || kind,
-      payment_status: paid ? 'da_tt' : 'chua_tt',
-      payment_method: paid ? paymentMethod : null,
-      paid_at: paid ? new Date().toISOString() : null,
-      paid_by: paid ? audit.managerActor(actorName) : null,
+      payment_status: payStatus,
+      payment_method: payStatus === 'chua_tt' ? null : (recorded && recorded.payment_method) || null,
+      amount_paid: recorded ? recorded.amount_paid : 0,
+      paid_at: payStatus === 'chua_tt' ? null : (recorded && recorded.paid_at) || null,
+      paid_by: payStatus === 'chua_tt' ? null : (recorded && recorded.paid_by) || null,
     };
     const patch = {
       invoice_code: created.code,
@@ -765,6 +772,7 @@ async function issueInvoice(id, actorName, body) {
         paymentMethod: issued.paymentMethod,
         paidBy: (row && row.paid_by) || audit.managerActor(actorName),
       }, audit.managerActor(actorName));
+      if (savedRow) savedRow = await invoices.replaceWithKiotRead(savedRow.code) || savedRow;
     } catch (err) {
       console.error('markIssued failed:', err.message);
       return {
@@ -785,8 +793,11 @@ async function issueInvoice(id, actorName, body) {
       kiot_code: issued.code,
       kiot_total: String(savedRow.total),
       kiot_kind: 'invoice',
-      payment_status: savedRow.payment_status === 'da_tt' ? 'da_tt' : 'chua_tt',
-      payment_method: savedRow.payment_status === 'da_tt' ? (savedRow.payment_method || 'transfer') : null,
+      payment_status: savedRow.payment_status === 'da_tt' || savedRow.payment_status === 'mot_phan'
+        ? savedRow.payment_status
+        : 'chua_tt',
+      payment_method: savedRow.payment_status === 'chua_tt' ? null : (savedRow.payment_method || null),
+      amount_paid: savedRow.amount_paid,
       paid_at: savedRow.paid_at || null,
       paid_by: savedRow.paid_by || null,
     };

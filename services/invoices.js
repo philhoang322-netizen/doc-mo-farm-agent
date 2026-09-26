@@ -515,25 +515,55 @@ async function setPaymentStatus(code, { status, method, actor } = {}) {
   return { invoice: saved, kiot };
 }
 
+/** GET /invoices/{id} and overwrite the cache. The read wins over what we just sent. */
+async function replaceWithKiotRead(code) {
+  const row = await getByCode(code);
+  if (!row || row.document_type !== 'invoice' || !kiotviet.enabled()) return row;
+  if (!(row.kiot_id || row.code)) return row;
+  try {
+    const remote = await kiotviet.readInvoicePayment({ id: row.kiot_id, code: row.code });
+    if (remote && remote.ok) return await applyRemote(code, remote, null, null) || row;
+  } catch (err) {
+    console.warn('Invoice payment read skipped:', err.message);
+  }
+  return row;
+}
+
+/**
+ * Refresh the invoices on screen. The public list has no ids filter, so each
+ * open invoice is GET /invoices/{id}. No polling loop.
+ */
 async function refreshFromKiot(rows) {
   if (!kiotviet.enabled()) return rows;
-  const out = [];
-  for (const row of rows || []) {
+  const list = rows || [];
+  const out = new Array(list.length);
+  const jobs = [];
+  list.forEach((row, index) => {
     if (!row || row.document_type !== 'invoice' || !(row.kiot_id || row.code)) {
-      out.push(row);
-      continue;
+      out[index] = row;
+      return;
     }
-    try {
-      const remote = await kiotviet.readInvoicePayment({ id: row.kiot_id, code: row.code });
-      if (remote && remote.ok) {
-        out.push(await applyRemote(row.code, remote, null, null) || row);
-        continue;
+    jobs.push({ row, index });
+  });
+  let cursor = 0;
+  async function worker() {
+    while (cursor < jobs.length) {
+      const job = jobs[cursor];
+      cursor += 1;
+      try {
+        const remote = await kiotviet.readInvoicePayment({ id: job.row.kiot_id, code: job.row.code });
+        if (remote && remote.ok) {
+          out[job.index] = await applyRemote(job.row.code, remote, null, null) || job.row;
+          continue;
+        }
+      } catch (err) {
+        console.warn('Invoice payment refresh skipped:', err.message);
       }
-    } catch (err) {
-      console.warn('Invoice payment refresh skipped:', err.message);
+      out[job.index] = job.row;
     }
-    out.push(row);
   }
+  const workers = Math.min(8, jobs.length);
+  if (workers > 0) await Promise.all(Array.from({ length: workers }, () => worker()));
   return out;
 }
 
@@ -675,6 +705,7 @@ module.exports = {
   setPayment,
   setPaymentStatus,
   applyRemote,
+  replaceWithKiotRead,
   refreshFromKiot,
   cleanMethod,
   search,

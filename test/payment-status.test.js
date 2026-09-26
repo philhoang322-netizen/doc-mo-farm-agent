@@ -271,6 +271,35 @@ test('toggle stores payment, audits, and posts to Kiot once', async () => {
   }
 });
 
+test('a KiotViet read replaces the status stored when the invoice was created', async () => {
+  invoices.resetForTests();
+  const real = kiotviet.readInvoicePayment;
+  kiotviet.readInvoicePayment = async () => ({
+    ok: true,
+    amount_paid: 20000,
+    payment_method: 'cash',
+    total: 50000,
+  });
+  try {
+    await invoices.recordSale({
+      code: 'HD300',
+      kiotId: '90',
+      documentType: 'invoice',
+      customerName: 'Chị Lan',
+      total: 50000,
+      paymentStatus: 'da_tt',
+      paymentMethod: 'transfer',
+      items: [{ name: 'Xúc xích', quantity: 1, price: 50000, amount: 50000 }],
+    });
+    const mirrored = await invoices.replaceWithKiotRead('HD300');
+    assert.equal(mirrored.payment_status, 'mot_phan');
+    assert.equal(mirrored.amount_paid, 20000);
+    assert.equal(mirrored.payment_method, 'cash');
+  } finally {
+    kiotviet.readInvoicePayment = real;
+  }
+});
+
 test('paid invoice page stamps ĐÃ THANH TOÁN and hides the VCB line', () => {
   const unpaid = invoiceImage.pageHtml(sample, '/hd/x.png');
   const idRow = unpaid.slice(unpaid.indexOf('<div class="id-row">'), unpaid.indexOf('</div>'));
