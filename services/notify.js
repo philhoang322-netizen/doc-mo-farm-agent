@@ -13,7 +13,7 @@ function ownerChatId() {
 async function sendTo(chatId, text) {
   if (!chatId) return false;
   try {
-    return !!(await botService.sendMessage(chatId, text));
+    return !!(await botService.sendStaffNotice(chatId, text));
   } catch (e) {
     console.error('Owner notify failed:', e.message);
     return false;

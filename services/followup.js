@@ -13,13 +13,14 @@
  *   - never after an order, never while a person is handling the thread,
  *     never to someone who asked the bot to stop.
  *   - no invented discount, no false scarcity, no pressure.
+ *
+ * AUTO-SEND IS FORBIDDEN until the owner re-enables it in a future PR.
+ * A nudge is only a PENDING_REVIEW draft. FOLLOWUP_ENABLED cannot deliver it.
  */
 const Anthropic = require('@anthropic-ai/sdk');
 const db = require('./database');
 const ops = require('./ops');
 const notify = require('./notify');
-const zaloService = require('./zaloService');
-const botService = require('./zaloBotService');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const hitl = require('./hitlGate');
@@ -133,7 +134,6 @@ async function run(reason = 'scheduled') {
   if (!db.DB_ENABLED) return { skipped: 'no-db' };
   if (!withinSendingHours()) return { skipped: 'outside-hours' };
 
-  let sent = 0;
   let held = 0;
   try {
     const due = await findStalled();
@@ -142,53 +142,28 @@ async function run(reason = 'scheduled') {
       const composed = await compose(c);
       const text = composed.text;
 
-      // Same gate as inbound replies: a nudge is AI sales copy.
-      // Messenger nudges are held even when the Zalo emergency switch is off.
-      if (hitl.hitlRequired() || c.channel === 'messenger') {
-        const release = await hitl.releaseToCustomer(followupTarget(c), text, {
-          ack: false,
-          intent: c.convo_summary || 'Khách im lặng sau khi hỏi sản phẩm',
-          customer_name: c.display_name || c.full_name || null,
-          pii_note: composed.piiNote,
-        });
-        if (!release.held) continue;
-        await db.saveMessage(c.ext, 'assistant', text);
-        await db.pool.query(
-          `UPDATE customers SET followup_stage = followup_stage + 1,
-                                followup_last_at = NOW()
-           WHERE id = $1`, [c.id]);
-        held++;
-        console.log(`📝 Nhắc khách ${c.display_name || c.ext} chờ duyệt (lần ${(c.followup_stage || 0) + 1})`);
-        continue;
-      }
-
-      const ok = c.channel === 'bot'
-        ? await botService.sendMessage(String(c.ext).replace(/^bot_/, ''), text)
-        : await zaloService.sendTextMessage(c.ext, text);
-
-      if (!ok) {
-        // Most often the OA 7-day window has closed. Stop trying this customer.
-        await db.pool.query(
-          'UPDATE customers SET followup_optout = TRUE WHERE id = $1', [c.id]);
-        continue;
-      }
-
+      // AUTO-SEND IS FORBIDDEN. A nudge is a PENDING_REVIEW draft.
+      // FOLLOWUP_ENABLED cannot deliver it. A person sends it from /admin.
+      const release = await hitl.releaseToCustomer(followupTarget(c), text, {
+        ack: false,
+        intent: c.convo_summary || 'Khách im lặng sau khi hỏi sản phẩm',
+        customer_name: c.display_name || c.full_name || null,
+        pii_note: composed.piiNote,
+      });
+      if (!release.held) continue;
       await db.saveMessage(c.ext, 'assistant', text);
       await db.pool.query(
         `UPDATE customers SET followup_stage = followup_stage + 1,
                               followup_last_at = NOW()
          WHERE id = $1`, [c.id]);
-      sent++;
-      console.log(`📮 Nhắc khách ${c.display_name || c.ext} (lần ${(c.followup_stage || 0) + 1})`);
+      held++;
+      console.log(`📝 Nhắc khách ${c.display_name || c.ext} chờ duyệt (lần ${(c.followup_stage || 0) + 1})`);
     }
 
-    if (sent) {
-      await notify.send(`📮 Đã nhắn hỏi thăm ${sent} khách im lặng (${reason}).`);
-    }
     if (held) {
       await notify.send(`📝 ${held} tin nhắc khách đang chờ duyệt trên /admin (${reason}).`);
     }
-    return { ok: true, sent, held, considered: due.length };
+    return { ok: true, sent: 0, held, considered: due.length };
   } catch (e) {
     console.error('Follow-up run failed:', e.message);
     return { ok: false, error: e.message };

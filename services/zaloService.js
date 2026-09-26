@@ -1,5 +1,6 @@
 const axios = require('axios');
 const crypto = require('crypto');
+const gate = require('./outboundGate');
 
 const ZALO_API_BASE = 'https://openapi.zalo.me/v3.0';
 const ZALO_OAUTH_URL = 'https://oauth.zaloapp.com/v4/oa/access_token';
@@ -160,8 +161,10 @@ function getLastError() {
   return lastError;
 }
 
-// Send text message via Zalo OA (chunks long texts)
-async function sendTextMessage(recipientId, message) {
+// Send text message via Zalo OA (chunks long texts).
+// AUTO-SEND IS FORBIDDEN until the owner re-enables it in a future PR.
+async function sendTextMessage(recipientId, message, approval) {
+  gate.assertApproval(approval);
   if (!accessToken) {
     console.error('❌ No ZALO_ACCESS_TOKEN configured — cannot reply.');
     return null;
@@ -204,7 +207,8 @@ async function sendTextMessage(recipientId, message) {
  * Upload a PNG to the OA, then send it as an image attachment.
  * source.buffer is preferred. source.url is fetched only when there is no buffer.
  */
-async function sendImageMessage(recipientId, source) {
+async function sendImageMessage(recipientId, source, approval) {
+  gate.assertApproval(approval);
   if (!accessToken) {
     lastError = { message: 'Chưa có token Zalo OA' };
     return null;
@@ -256,7 +260,8 @@ async function sendImageMessage(recipientId, source) {
 }
 
 // Send quick reply message
-async function sendQuickReply(recipientId, message, quickReplies) {
+async function sendQuickReply(recipientId, message, quickReplies, approval) {
+  gate.assertApproval(approval);
   return postMessage({
     recipient: { user_id: recipientId },
     message: {

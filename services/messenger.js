@@ -21,6 +21,7 @@
 const crypto = require('crypto');
 const express = require('express');
 const axios = require('axios');
+const gate = require('./outboundGate');
 
 const GRAPH_VERSION = 'v21.0';
 const MAX_TEXT = 2000;
@@ -495,7 +496,9 @@ async function postMessage(payload) {
   }
 }
 
-async function sendText(psid, text) {
+async function sendText(psid, text, approval) {
+  // AUTO-SEND IS FORBIDDEN until the owner re-enables it in a future PR.
+  gate.assertApproval(approval);
   const id = psidFromUserId(psid);
   const body = String(text || '').trim();
   if (!id) return { ok: false, error: 'Thiếu PSID' };
@@ -525,7 +528,8 @@ async function sendText(psid, text) {
   return last || { ok: false, error: 'Tin nhắn trống' };
 }
 
-async function sendImage(psid, imageUrl) {
+async function sendImage(psid, imageUrl, approval) {
+  gate.assertApproval(approval);
   const id = psidFromUserId(psid);
   const url = String(imageUrl || '').trim();
   if (!id || !url) return { ok: false, error: 'Thiếu ảnh QR hoặc PSID' };

@@ -25,6 +25,7 @@ const inboxOrder = require('../public/admin/inbox-order');
 const tombstones = require('./tombstones');
 const sourceTime = require('../public/admin/card-time');
 const faqText = require('./faqText');
+const gate = require('./outboundGate');
 
 const STATUSES = ['PENDING_REVIEW', 'APPROVED', 'REJECTED', 'SENT'];
 const STATUS_SET = new Set(STATUSES);
@@ -115,6 +116,7 @@ function blankDraft(fields) {
     customer_code: fields.customer_code,
     qr_image_url: fields.qr_image_url,
     pii_note: fields.pii_note || null,
+    reviewed_by: null,
     reviewed_at: null,
     sent_at: null,
     send_error: null,
@@ -203,6 +205,7 @@ function fromRow(row) {
     customer_code: row.customer_code || null,
     qr_image_url: row.qr_image_url || null,
     pii_note: row.pii_note || null,
+    reviewed_by: row.reviewed_by || null,
     reviewed_at: toIso(row.reviewed_at),
     sent_at: toIso(row.sent_at),
     send_error: row.send_error || null,
@@ -250,6 +253,7 @@ CREATE TABLE IF NOT EXISTS outbound_drafts (
     customer_code       TEXT,
     qr_image_url        TEXT,
     pii_note            TEXT,
+    reviewed_by         TEXT,
     reviewed_at         TIMESTAMPTZ,
     sent_at             TIMESTAMPTZ,
     send_error          TEXT,
@@ -286,6 +290,7 @@ ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_prev_status TEXT;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_status_at TIMESTAMPTZ;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS inbox_status_auto BOOLEAN;
 ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS faq_review TEXT;
+ALTER TABLE outbound_drafts ADD COLUMN IF NOT EXISTS reviewed_by TEXT;
 CREATE INDEX IF NOT EXISTS idx_outbound_drafts_triage
     ON outbound_drafts (triage_level, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_outbound_drafts_source_msg
@@ -621,14 +626,14 @@ async function insertDraft(draft) {
        id, created_at, updated_at, channel, customer_name, customer_phone,
        customer_user_id, customer_intent, assigned_department, ticket_status,
        draft_reply, approval_status, kiot_summary, invoice_code, customer_code,
-       qr_image_url, pii_note, reviewed_at, sent_at, send_error, send_via, send_hook,
+       qr_image_url, pii_note, reviewed_by, reviewed_at, sent_at, send_error, send_via, send_hook,
        message_type, template_name, sales_channel, delivery_phase,
        customer_query, ai_draft_version, triage_level, triage_label, review_form,
        biz_line, biz_sticky, deleted_at, source_msg_id,
        inbox_status, inbox_prev_status, inbox_status_at, inbox_status_auto,
        source_received_at
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41
      ) RETURNING *`,
     [
       draft.id, draft.created_at, draft.updated_at, draft.channel,
@@ -636,7 +641,7 @@ async function insertDraft(draft) {
       draft.customer_intent, draft.assigned_department, draft.ticket_status,
       draft.draft_reply, draft.approval_status, draft.kiot_summary,
       draft.invoice_code, draft.customer_code, draft.qr_image_url,
-      draft.pii_note,
+      draft.pii_note, draft.reviewed_by,
       draft.reviewed_at, draft.sent_at, draft.send_error, draft.send_via,
       draft.send_hook, draft.message_type, draft.template_name,
       draft.sales_channel, draft.delivery_phase,
@@ -663,14 +668,14 @@ async function saveDraft(draft) {
        channel=$2, customer_name=$3, customer_phone=$4, customer_user_id=$5,
        customer_intent=$6, assigned_department=$7, ticket_status=$8,
        draft_reply=$9, approval_status=$10, kiot_summary=$11, invoice_code=$12,
-       customer_code=$13, qr_image_url=$14, pii_note=$15, reviewed_at=$16, sent_at=$17,
-       send_error=$18, send_via=$19, send_hook=$20, updated_at=$21,
-       message_type=$22, template_name=$23, sales_channel=$24, delivery_phase=$25,
-       customer_query=$26, ai_draft_version=$27,
-       triage_level=$28, triage_label=$29, review_form=$30,
-       biz_line=$31, biz_sticky=$32, deleted_at=$33, source_msg_id=$34,
-       inbox_status=$35, inbox_prev_status=$36, inbox_status_at=$37, inbox_status_auto=$38,
-       source_received_at=$39
+       customer_code=$13, qr_image_url=$14, pii_note=$15, reviewed_by=$16, reviewed_at=$17, sent_at=$18,
+       send_error=$19, send_via=$20, send_hook=$21, updated_at=$22,
+       message_type=$23, template_name=$24, sales_channel=$25, delivery_phase=$26,
+       customer_query=$27, ai_draft_version=$28,
+       triage_level=$29, triage_label=$30, review_form=$31,
+       biz_line=$32, biz_sticky=$33, deleted_at=$34, source_msg_id=$35,
+       inbox_status=$36, inbox_prev_status=$37, inbox_status_at=$38, inbox_status_auto=$39,
+       source_received_at=$40
      WHERE id=$1
      RETURNING *`,
     [
@@ -678,7 +683,7 @@ async function saveDraft(draft) {
       draft.customer_user_id, draft.customer_intent, draft.assigned_department,
       draft.ticket_status, draft.draft_reply, draft.approval_status,
       draft.kiot_summary, draft.invoice_code, draft.customer_code,
-      draft.qr_image_url, draft.pii_note, draft.reviewed_at, draft.sent_at, draft.send_error,
+      draft.qr_image_url, draft.pii_note, draft.reviewed_by, draft.reviewed_at, draft.sent_at, draft.send_error,
       draft.send_via, draft.send_hook, draft.updated_at,
       draft.message_type, draft.template_name, draft.sales_channel, draft.delivery_phase,
       draft.customer_query, draft.ai_draft_version,
@@ -1460,7 +1465,26 @@ async function noteImageFallback(sendText, draftText, fail) {
   return `Đã gửi nội dung, chưa gửi được ảnh hoá đơn${why}.`;
 }
 
-async function deliver(draft) {
+function reviewerUserId(ctx, actor) {
+  const raw = ctx && ctx.reviewerUserId != null && String(ctx.reviewerUserId).trim()
+    ? ctx.reviewerUserId
+    : actor;
+  return String(raw || '').replace(/\0/g, '').trim().slice(0, 120);
+}
+
+async function deliver(draft, approval) {
+  let token;
+  try {
+    token = gate.assertApproval(approval);
+  } catch (e) {
+    return {
+      ok: false,
+      sent: false,
+      via: null,
+      hook: 'services/outboundGate.js',
+      error: e.message,
+    };
+  }
   const text = faqText.customerFacingReply(draft);
   if (!text) {
     return {
@@ -1505,7 +1529,7 @@ async function deliver(draft) {
       };
     }
     try {
-      const result = await messenger.sendText(psid, text);
+      const result = await messenger.sendText(psid, text, token);
       if (!result || !result.ok) {
         const detail = (result && result.error) || messenger.getLastError() || 'Facebook từ chối tin nhắn';
         return {
@@ -1518,8 +1542,8 @@ async function deliver(draft) {
       }
       // Meta downloads payload.url itself. qr_image_url is the public
 // /hd/<code>/anh?t= link on this server (token, no admin session).
-const fail = await sendInvoicePicture(draft, ({ url }) => messenger.sendImage(psid, url));
-      const qrError = await noteImageFallback(extra => messenger.sendText(psid, extra), text, fail);
+const fail = await sendInvoicePicture(draft, ({ url }) => messenger.sendImage(psid, url, token));
+      const qrError = await noteImageFallback(extra => messenger.sendText(psid, extra, token), text, fail);
       return { ok: true, sent: true, via: 'messenger', hook, error: qrError };
     } catch (e) {
       return {
@@ -1555,7 +1579,7 @@ const fail = await sendInvoicePicture(draft, ({ url }) => messenger.sendImage(ps
           error: 'Chưa gửi được qua Zalo Bot (thiếu ZALO_BOT_TOKEN hoặc chat id). Bản nháp giữ ở APPROVED. Hook: zaloBotService.sendMessage(chatId, text).',
         };
       }
-      const result = await botService.sendMessage(chatId, text);
+      const result = await botService.sendMessage(chatId, text, token);
       if (!result) {
         return {
           ok: false,
@@ -1566,10 +1590,10 @@ const fail = await sendInvoicePicture(draft, ({ url }) => messenger.sendImage(ps
         };
       }
       const fail = await sendInvoicePicture(draft, async ({ url }) => {
-        const photo = await botService.sendPhoto(chatId, url, 'Hoá đơn');
+        const photo = await botService.sendPhoto(chatId, url, 'Hoá đơn', token);
         return photo ? { ok: true } : { ok: false, error: 'Zalo Bot không nhận ảnh' };
       });
-      const qrError = await noteImageFallback(extra => botService.sendMessage(chatId, extra), text, fail);
+      const qrError = await noteImageFallback(extra => botService.sendMessage(chatId, extra, token), text, fail);
       return { ok: true, sent: true, via: 'zalo_bot', hook: 'zaloBotService.sendMessage', error: qrError };
     }
 
@@ -1582,7 +1606,7 @@ const fail = await sendInvoicePicture(draft, ({ url }) => messenger.sendImage(ps
         error: 'Chưa có token Zalo OA (ZALO_ACCESS_TOKEN). Bản nháp giữ ở APPROVED. Hook: zaloService.sendTextMessage(userId, text).',
       };
     }
-    const result = await zaloService.sendTextMessage(uid, text);
+    const result = await zaloService.sendTextMessage(uid, text, token);
     if (!result) {
       const last = zaloService.getLastError();
       const detail = last && typeof last === 'object'
@@ -1597,13 +1621,13 @@ const fail = await sendInvoicePicture(draft, ({ url }) => messenger.sendImage(ps
       };
     }
     const fail = await sendInvoicePicture(draft, async ({ buffer, url }) => {
-        const sent = await zaloService.sendImageMessage(uid, { buffer, url });
+        const sent = await zaloService.sendImageMessage(uid, { buffer, url }, token);
         if (sent) return { ok: true };
         const last = zaloService.getLastError();
         const detail = last && typeof last === 'object' ? (last.message || '') : (last || '');
         return { ok: false, error: detail || 'Zalo OA không nhận ảnh' };
       });
-      const qrError = await noteImageFallback(extra => zaloService.sendTextMessage(uid, extra), text, fail);
+      const qrError = await noteImageFallback(extra => zaloService.sendTextMessage(uid, extra, token), text, fail);
       return { ok: true, sent: true, via: 'zalo_oa', hook: 'zaloService.sendTextMessage', error: qrError };
   } catch (e) {
     const hook = uid.startsWith('bot_') ? 'zaloBotService.sendMessage' : 'zaloService.sendTextMessage';
@@ -1744,10 +1768,17 @@ async function updateDraft(id, body, ctx = {}) {
       }
       next.approval_status = 'APPROVED';
       next.reviewed_at = new Date().toISOString();
+      next.reviewed_by = reviewerUserId(ctx, actor);
       next.sent_at = null;
       next.delivery_phase = 'sending';
       next.send_error = null;
       await saveDraft(next);
+      const approval = gate.issue({
+        draftId: next.id,
+        reviewerUserId: next.reviewed_by,
+        reviewedAt: next.reviewed_at,
+        action: gate.ACTION_SEND,
+      });
       if (learn) {
         try {
           const row = await trainingLog.storeOnApprove(next, { actor, learn: true });
@@ -1757,7 +1788,7 @@ async function updateDraft(id, body, ctx = {}) {
           console.error('Training log failed:', e.message);
         }
       }
-      send = await deliver(next);
+      send = await deliver(next, approval);
       if (send) {
         send.learned = learned;
         send.learn = learn;
@@ -1797,6 +1828,7 @@ async function updateDraft(id, body, ctx = {}) {
       next.delivery_phase = null;
       if (input.approval_status === 'PENDING_REVIEW') {
         next.reviewed_at = null;
+        next.reviewed_by = null;
         next.sent_at = null;
         next.send_error = null;
         next.send_via = null;

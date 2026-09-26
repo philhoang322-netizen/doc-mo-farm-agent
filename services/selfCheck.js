@@ -156,7 +156,7 @@ async function notifyOwner(text) {
     return false;
   }
   try {
-    const r = await botService.sendMessage(chatId, text);
+    const r = await botService.sendStaffNotice(chatId, text);
     return !!r;
   } catch (e) {
     console.error('Alert send failed:', e.message);

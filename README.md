@@ -4,12 +4,13 @@ Zalo OA and Bot assistant for the farm. Inbound messages share `services/pipelin
 
 ## Human approval (HITL)
 
-Customer-facing replies are held for review on `/admin` unless you explicitly turn the gate off. That includes AI answers, canned replies, the system fallback, and follow-up nudges. Approving a draft still sends through `services/drafts.js` → `deliver()` (`approval_status` `PENDING_REVIEW` until then).
+Customer-facing replies are held for review on `/admin`. Auto-send is forbidden until the owner explicitly re-enables it in a future PR. No environment variable can turn it back on. That includes AI answers, canned replies, the system fallback, follow-up nudges, acks, typing indicators, and invoice or QR images. Approving a draft still sends through `services/drafts.js` → `deliver()`, and only with a reviewer id and timestamp (`approval_status` `PENDING_REVIEW` until then). A sent draft stores `reviewed_by`, shown on `/admin`.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `HITL_REQUIRE_APPROVAL` | on when unset | `true`: save a `PENDING_REVIEW` draft and do not send that text to Zalo. `false`, `0`, `no`, or `off`: send immediately (emergency only). |
-| `HITL_ACK_MESSAGE` | unset | Optional exact text sent while a draft waits. Blank or unset sends nothing. There is no built-in ack. |
+| Variable | Effect |
+|---|---|
+| `HITL_REQUIRE_APPROVAL` | Ignored. Cannot enable auto-send. |
+| `HITL_ACK_MESSAGE` | Ignored. Cannot send an acknowledgement. |
+| `AUTO_REPLY`, `AUTO_SEND`, `BOT_MODE` | Ignored. Cannot enable auto-send. |
 
 Set both on Railway. Open `/admin` (password `ADMIN_PASSWORD`) to approve and send. The name typed on that page is stored as `manager:<tên>` on each edit, approval, and send.
 

@@ -257,12 +257,11 @@ async function push(text) {
   const delivered = { zalo: false, telegram: false };
   const zaloId = process.env.ALERT_ZALO_USER_ID;
   if (zaloId) {
-    try {
-      const zaloService = require('./zaloService');
-      delivered.zalo = !!(await zaloService.sendTextMessage(zaloId, safe));
-    } catch (_) {
-      delivered.zalo = false;
-    }
+    // AUTO-SEND IS FORBIDDEN. Connection alerts must not use the Zalo OA
+    // customer sender, even when ALERT_ZALO_USER_ID is set. Telegram below
+    // is a staff chat, not a customer channel.
+    console.error('outbound_refused', JSON.stringify({ reason: 'alert_zalo_blocked' }));
+    delivered.zalo = false;
   }
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chat = process.env.TELEGRAM_CHAT_ID;

@@ -1,22 +1,17 @@
 /**
- * OmniSales HITL gate for customer-facing Zalo text.
+ * OmniSales HITL gate for customer-facing text.
  *
- * HITL_REQUIRE_APPROVAL
- *   Default when unset or blank: true (safe for this farm).
- *   true  — do not send the reply. createDraft() with approval_status
- *           PENDING_REVIEW. A person sends it from /admin.
- *   false, 0, no, off — emergency auto-send (today's p.send behavior).
- *
- * HITL_ACK_MESSAGE
- *   Optional. Only if this is a non-empty string, that exact text is sent
- *   while the draft waits. Unset or blank sends nothing. No default ack.
+ * AUTO-SEND IS FORBIDDEN until the owner explicitly re-enables it in a
+ * future PR. HITL_REQUIRE_APPROVAL, HITL_ACK_MESSAGE, AUTO_REPLY, AUTO_SEND,
+ * and BOT_MODE cannot turn delivery back on. Every reply is a
+ * PENDING_REVIEW draft. A person sends it from /admin (Duyệt và gửi /
+ * "Gửi khách hàng"). This function never calls p.send.
  *
  * drafts.js only accepts channel "zalo" or "messenger". OA and Bot use
  * "zalo". Bot threads set customer_user_id to "bot_<chatId>" so
  * drafts.deliver() routes to zaloBotService; OA uses the Zalo user id and
  * routes to zaloService.sendTextMessage. Messenger sets channel "messenger"
- * and customer_user_id "fb_<psid>". Messenger replies are always held, even
- * when HITL_REQUIRE_APPROVAL is off, and no ack is sent on that channel.
+ * and customer_user_id "fb_<psid>".
  */
 const drafts = require('./drafts');
 const stations = require('./stations');
@@ -25,18 +20,16 @@ const bizLine = require('./bizLine');
 const threadLabels = require('./threadLabels');
 const customerLink = require('./customerLink');
 
-const FALSEY = /^(0|false|no|off)$/i;
-
 function hitlRequired() {
-  const raw = process.env.HITL_REQUIRE_APPROVAL;
-  if (raw == null || String(raw).trim() === '') return true;
-  return !FALSEY.test(String(raw).trim());
+  // AUTO-SEND IS FORBIDDEN. HITL_REQUIRE_APPROVAL is ignored on purpose.
+  void process.env.HITL_REQUIRE_APPROVAL;
+  return true;
 }
 
 function ackMessage() {
-  const raw = process.env.HITL_ACK_MESSAGE;
-  if (raw == null) return '';
-  return String(raw).trim();
+  // HITL_ACK_MESSAGE must not send a customer ack. Auto-send is forbidden.
+  void process.env.HITL_ACK_MESSAGE;
+  return '';
 }
 
 function clip(value, max) {
@@ -82,13 +75,12 @@ function httpUrl(value) {
 }
 
 /**
- * Send `text` to the customer, or hold it for review.
- * Never calls p.send with `text` while approval is required.
- * `extra.ack === false` skips HITL_ACK_MESSAGE (follow-up drafts in the same turn).
+ * Hold `text` for review. Never calls p.send.
+ * AUTO-SEND IS FORBIDDEN until the owner re-enables it in a future PR.
+ * `extra.ack` is ignored: no acknowledgement is sent while a draft waits.
  * `extra.clearTriage` stores no Hot/Urgent/Normal level and does not treat the
  * turn as urgent. A paused follow-up uses this so the inbox card is the
  * customer text, not a new escalation.
- * `extra.forceHold` keeps PENDING_REVIEW even when auto-send is on.
  * `extra.handover === false` does not assign or re-pause.
  *
  * @param {object} p pipeline params (channel, replyTo, externalKey, send, text, senderName, log)
@@ -102,19 +94,8 @@ async function releaseToCustomer(p, text, extra = {}) {
   const triaged = extra.clearTriage === true
     ? clearedTriage()
     : coerceTriage(extra.triage, source);
-  // Stock warnings, Messenger, and Urgent inbox rows wait for a person
-  // even if the emergency auto-send switch is off. forceHold never calls
-  // p.send with the customer body.
-  const messengerHold = isMessenger(p);
+  // Every channel waits for a person. There is no auto-send branch.
   const urgentHold = triaged.level === 'urgent';
-  const forceHold = extra.forceHold === true || messengerHold || urgentHold;
-
-  if (!hitlRequired() && !forceHold) {
-    if (!body) return { held: false, sent: false, draft: null, acked: false, assignment: null };
-    const sent = !!(await p.send(p.replyTo, body));
-    const assignment = await maybeHandover(p, null, { ...extra, triage: triaged });
-    return { held: false, sent, draft: null, acked: false, assignment, triage: triaged.level };
-  }
 
   if (!body) return { held: false, sent: false, draft: null, acked: false, assignment: null, triage: triaged.level };
 
@@ -179,16 +160,8 @@ async function releaseToCustomer(p, text, extra = {}) {
     }
   }
 
-  let acked = false;
-  // Messenger and Urgent stay silent until Approve & Send.
-  const ack = messengerHold || urgentHold || extra.ack === false ? '' : ackMessage();
-  if (ack) {
-    try {
-      acked = !!(await p.send(p.replyTo, ack));
-    } catch (e) {
-      console.error('HITL ack failed:', e.message);
-    }
-  }
+  // No ack. HITL_ACK_MESSAGE cannot send. Auto-send is forbidden.
+  const acked = false;
 
   if (typeof p.log === 'function') {
     p.log({

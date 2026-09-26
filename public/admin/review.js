@@ -1632,6 +1632,11 @@
     if (lineTag) meta.appendChild(lineTag);
     const kind = kindTag(d);
     if (kind) meta.appendChild(el('span', { class: 'tag ' + kind.cls, text: kind.text }));
+    const sentStamp = sentStampOf(d);
+    if (sentStamp) meta.appendChild(el('span', { class: 'msg-sent', text: sentStamp }));
+    if (d.reviewed_by) {
+      meta.appendChild(el('span', { class: 'reviewed-by', text: 'Người duyệt: ' + d.reviewed_by }));
+    }
     const split = el('div', { class: 'detail-split' });
     const main = el('div', { class: 'detail-main pane-mid' });
     const side = el('div', { class: 'detail-side pane-side', id: 'pane-side' });

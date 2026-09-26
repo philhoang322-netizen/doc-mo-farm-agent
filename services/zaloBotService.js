@@ -6,6 +6,7 @@
  * (openapi.zalo.me /oa/message/cs) returns error -224 without a paid OA tier.
  */
 const axios = require('axios');
+const gate = require('./outboundGate');
 
 const BOT_API_BASE = 'https://bot-api.zapps.me';
 const MAX_MSG_LEN = 2000; // Zalo Bot API text limit
@@ -42,8 +43,7 @@ async function getMe() {
   return call('getMe', {}, 'get');
 }
 
-/** Send text to a chat, chunked to 2000 chars. */
-async function sendMessage(chatId, text) {
+async function postText(chatId, text) {
   const body = String(text || '').trim();
   if (!body || !chatId) return null;
 
@@ -59,8 +59,26 @@ async function sendMessage(chatId, text) {
   return last;
 }
 
+/**
+ * Customer send. Throws without an approval token.
+ * AUTO-SEND IS FORBIDDEN until the owner re-enables it in a future PR.
+ */
+async function sendMessage(chatId, text, approval) {
+  gate.assertApproval(approval);
+  return postText(chatId, text);
+}
+
+/**
+ * Staff-only notice to the owner or a roster chat. Not a customer reply.
+ * Inbound pipeline code must not call this. It cannot approve a customer send.
+ */
+async function sendStaffNotice(chatId, text) {
+  return postText(chatId, text);
+}
+
 /** Send an image by URL, with an optional caption. */
-async function sendPhoto(chatId, photoUrl, caption) {
+async function sendPhoto(chatId, photoUrl, caption, approval) {
+  const token = gate.assertApproval(approval);
   if (!chatId || !photoUrl) return null;
   const payload = { chat_id: String(chatId), photo: photoUrl };
   if (caption) payload.caption = String(caption).slice(0, MAX_MSG_LEN);
@@ -68,13 +86,14 @@ async function sendPhoto(chatId, photoUrl, caption) {
   // Not every bot tier supports photos — fall back to a link so the
   // customer still gets their payment QR.
   if (!res) {
-    return sendMessage(chatId, `${caption ? caption + '\n\n' : ''}${photoUrl}`);
+    return sendMessage(chatId, `${caption ? caption + '\n\n' : ''}${photoUrl}`, token);
   }
   return res;
 }
 
-/** Typing indicator (best effort — ignored if unsupported). */
-async function sendTyping(chatId) {
+/** Typing indicator. Still a customer-channel signal, so it needs approval. */
+async function sendTyping(chatId, approval) {
+  gate.assertApproval(approval);
   return call('sendChatAction', { chat_id: String(chatId), action: 'typing' });
 }
 
@@ -123,6 +142,7 @@ function parseTextEvent(body) {
 module.exports = {
   getMe,
   sendMessage,
+  sendStaffNotice,
   sendPhoto,
   sendTyping,
   setWebhook,

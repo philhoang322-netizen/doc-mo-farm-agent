@@ -550,6 +550,7 @@ async function patch(req, res) {
     const result = await drafts.updateDraft(req.params.id, body, {
       actor: p && p.source === 'user' ? access.actor(p) : undefined,
       actorName: actorNameFrom(req),
+      reviewerUserId: p && p.id ? String(p.id) : (p ? access.actor(p) : undefined),
     });
     if (!result) return res.status(404).json({ error: 'Không thấy bản nháp' });
     res.json(result);

@@ -406,6 +406,8 @@ function draftSnapshot(draft) {
     triage_level: draft.triage_level || null,
     triage_label: draft.triage_label || null,
     review_form: draft.review_form || null,
+    reviewed_by: draft.reviewed_by || null,
+    reviewed_at: draft.reviewed_at || null,
   };
 }
 
