@@ -36,6 +36,29 @@ function chromePath() {
 
 const playwright = loadPlaywright();
 const chrome = chromePath();
+const sections = require('../public/admin/inbox-sections');
+
+function isoForBucket(bucket) {
+  const now = new Date();
+  for (let days = 0; days < 120; days += 1) {
+    const iso = new Date(now.getTime() - days * 86400000).toISOString();
+    if (sections.bucket(iso, now.toISOString()) === bucket) return iso;
+  }
+  throw new Error('missing bucket ' + bucket);
+}
+
+function textFits(page, selector) {
+  return page.evaluate(sel => {
+    return [...document.querySelectorAll(sel)].map(node => {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const box = node.getBoundingClientRect();
+      const rects = [...range.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0);
+      const clipped = rects.some(rect => rect.left < box.left - 1 || rect.right > box.right + 1 || rect.top < box.top - 1 || rect.bottom > box.bottom + 1);
+      return { text: node.textContent.trim(), clipped, h: Math.round(box.height) };
+    });
+  }, selector);
+}
 
 test('approve updates the open card in place and order state is stored by draft id', () => {
   const js = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin', 'review.js'), 'utf8');
@@ -62,6 +85,11 @@ test('approve updates the open card in place and order state is stored by draft 
   assert.match(css, /\.detail-side \{[\s\S]*overflow:\s*auto/);
   assert.match(css, /min-width:\s*0/);
   assert.match(css, /@media \(min-width: 768px\)/);
+  assert.match(css, /list-scroll \.inbox-section-head \{[^}]*top:\s*0/s);
+  assert.match(css, /pane-mid \.detail-quick\.card-chips > button \{[^}]*white-space:\s*normal/s);
+  assert.match(css, /pane-mid \.detail-quick\.card-chips > button \{[^}]*max-height:\s*none/s);
+  assert.match(css, /\.id-name \{[^}]*-webkit-line-clamp:\s*2/s);
+  assert.match(js, /class: 'id-name', text: name, title: name/);
 });
 
 function appServer() {
@@ -383,6 +411,192 @@ test('mobile stays one column and approve still does not navigate', {
     assert.equal((await pending).status(), 200);
     assert.equal(page.url(), url);
     assert.equal(await page.locator('#kiot-note-detail').inputValue(), 'ghi chu mobile');
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+test('time sections scroll in the list, and chips and long names stay readable', {
+  skip: !playwright || !chrome,
+  timeout: 90000,
+}, async () => {
+  const longName = 'Nguyễn Thị Minh Châu';
+  await drafts.createDraft({
+    channel: 'zalo',
+    sales_channel: 'farm',
+    biz_line: 'sale',
+    customer_name: longName,
+    customer_phone: '0900000011',
+    customer_code: 'KH-DEMO',
+    invoice_code: 'HD-DEMO',
+    customer_user_id: 'zalo_pane_long',
+    customer_query: 'Đặt thử cho tên dài.',
+    customer_intent: '[sales] đặt hàng',
+    draft_reply: 'Dạ em ghi nhận.',
+    triage_level: 'hot',
+    approval_status: 'PENDING_REVIEW',
+    source_received_at: isoForBucket('today'),
+  });
+  await drafts.createDraft({
+    channel: 'zalo',
+    sales_channel: 'farm',
+    biz_line: 'sale',
+    customer_name: 'Khách Tuần',
+    customer_phone: '0900000012',
+    customer_code: 'KH-DEMO',
+    customer_user_id: 'zalo_pane_week',
+    customer_query: 'Tin trong tuần.',
+    draft_reply: 'Dạ.',
+    approval_status: 'PENDING_REVIEW',
+    source_received_at: isoForBucket('week'),
+  });
+  await drafts.createDraft({
+    channel: 'zalo',
+    sales_channel: 'farm',
+    biz_line: 'sale',
+    customer_name: 'Khách Tháng',
+    customer_phone: '0900000013',
+    customer_code: 'KH-DEMO',
+    customer_user_id: 'zalo_pane_month',
+    customer_query: 'Tin trong tháng.',
+    draft_reply: 'Dạ.',
+    approval_status: 'PENDING_REVIEW',
+    source_received_at: isoForBucket('month'),
+  });
+  await drafts.createDraft({
+    channel: 'zalo',
+    sales_channel: 'farm',
+    biz_line: 'sale',
+    customer_name: 'Khách Cũ',
+    customer_phone: '0900000014',
+    customer_code: 'KH-DEMO',
+    customer_user_id: 'zalo_pane_old',
+    customer_query: 'Tin cũ hơn.',
+    draft_reply: 'Dạ.',
+    approval_status: 'PENDING_REVIEW',
+    source_received_at: isoForBucket('older'),
+  });
+  for (let i = 0; i < 8; i += 1) {
+    await drafts.createDraft({
+      channel: 'zalo',
+      sales_channel: 'farm',
+      biz_line: 'sale',
+      customer_name: 'Khách Đệm ' + (i + 1),
+      customer_phone: '090000010' + i,
+      customer_code: 'KH-DEMO',
+      customer_user_id: 'zalo_pane_pad_' + i,
+      customer_query: 'Tin đệm để danh sách tự cuộn.',
+      draft_reply: 'Dạ.',
+      approval_status: 'PENDING_REVIEW',
+      source_received_at: isoForBucket('today'),
+    });
+  }
+  const server = await appServer();
+  const base = 'http://127.0.0.1:' + server.address().port;
+  const browser = await playwright.chromium.launch({
+    executablePath: chrome,
+    headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+  });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1024, height: 800 } });
+    page.on('dialog', dialog => dialog.accept());
+    await login(page, base);
+    await page.goto(base + '/admin?pollms=60000&nhom=zalo&hop=pending', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('.inbox-section-head');
+    await page.locator('.msg-card', { hasText: longName }).locator('.msg').click();
+    await page.waitForSelector('.pane-mid .detail-quick button');
+    const sectionsInList = await page.evaluate(() => {
+      const list = document.getElementById('list');
+      const heads = [...list.querySelectorAll(':scope > .inbox-section > .inbox-section-head')];
+      return heads.map(head => ({
+        title: head.querySelector('.inbox-section-title').textContent,
+        count: head.querySelector('.inbox-section-count').textContent,
+        inList: list.contains(head),
+      }));
+    });
+    assert.deepEqual(sectionsInList.map(row => row.title), ['Hôm nay', 'Trong tuần', 'Trong tháng', 'Cũ hơn']);
+    assert.ok(sectionsInList.every(row => row.inList && Number(row.count) >= 1));
+    const scrolled = await page.evaluate(() => {
+      const list = document.getElementById('list');
+      const mid = document.querySelector('.pane-mid-scroll');
+      mid.scrollTop = 30;
+      const midBefore = mid.scrollTop;
+      list.scrollTop = 160;
+      const head = list.querySelector('.inbox-section-head');
+      return {
+        listTop: list.scrollTop,
+        midBefore,
+        midAfter: mid.scrollTop,
+        listOverflow: getComputedStyle(list).overflowY,
+        headStuck: Math.abs(head.getBoundingClientRect().top - list.getBoundingClientRect().top) < 2,
+      };
+    });
+    assert.equal(scrolled.listOverflow, 'auto');
+    assert.ok(scrolled.listTop > 0, 'list scrolled ' + scrolled.listTop);
+    assert.equal(scrolled.midAfter, scrolled.midBefore);
+    assert.equal(scrolled.headStuck, true);
+    const chips = await textFits(page, '.pane-mid .detail-quick button');
+    const chipRows = await page.evaluate(() => new Set([...document.querySelectorAll('.pane-mid .detail-quick button')].map(btn => Math.round(btn.getBoundingClientRect().top))).size);
+    assert.ok(chips.some(chip => chip.text === 'Chuyển qua DV'));
+    assert.ok(chips.some(chip => chip.text === 'Từ chối bản nháp'));
+    assert.ok(chipRows >= 1 && chipRows <= 2, 'chip rows ' + chipRows);
+    chips.forEach(chip => assert.equal(chip.clipped, false, chip.text));
+    const names = await page.evaluate(expected => {
+      const read = node => {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const box = node.getBoundingClientRect();
+        const rects = [...range.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0);
+        const code = node.parentElement.querySelector('.id-code');
+        const nameStyle = getComputedStyle(node);
+        const codeStyle = code ? getComputedStyle(code) : null;
+        return {
+          title: node.getAttribute('title'),
+          text: node.textContent,
+          clipped: rects.some(rect => rect.right > box.right + 1 || rect.bottom > box.bottom + 1),
+          lines: rects.length,
+          w: Math.round(box.width),
+          h: Math.round(box.height),
+          rects: rects.map(rect => ({
+            l: Math.round(rect.left),
+            r: Math.round(rect.right),
+            t: Math.round(rect.top),
+            b: Math.round(rect.bottom),
+          })),
+          box: { l: Math.round(box.left), r: Math.round(box.right), t: Math.round(box.top), b: Math.round(box.bottom) },
+          sameRow: code ? Math.abs(code.getBoundingClientRect().top - box.top) < 8 : false,
+          nameSize: parseFloat(nameStyle.fontSize),
+          codeSize: codeStyle ? parseFloat(codeStyle.fontSize) : 0,
+        nameWeight: parseInt(nameStyle.fontWeight, 10),
+        codes: [...node.parentElement.querySelectorAll('.id-code')].map(item => ({
+          text: item.textContent,
+          size: parseFloat(getComputedStyle(item).fontSize),
+        })),
+        beside: code ? code.getBoundingClientRect().left >= box.right - 2
+          && code.getBoundingClientRect().top < box.bottom - 2
+          && code.getBoundingClientRect().bottom > box.top + 2 : false,
+      };
+    };
+    const card = [...document.querySelectorAll('.msg-card')].find(node => node.textContent.includes(expected));
+    return {
+      list: read(card.querySelector('.id-name')),
+      head: read(document.querySelector('.pane-mid-head .id-name')),
+    };
+  }, longName);
+    for (const side of ['list', 'head']) {
+      const row = names[side];
+      assert.equal(row.text, longName, side);
+      assert.equal(row.title, longName, side);
+      assert.equal(row.clipped, false, side);
+      assert.ok(row.lines >= 1 && row.lines <= 2, side + ' lines ' + row.lines);
+      assert.equal(row.beside, true, side);
+      assert.ok(row.nameSize > row.codeSize, side + ' sizes ' + row.nameSize + '/' + row.codeSize);
+      assert.ok(row.nameWeight >= 700, side);
+      assert.deepEqual(row.codes.map(item => item.text), ['KH-DEMO', 'HD-DEMO']);
+      assert.equal(row.codes[0].size, row.codes[1].size, side);
+    }
   } finally {
     await browser.close();
     server.close();

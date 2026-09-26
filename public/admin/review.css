@@ -939,9 +939,12 @@ body.inbox .msg-card .msg-names {
 }
 body.inbox .msg-card .msg-name,
 body.inbox .msg-card .msg-channel-name {
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
   overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: break-word;
   font-size: 16px;
   line-height: 1.25;
 }
@@ -1004,7 +1007,7 @@ body.hitl .msg-names { display: flex; flex: 1 1 auto; flex-direction: column; fl
 body.hitl .id-row {
   display: flex;
   flex-wrap: nowrap;
-  align-items: baseline;
+  align-items: first baseline;
   gap: 8px;
   min-width: 0;
   max-width: 100%;
@@ -1013,10 +1016,13 @@ body.hitl .id-row {
 }
 body.hitl .id-name {
   flex: 1 1 auto;
-  min-width: 0;
+  min-width: 6.5em;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: break-word;
   font-size: 18px;
   font-weight: 750;
   line-height: 1.2;
@@ -1888,6 +1894,11 @@ body.inbox .pane-side-toggle { display: none; }
   body.inbox.show-detail #group-tabs { display: flex; }
   body.inbox.show-detail button#detail-back { display: none; }
   body.inbox .list-scroll { flex: 1; min-height: 0; overflow: auto; }
+  body.inbox .list-scroll .inbox-section-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
   body.inbox .queue-head { position: static; flex: 0 0 auto; }
   body.inbox .draft-form {
     flex: 1;
@@ -2068,19 +2079,28 @@ body.inbox .pane-side-toggle { display: none; }
   body.inbox .pane-mid .detail-quick.card-chips {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
+    align-items: stretch;
     gap: 4px;
   }
   body.inbox .pane-mid .detail-quick.card-chips > button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
     min-width: 0;
     width: 100%;
     max-width: 100%;
-    height: 32px;
+    height: auto;
     min-height: 32px;
-    max-height: 32px;
-    padding: 0 4px;
+    max-height: none;
+    padding: 4px 4px;
     font-size: 12px;
-    letter-spacing: -0.03em;
-    justify-content: center;
+    line-height: 1.15;
+    letter-spacing: 0;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    text-align: center;
+    overflow-wrap: anywhere;
   }
   /* button.btn is more specific than .back, so the class chain is required. */
   body.inbox button.btn.back { display: none; }
