@@ -1085,6 +1085,7 @@ function mount(app) {
   app.get('/admin/review.css', requirePageAsset, sendAsset('review.css', 'text/css; charset=utf-8'));
   app.get('/admin/inbox-refresh.js', requirePageAsset, sendAsset('inbox-refresh.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/inbox-order.js', requirePageAsset, sendAsset('inbox-order.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/inbox-sections.js', requirePageAsset, sendAsset('inbox-sections.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/kiot-picker.js', requirePageAsset, sendAsset('kiot-picker.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/kiot-lines.js', requirePageAsset, sendAsset('kiot-lines.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/card-time.js', requirePageAsset, sendAsset('card-time.js', 'text/javascript; charset=utf-8'));

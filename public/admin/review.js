@@ -192,6 +192,8 @@
   function syncBarHeight() {
     const bar = document.getElementById('app-bar');
     if (bar) document.body.style.setProperty('--app-bar-h', bar.offsetHeight + 'px');
+    const queueHead = document.querySelector('#queue .queue-head');
+    if (queueHead) document.body.style.setProperty('--queue-head-h', queueHead.offsetHeight + 'px');
     let chrome = 0;
     if (!isDesktop() && document.body.classList.contains('show-detail')) {
       const sticky = document.querySelector('#detail .sticky-actions');
@@ -343,12 +345,14 @@
       const open = filterPanel.hidden;
       filterPanel.hidden = !open;
       filterToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      syncBarHeight();
     });
     document.addEventListener('click', (e) => {
       if (filterPanel.hidden) return;
       if (e.target.closest('#filter-panel') || e.target.closest('#filter-toggle')) return;
       filterPanel.hidden = true;
       filterToggle.setAttribute('aria-expanded', 'false');
+      syncBarHeight();
     });
   }
 
@@ -758,6 +762,105 @@
     return listEl.querySelector('.msg-card[data-draft-id="' + safe + '"]');
   }
 
+  function sectionsOn() {
+    return !!(window.inboxSections && typeof window.inboxSections.group === 'function');
+  }
+
+  function sectionIdOf(d) {
+    return window.inboxSections.bucketOf(d);
+  }
+
+  function sectionNode(id) {
+    const safe = window.CSS && CSS.escape ? CSS.escape(id) : id;
+    return listEl.querySelector('.inbox-section[data-section="' + safe + '"]');
+  }
+
+  function refreshSection(section) {
+    if (!section || !section.isConnected) return;
+    const count = section.querySelectorAll('.inbox-section-body > .msg-card').length;
+    if (!count) {
+      section.remove();
+      return;
+    }
+    const badge = section.querySelector('.inbox-section-count');
+    if (badge) badge.textContent = String(count);
+  }
+
+  function setSectionOpen(section, open) {
+    const body = section.querySelector('.inbox-section-body');
+    const head = section.querySelector('.inbox-section-head');
+    if (body) body.hidden = !open;
+    section.classList.toggle('is-open', !!open);
+    if (head) head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function buildSection(id, items) {
+    const open = window.inboxSections.isOpen(nhom, id);
+    const section = el('section', {
+      class: 'inbox-section' + (open ? ' is-open' : ''),
+      'data-section': id,
+    });
+    const head = el('button', {
+      type: 'button',
+      class: 'inbox-section-head',
+      'aria-expanded': open ? 'true' : 'false',
+    });
+    head.appendChild(el('span', { class: 'inbox-section-title', text: window.inboxSections.title(id) }));
+    head.appendChild(el('span', { class: 'inbox-section-count', text: String(items.length) }));
+    head.appendChild(el('span', { class: 'inbox-section-chevron', 'aria-hidden': 'true' }));
+    head.addEventListener('click', () => {
+      const next = !section.classList.contains('is-open');
+      setSectionOpen(section, next);
+      window.inboxSections.setOpen(nhom, id, next);
+    });
+    const body = el('div', { class: 'inbox-section-body' });
+    if (!open) body.hidden = true;
+    (items || []).forEach(d => body.appendChild(buildCard(d)));
+    section.appendChild(head);
+    section.appendChild(body);
+    return section;
+  }
+
+  function ensureSection(id) {
+    const existing = sectionNode(id);
+    if (existing) return existing;
+    const section = buildSection(id, []);
+    const order = window.inboxSections.ORDER;
+    const rank = order.indexOf(id);
+    const before = [...listEl.querySelectorAll('.inbox-section')]
+      .find(node => order.indexOf(node.getAttribute('data-section')) > rank);
+    if (before) listEl.insertBefore(section, before);
+    else listEl.appendChild(section);
+    return section;
+  }
+
+  function nextOlderCard(d, id, body, node) {
+    const idx = drafts.findIndex(item => item && item.id === d.id);
+    for (let i = idx + 1; i < drafts.length; i++) {
+      const item = drafts[i];
+      if (!item || sectionIdOf(item) !== id) continue;
+      const sib = findCard(item.id);
+      if (sib && sib !== node && body.contains(sib)) return sib;
+    }
+    return null;
+  }
+
+  function placeCard(d, node) {
+    const id = sectionIdOf(d);
+    const previous = node.closest ? node.closest('.inbox-section') : null;
+    const section = ensureSection(id);
+    const body = section.querySelector('.inbox-section-body');
+    const before = nextOlderCard(d, id, body, node);
+    if (before) {
+      if (node.parentNode !== body || node.nextSibling !== before) body.insertBefore(node, before);
+    } else if (body.lastElementChild !== node) {
+      body.appendChild(node);
+    }
+    if (window.inboxOrder) node.dataset.sortKey = window.inboxOrder.stamp(d);
+    refreshSection(section);
+    if (previous && previous !== section) refreshSection(previous);
+  }
+
   function slotBefore(d) {
     const idx = drafts.findIndex(item => item && item.id === d.id);
     for (let i = idx + 1; i < drafts.length; i++) {
@@ -769,38 +872,59 @@
 
   function repositionChanged() {
     if (!window.inboxOrder) return;
-    drafts.forEach(d => {
+    if (!sectionsOn()) {
+      drafts.forEach(d => {
+        const node = findCard(d.id);
+        if (!node) return;
+        const key = window.inboxOrder.stamp(d);
+        if (node.dataset.sortKey === key) return;
+        node.dataset.sortKey = key;
+        const before = slotBefore(d);
+        if (before && before !== node) listEl.insertBefore(node, before);
+        else if (!before) listEl.appendChild(node);
+      });
+      return;
+    }
+    const existing = drafts.filter(d => d && findCard(d.id));
+    for (let i = existing.length - 1; i >= 0; i--) {
+      const d = existing[i];
       const node = findCard(d.id);
-      if (!node) return;
       const key = window.inboxOrder.stamp(d);
-      if (node.dataset.sortKey === key) return;
-      node.dataset.sortKey = key;
-      const before = slotBefore(d);
-      if (before && before !== node) listEl.insertBefore(node, before);
-      else if (!before) listEl.appendChild(node);
-    });
+      const current = node.closest('.inbox-section');
+      const inPlace = current
+        && current.getAttribute('data-section') === sectionIdOf(d)
+        && node.dataset.sortKey === key
+        && node.parentElement
+        && node.parentElement.classList.contains('inbox-section-body');
+      if (inPlace) continue;
+      placeCard(d, node);
+    }
   }
 
   function insertMissing() {
     const have = new Set(renderedIds());
-    const fresh = drafts.filter(d => d && d.id && !have.has(d.id));
+    const fresh = drafts.filter(d => d && d.id && !have.has(d.id) && matchesSearch(d));
     if (!fresh.length) return 0;
     const empty = listEl.querySelector('.empty-list');
     if (empty) empty.remove();
-    fresh.forEach(d => {
-      const card = buildCard(d);
-      const idx = drafts.findIndex(item => item.id === d.id);
-      let before = null;
-      for (let i = idx + 1; i < drafts.length; i++) {
-        const id = drafts[i] && drafts[i].id;
-        if (!id) continue;
-        const safe = window.CSS && CSS.escape ? CSS.escape(id) : id;
-        const node = listEl.querySelector('.msg-card[data-draft-id="' + safe + '"]');
-        if (node) { before = node; break; }
-      }
-      if (before) listEl.insertBefore(card, before);
-      else listEl.appendChild(card);
-    });
+    if (!sectionsOn()) {
+      fresh.forEach(d => {
+        const card = buildCard(d);
+        const idx = drafts.findIndex(item => item.id === d.id);
+        let before = null;
+        for (let i = idx + 1; i < drafts.length; i++) {
+          const node = findCard(drafts[i] && drafts[i].id);
+          if (node) { before = node; break; }
+        }
+        if (before) listEl.insertBefore(card, before);
+        else listEl.appendChild(card);
+      });
+      return fresh.length;
+    }
+    const ordered = fresh.slice().sort((a, b) => (
+      window.inboxOrder ? window.inboxOrder.compare(b, a) : 0
+    ));
+    ordered.forEach(d => placeCard(d, buildCard(d)));
     return fresh.length;
   }
 
@@ -1008,7 +1132,13 @@
       return;
     }
     const visible = drafts.filter(matchesSearch);
-    visible.forEach(d => listEl.appendChild(buildCard(d)));
+    if (sectionsOn()) {
+      window.inboxSections.group(visible).forEach(section => {
+        listEl.appendChild(buildSection(section.id, section.items));
+      });
+    } else {
+      visible.forEach(d => listEl.appendChild(buildCard(d)));
+    }
     if (!visible.length) {
       listEl.appendChild(el('div', { class: 'empty-list search-empty' }, [
         el('strong', { text: 'Không thấy tin khớp.' }),
@@ -3524,8 +3654,10 @@
     const entries = fresh.map(item => {
       const index = drafts.findIndex(row => row && row.id === item.id);
       const card = findCard(item.id);
+      const section = card ? card.closest('.inbox-section') : null;
       const next = card ? card.nextSibling : null;
       if (card) card.remove();
+      if (section) refreshSection(section);
       return {
         id: item.id,
         draft: index >= 0 ? drafts[index] : item,
@@ -3805,6 +3937,7 @@
   function setSearch(open) {
     document.body.classList.toggle('search-open', open);
     if (searchToggle) searchToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    syncBarHeight();
     if (open && searchInput) searchInput.focus();
   }
   if (searchToggle) {
