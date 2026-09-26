@@ -186,6 +186,14 @@
   function getDistrict(id) { return index && index.districtById.get(String(id || '')) || null; }
   function getWard(id) { return index && index.wardById.get(String(id || '')) || null; }
 
+  function classifyAdmin(token) {
+    const folded = fold(token);
+    if (/^(?:phuong|xa|thi tran)\b/.test(folded)) return 'ward';
+    if (/^(?:quan|huyen|thi xa)\b/.test(folded)) return 'district';
+    if (/^(?:tinh|thanh pho|tp)\b/.test(folded)) return 'province';
+    return '';
+  }
+
   function matchToken(list, token) {
     const folded = fold(token);
     const alias = PROVINCE_ALIAS[folded];
@@ -228,16 +236,36 @@
       .trim();
   }
 
-  function result(detail, province, district, ward) {
+  function result(detail, province, district, ward, texts) {
     const linked = fillParents(province, district, ward);
+    const extra = texts || {};
     const value = {
       detail: cleanDetail(detail),
       province: linked.province,
       district: linked.district,
       ward: linked.ward,
+      provinceText: linked.province ? '' : String(extra.provinceText || '').trim(),
+      districtText: linked.district ? '' : String(extra.districtText || '').trim(),
+      wardText: linked.ward ? '' : String(extra.wardText || '').trim(),
     };
     value.line = line(value);
     return value;
+  }
+
+  // A catalog hit wins. A token that belongs to a later level is left in place.
+  // An admin-prefixed token with no catalog row is kept as free text.
+  function takeSlot(rest, kind, pool, later) {
+    if (!rest.length) return null;
+    const token = rest[rest.length - 1];
+    const hit = matchToken(pool, token);
+    if (hit) {
+      rest.pop();
+      return { item: hit, text: '' };
+    }
+    if (later && matchToken(later, token)) return null;
+    if (classifyAdmin(token) !== kind) return null;
+    rest.pop();
+    return { item: null, text: token };
   }
 
   function parseParts(parts) {
@@ -245,23 +273,30 @@
     let province = null;
     let district = null;
     let ward = null;
-    if (rest.length) {
-      province = matchToken(index.provinces, rest[rest.length - 1]);
-      if (province) rest.pop();
+    let provinceText = '';
+    let districtText = '';
+    let wardText = '';
+    const provinceSlot = takeSlot(rest, 'province', index.provinces, index.districts);
+    if (provinceSlot) {
+      province = provinceSlot.item;
+      provinceText = provinceSlot.text;
     }
-    if (rest.length) {
-      const pool = province ? (index.districtsByProvince.get(province.id) || []) : index.districts;
-      district = matchToken(pool, rest[rest.length - 1]);
-      if (district) rest.pop();
+    const districtPool = province ? (index.districtsByProvince.get(province.id) || []) : index.districts;
+    const wardPreview = province ? (index.wardsByProvince.get(province.id) || []) : index.wards;
+    const districtSlot = takeSlot(rest, 'district', districtPool, wardPreview);
+    if (districtSlot) {
+      district = districtSlot.item;
+      districtText = districtSlot.text;
     }
-    if (rest.length) {
-      const pool = district
-        ? (index.wardsByDistrict.get(district.id) || [])
-        : (province ? (index.wardsByProvince.get(province.id) || []) : index.wards);
-      ward = matchToken(pool, rest[rest.length - 1]);
-      if (ward) rest.pop();
+    const wardPool = district
+      ? (index.wardsByDistrict.get(district.id) || [])
+      : wardPreview;
+    const wardSlot = takeSlot(rest, 'ward', wardPool, null);
+    if (wardSlot) {
+      ward = wardSlot.item;
+      wardText = wardSlot.text;
     }
-    return result(rest.join(', '), province, district, ward);
+    return result(rest.join(', '), province, district, ward, { provinceText, districtText, wardText });
   }
 
   function parseTokens(text) {
@@ -291,8 +326,40 @@
       ward = wardHit.item;
       left = left.slice(0, left.length - wardHit.n);
     }
+    const texts = { provinceText: '', districtText: '', wardText: '' };
+    if (!ward) {
+      const free = peelFreeAdmin('ward', left);
+      if (free) {
+        texts.wardText = free.text;
+        left = left.slice(0, left.length - free.n);
+      }
+    }
+    if (!district) {
+      const free = peelFreeAdmin('district', left);
+      if (free) {
+        texts.districtText = free.text;
+        left = left.slice(0, left.length - free.n);
+      }
+    }
+    if (!province) {
+      const free = peelFreeAdmin('province', left);
+      if (free) {
+        texts.provinceText = free.text;
+        left = left.slice(0, left.length - free.n);
+      }
+    }
     const detail = (original.length === tokens.length ? left : []).join(' ');
-    return result(detail, province, district, ward);
+    return result(detail, province, district, ward, texts);
+  }
+
+  function peelFreeAdmin(kind, tokens) {
+    if (!tokens.length) return null;
+    const max = Math.min(6, tokens.length);
+    for (let n = max; n >= 1; n -= 1) {
+      const phrase = tokens.slice(tokens.length - n).join(' ');
+      if (classifyAdmin(phrase) === kind) return { text: phrase, n };
+    }
+    return null;
   }
 
   function parse(text) {
@@ -308,7 +375,9 @@
     chunks.forEach(chunk => {
       const parts = chunk.split(/\s*,\s*/).map(s => s.trim()).filter(Boolean);
       const parsed = parts.length >= 2 ? parseParts(parts) : parseTokens(chunk);
-      const score = (parsed.ward ? 2 : 0) + (parsed.district ? 1 : 0) + (parsed.province ? 1 : 0);
+      const score = (parsed.ward || parsed.wardText ? 2 : 0)
+        + (parsed.district || parsed.districtText ? 1 : 0)
+        + (parsed.province || parsed.provinceText ? 1 : 0);
       if (score >= 2 && (!best || score > best.score)) best = { parsed, score };
     });
     if (best) return best.parsed;
@@ -318,21 +387,58 @@
 
   function line(value) {
     const src = value || {};
-    const wardName = src.wardName || (src.ward && src.ward.label) || '';
-    const districtName = src.districtName || (src.district && src.district.label) || '';
-    const provinceName = src.provinceName || (src.province && src.province.label) || '';
+    const wardName = src.wardName || (src.ward && src.ward.label) || src.wardText || '';
+    const districtName = src.districtName || (src.district && src.district.label) || src.districtText || '';
+    const provinceName = src.provinceName || (src.province && src.province.label) || src.provinceText || '';
     return [src.detail, wardName, districtName, provinceName]
       .map(part => String(part || '').trim())
       .filter(Boolean)
       .join(', ');
   }
 
-  function validate(value) {
+  function partId(src, key) {
+    if (src[key + 'Id']) return String(src[key + 'Id']);
+    if (src[key] && src[key].id) return String(src[key].id);
+    return '';
+  }
+
+  function partText(src, key) {
+    if (partId(src, key)) return '';
+    return String(src[key + 'Name'] || src[key + 'Text'] || '').trim();
+  }
+
+  // KiotViet does not require a delivery address. Gaps are warnings only.
+  function gaps(value) {
     const src = value || {};
-    const errors = [];
-    if (!src.provinceId && !(src.province && src.province.id)) errors.push('Chọn tỉnh / thành.');
-    if (!src.wardId && !(src.ward && src.ward.id)) errors.push('Chọn phường / xã.');
-    return { ok: errors.length === 0, errors };
+    const detail = String(src.detail || '').trim();
+    const keys = ['province', 'district', 'ward'];
+    const started = !!(detail || keys.some(key => partId(src, key) || partText(src, key)));
+    const missing = [];
+    const invalid = [];
+    if (started) {
+      keys.forEach(key => {
+        if (partId(src, key)) return;
+        if (partText(src, key)) invalid.push(key);
+        else missing.push(key);
+      });
+      if (!detail) missing.push('street');
+    }
+    const label = { province: 'tỉnh', district: 'quận', ward: 'phường', street: 'số nhà' };
+    const warnings = [];
+    if (missing.length) warnings.push('Thiếu ' + missing.map(key => label[key]).join(', '));
+    if (invalid.length) warnings.push('Chưa khớp ' + invalid.map(key => label[key]).join(', '));
+    return {
+      ok: true,
+      errors: [],
+      warnings,
+      missing,
+      invalid,
+      focus: (missing[0] || invalid[0] || ''),
+    };
+  }
+
+  function validate(value) {
+    return gaps(value);
   }
 
   if (typeof document !== 'undefined') ready().catch(() => {});
@@ -351,6 +457,7 @@
     getWard,
     parse,
     line,
+    gaps,
     validate,
   };
 });

@@ -1092,6 +1092,7 @@ function mount(app) {
   app.get('/admin/undo-delete.js', requirePageAsset, sendAsset('undo-delete.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/send-once.js', requirePageAsset, sendAsset('send-once.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/vtp-address.js', requirePageAsset, sendAsset('vtp-address.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/vtp-order.js', requirePageAsset, sendAsset('vtp-order.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/vtp-units.json', requirePageAsset, sendAsset('vtp-units.json', 'application/json; charset=utf-8'));
   app.get('/admin/thread-context.css', requirePageAsset, sendAsset('thread-context.css', 'text/css; charset=utf-8'));
   app.get('/admin/fb-notices.js', requirePageAsset, sendAsset('fb-notices.js', 'text/javascript; charset=utf-8'));
