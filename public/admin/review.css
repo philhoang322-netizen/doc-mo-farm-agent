@@ -1637,6 +1637,22 @@ body.hitl .kiot-summary {
   margin-bottom: var(--space-2);
 }
 body.hitl .kiot-summary p { margin: 4px 0; }
+body.hitl .kiot-summary .kiot-who {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+body.hitl .kiot-summary .kiot-who strong {
+  font-weight: 750;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+}
+body.hitl .kiot-summary .kiot-who span { flex: 0 0 auto; }
 body.hitl .kiot-grand { font-weight: 750; }
 body.hitl .kiot-warn { color: var(--orange); font-weight: 650; margin: 6px 0 0; font-size: 15px; }
 body.hitl .kiot-actions { display: flex; flex-direction: column; gap: var(--space-2); }

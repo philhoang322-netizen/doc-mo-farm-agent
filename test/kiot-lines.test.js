@@ -179,11 +179,14 @@ test('quick entry does not create a Kiot document, and confirm sends every remai
   installMocks();
   const posts = [];
   kiotviet.call = async (method, pathName, opts) => {
+    if (pathName === '/users') return { data: [{ id: 501 }, { id: 502 }] };
+    if (pathName === '/branches') return { data: [{ id: 26947 }] };
     posts.push({ method, path: pathName, data: opts && opts.data });
     const details = (opts && opts.data && (opts.data.invoiceDetails || opts.data.orderDetails)) || [];
     const total = details.reduce((sum, row) => sum + row.quantity * row.price, 0);
     return { id: 9, code: pathName.includes('order') ? 'DH011800' : 'HD011800', total };
   };
+  kiotviet.clearSaleDirectoryCache();
   let creates = 0;
   kiotviet.createSaleDocument = async (...args) => {
     creates += 1;

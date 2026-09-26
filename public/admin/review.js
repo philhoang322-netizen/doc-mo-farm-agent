@@ -2658,7 +2658,7 @@
       return 'Không đủ (còn ' + stock.available + ')';
     }
     if (stock.level === 'low') return 'Sắp hết (còn ' + stock.available + ')';
-    return 'Còn ' + stock.available;
+    return 'Còn Kho ' + stock.available;
   }
 
   function kiotPanel(d, prefix) {
@@ -2773,6 +2773,7 @@
         nameInput.input.setAttribute('aria-invalid', 'false');
       }
       rememberKiot();
+      paintSummary();
     });
     phoneInput.input.addEventListener('input', () => {
       state.touched.phone = true;
@@ -3061,8 +3062,7 @@
       summary.textContent = '';
       const title = state.document === 'order' ? 'Xem lại đơn đặt hàng' : 'Xem lại hoá đơn';
       summary.appendChild(el('strong', { text: title }));
-      const who = [nameInput.input.value.trim() || 'Khách', phoneInput.input.value.trim()].filter(Boolean).join(' · ');
-      summary.appendChild(el('p', { text: who }));
+      summary.appendChild(reviewCustomerLine());
       const place = addressEditor.value().line;
       if (place) summary.appendChild(el('p', { class: 'addr-line', text: place }));
       (q.lines || []).forEach(line => {
@@ -3431,6 +3431,40 @@
         d.channel_names = data.channel_names;
         paintDraftNames(d);
       }
+      paintSummary();
+    }
+
+    function reviewCustomerCode() {
+      const phone = phoneKey(phoneInput.input.value);
+      const matched = state.kiotCustomer;
+      if (matched && phone && phoneKey(matched.phone) === phone) {
+        return String(matched.code || '').trim();
+      }
+      const draftCode = String(d.customer_code || '').trim();
+      if (draftCode) return draftCode;
+      const names = Array.isArray(d.channel_names) ? d.channel_names : [];
+      const kiot = names.find(item => item && item.source === 'kiot');
+      const fromKiot = kiot ? String(kiot.code || '').trim() : '';
+      if (fromKiot) return fromKiot;
+      return String(formOf(d).kiot_ref || '').trim();
+    }
+
+    function reviewCustomerLine() {
+      const name = nameInput.input.value.trim() || 'Khách';
+      const code = reviewCustomerCode();
+      const phone = phoneInput.input.value.trim();
+      const row = el('p', { class: 'kiot-who' });
+      row.appendChild(el('strong', { text: name }));
+      row.appendChild(document.createTextNode(' · '));
+      row.appendChild(el('span', {
+        class: 'kiot-makh',
+        text: code ? ('Mã KH: ' + code) : 'Mã KH: chưa có',
+      }));
+      if (phone) {
+        row.appendChild(document.createTextNode(' · '));
+        row.appendChild(el('span', { class: 'kiot-phone', text: phone }));
+      }
+      return row;
     }
 
     function scheduleKiotLookup() {
@@ -3441,6 +3475,7 @@
           state.kiotCustomer = null;
           d.channel_names = savedNames.map(item => ({ ...item }));
           paintDraftNames(d);
+          paintSummary();
           return;
         }
         try {

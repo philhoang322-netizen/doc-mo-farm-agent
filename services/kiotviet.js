@@ -575,8 +575,143 @@ async function searchProducts(query, limit = 8) {
   return hits;
 }
 
-/** Admin sales use this branch. KIOTVIET_BRANCH_ID wins; otherwise the farm branch. */
+/**
+ * Admin sales use this branch for stock reads. KIOTVIET_BRANCH_ID wins;
+ * otherwise the farm branch. Invoice and order creation does not trust this
+ * number until GET /branches confirms it — see resolveSaleBranch.
+ */
 const DEFAULT_SALE_BRANCH_ID = 26947;
+
+const DIRECTORY_TTL_MS = 60 * 60 * 1000;
+let userDirectory = { at: 0, rows: null };
+let branchDirectory = { at: 0, rows: null };
+
+function clearSaleDirectoryCache() {
+  userDirectory = { at: 0, rows: null };
+  branchDirectory = { at: 0, rows: null };
+}
+
+function positiveId(raw) {
+  if (raw == null) return null;
+  const text = String(raw).trim();
+  if (!/^\d+$/.test(text)) return null;
+  const n = Number(text);
+  if (!Number.isSafeInteger(n) || n <= 0) return null;
+  return n;
+}
+
+function directoryRows(body) {
+  if (Array.isArray(body)) return body;
+  if (body && Array.isArray(body.data)) return body.data;
+  return null;
+}
+
+function envIdLabel(raw, id) {
+  if (id) return String(id);
+  if (raw != null && String(raw).trim() !== '') return 'invalid';
+  return 'unset';
+}
+
+async function listUsers() {
+  if (userDirectory.rows && Date.now() - userDirectory.at < DIRECTORY_TTL_MS) {
+    return userDirectory.rows;
+  }
+  const body = await module.exports.call('get', '/users', {
+    params: { pageSize: 100, currentItem: 0 },
+  });
+  const rows = directoryRows(body);
+  if (!rows) throw new Error('KiotViet /users không trả danh sách');
+  userDirectory = { at: Date.now(), rows };
+  return rows;
+}
+
+async function listBranches() {
+  if (branchDirectory.rows && Date.now() - branchDirectory.at < DIRECTORY_TTL_MS) {
+    return branchDirectory.rows;
+  }
+  const body = await module.exports.call('get', '/branches', {
+    params: { pageSize: 20, currentItem: 0 },
+  });
+  const rows = directoryRows(body);
+  if (!rows) throw new Error('KiotViet /branches không trả danh sách');
+  branchDirectory = { at: Date.now(), rows };
+  return rows;
+}
+
+function userIdOf(row) {
+  if (!row || typeof row !== 'object') return null;
+  return positiveId(row.id != null ? row.id : row.userId);
+}
+
+function branchIdOf(row) {
+  if (!row || typeof row !== 'object') return null;
+  return positiveId(row.id);
+}
+
+function firstPositive(rows, pick) {
+  for (const row of rows || []) {
+    const id = pick(row);
+    if (id) return id;
+  }
+  return null;
+}
+
+function directoryHas(rows, wanted, pick) {
+  if (!wanted) return false;
+  return (rows || []).some(row => pick(row) === wanted);
+}
+
+/**
+ * Seller for POST /invoices and POST /orders.
+ * KIOTVIET_SOLD_BY_ID is used only when GET /users still lists that id.
+ * Otherwise the first user is the fallback. soldById is optional on those
+ * posts, so a failed or empty /users response omits the field instead of
+ * sending an id we could not check.
+ */
+const BRANCH_UNKNOWN_ERROR = 'Không xác định được chi nhánh KiotViet. Kiểm tra kết nối rồi thử lại.';
+
+async function resolveSoldBy() {
+  const raw = process.env.KIOTVIET_SOLD_BY_ID;
+  const wanted = positiveId(raw);
+  let rows;
+  try {
+    rows = await module.exports.listUsers();
+  } catch (_) {
+    console.log('KiotViet seller omitted');
+    return { soldById: null, source: 'omitted', error: null };
+  }
+  if (wanted && directoryHas(rows, wanted, userIdOf)) {
+    return { soldById: wanted, source: 'env', error: null };
+  }
+  const fallback = firstPositive(rows, userIdOf);
+  if (!fallback) {
+    console.log('KiotViet seller omitted');
+    return { soldById: null, source: 'omitted', error: null };
+  }
+  console.log(`KiotViet seller fallback id=${fallback} env=${envIdLabel(raw, wanted)}`);
+  return { soldById: fallback, source: 'fallback', error: null };
+}
+
+/** KIOTVIET_BRANCH_ID must be in GET /branches. Otherwise the first branch. */
+async function resolveSaleBranch() {
+  const raw = process.env.KIOTVIET_BRANCH_ID;
+  const wanted = positiveId(raw);
+  let rows;
+  try {
+    rows = await module.exports.listBranches();
+  } catch (_) {
+    return { branchId: null, source: 'error', error: BRANCH_UNKNOWN_ERROR };
+  }
+  if (wanted && directoryHas(rows, wanted, branchIdOf)) {
+    return { branchId: wanted, source: 'env', error: null };
+  }
+  const fallback = firstPositive(rows, branchIdOf);
+  if (!fallback) {
+    return { branchId: null, source: 'error', error: BRANCH_UNKNOWN_ERROR };
+  }
+  console.log(`KiotViet branch fallback id=${fallback} env=${envIdLabel(raw, wanted)}`);
+  return { branchId: fallback, source: 'fallback', error: null };
+}
 
 function saleBranchId() {
   const raw = process.env.KIOTVIET_BRANCH_ID;
@@ -660,11 +795,12 @@ function documentTotal(created, fallback) {
  * customer transfers after the manager sends the draft.
  */
 function salePayload({
-  kind, branchId, customerId, customerName, phone, address,
+  kind, branchId, soldById, customerId, customerName, phone, address,
   discount, shippingFee, description, details,
 }) {
   const ship = moneyAmount(shippingFee);
   const off = moneyAmount(discount);
+  const seller = positiveId(soldById);
   const delivery = (address || ship)
     ? {
       receiver: customerName || undefined,
@@ -685,6 +821,7 @@ function salePayload({
       orderDetails: details,
       customerId,
     };
+    if (seller) payload.soldById = seller;
     if (delivery) payload.orderDelivery = delivery;
     return payload;
   }
@@ -699,6 +836,7 @@ function salePayload({
     invoiceDetails: details,
     customerId,
   };
+  if (seller) payload.soldById = seller;
   if (delivery) payload.delivery = delivery;
   return payload;
 }
@@ -727,7 +865,6 @@ async function createSaleDocument({
   if (!enabled()) return { ok: false, error: 'KiotViet chưa cấu hình' };
   const kind = documentType === 'order' ? 'order' : 'invoice';
   try {
-    const branch = saleBranchId();
     const details = [];
     const missing = [];
     const find = module.exports.findProduct;
@@ -783,9 +920,16 @@ async function createSaleDocument({
       address ? `Giao: ${address}` : null,
     ].filter(Boolean).join(' | ')).slice(0, 500);
 
+    const seller = await module.exports.resolveSoldBy();
+    if (seller.error) return { ok: false, error: seller.error };
+    const pickedBranch = await module.exports.resolveSaleBranch();
+    if (pickedBranch.error) return { ok: false, error: pickedBranch.error };
+    const branch = pickedBranch.branchId;
+
     const payload = salePayload({
       kind,
       branchId: branch,
+      soldById: seller.soldById,
       customerId: customer.id,
       customerName,
       phone,
@@ -903,8 +1047,16 @@ async function issueInvoiceFromOrder({ orderId, orderCode } = {}) {
     if (!customerCode) {
       return { ok: false, error: MISSING_CUSTOMER_CODE };
     }
+    const seller = await module.exports.resolveSoldBy();
+    if (seller.error) return { ok: false, error: seller.error };
+    let branch = positiveId(order.branchId);
+    if (!branch) {
+      const pickedBranch = await module.exports.resolveSaleBranch();
+      if (pickedBranch.error) return { ok: false, error: pickedBranch.error };
+      branch = pickedBranch.branchId;
+    }
     const payload = {
-      branchId: order.branchId || saleBranchId(),
+      branchId: branch,
       orderId: id,
       purchaseDate: new Date().toISOString(),
       customerId: order.customerId,
@@ -914,6 +1066,7 @@ async function issueInvoiceFromOrder({ orderId, orderCode } = {}) {
       description: order.description || '',
       invoiceDetails: details,
     };
+    if (seller.soldById) payload.soldById = seller.soldById;
     const created = await module.exports.call('post', '/invoices', { data: payload });
     const code = documentCode(created);
     if (!code) {
@@ -965,4 +1118,6 @@ module.exports = {
   explainKiotError, paymentFromInvoice, readInvoicePayment, issueInvoiceFromOrder,
   cleanCustomerCode, MISSING_CUSTOMER_CODE, call,
   DEFAULT_SALE_BRANCH_ID,
+  listUsers, listBranches, resolveSoldBy, resolveSaleBranch, clearSaleDirectoryCache,
+  BRANCH_UNKNOWN_ERROR,
 };
