@@ -20,6 +20,7 @@ const trainingLog = require('./trainingLog');
 const faqPrompt = require('./faqPrompt');
 const triage = require('./triage');
 const customerLink = require('./customerLink');
+const fbNotices = require('../public/admin/fb-notices');
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -807,7 +808,7 @@ async function respond(zaloUserId, userMessage, sessionId = null) {
     content: (h.role === 'assistant' && String(h.content || '').length > MAX_TURN_CHARS)
       ? String(h.content).slice(0, MAX_TURN_CHARS) + ' […]'
       : String(h.content || ''),
-  })).filter(h => h.content);
+  })).filter((h) => h.content && !fbNotices.describe(h.content));
   if (messages.length && messages[messages.length - 1].role === 'user') {
     const last = String(messages[messages.length - 1].content || '').trim();
     if (last === String(userMessage || '').trim()) messages.pop();

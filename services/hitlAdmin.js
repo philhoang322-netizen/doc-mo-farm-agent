@@ -1093,6 +1093,7 @@ function mount(app) {
   app.get('/admin/vtp-address.js', requirePageAsset, sendAsset('vtp-address.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/vtp-units.json', requirePageAsset, sendAsset('vtp-units.json', 'application/json; charset=utf-8'));
   app.get('/admin/thread-context.css', requirePageAsset, sendAsset('thread-context.css', 'text/css; charset=utf-8'));
+  app.get('/admin/fb-notices.js', requirePageAsset, sendAsset('fb-notices.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/thread-context.js', requirePageAsset, sendAsset('thread-context.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/review.js', requirePageAsset, sendAsset('review.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/audit.js', requirePageAsset, sendAsset('audit.js', 'text/javascript; charset=utf-8'));

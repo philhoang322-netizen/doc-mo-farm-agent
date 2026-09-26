@@ -24,6 +24,7 @@ const lanhMark = require('./lanhMark');
 const fbDvRule = require('./fbDvRule');
 const labelMoves = require('./labelMoves');
 const store = require('./conversationStore');
+const fbNotices = require('../public/admin/fb-notices');
 
 const SOURCES = ['staff_lanh', 'signature', 'keyword', 'manual', 'model'];
 
@@ -107,6 +108,7 @@ function lanhAttribution(messages) {
   let signature = false;
   for (const row of messages || []) {
     if (!row || row.direction !== 'out') continue;
+    if (fbNotices.describe(row.message_text || row.text || '')) continue;
     const meta = row.sender_meta || {};
     const name = meta.from_name || row.sender_label || '';
     const fromId = meta.from_id != null ? String(meta.from_id) : '';
@@ -120,9 +122,14 @@ function lanhAttribution(messages) {
   return signature ? 'signature' : null;
 }
 
+function usableMessages(messages) {
+  return (messages || []).filter((row) => row && signalText(row).trim());
+}
+
 function ruleFromMessages(messages) {
-  const base = fbDvRule.decide(messages);
-  return labelMoves.combine(base, labelMoves.scoreMessages(messages));
+  const rows = usableMessages(messages);
+  const base = fbDvRule.decide(rows);
+  return labelMoves.combine(base, labelMoves.scoreMessages(rows));
 }
 
 /**
@@ -156,8 +163,9 @@ function classifyContext({ channel, text, messages, label, prior }) {
     };
   }
 
-  const priorTexts = (messages || []).map((row) => row.message_text || row.text || '');
-  const newest = String(text || '');
+  const priorTexts = (messages || []).map((row) => signalText(row));
+  const newestRaw = String(text || '');
+  const newest = fbNotices.describe(newestRaw) ? '' : newestRaw;
   const newestLine = bizLine.classify(newest);
   const priorDv = priorTexts.some((part) => dvHit(part));
   const labeledDv = label && label.label === 'dv';
@@ -213,8 +221,9 @@ function withNewest(messages, text) {
 }
 
 function threadWindow(messages, text) {
-  const rows = (messages || []).slice(-10);
-  const newest = String(text || '').trim();
+  const rows = (messages || []).filter((row) => signalText(row).trim()).slice(-10);
+  const newestRaw = String(text || '').trim();
+  const newest = fbNotices.describe(newestRaw) ? '' : newestRaw;
   if (!newest) return rows;
   const last = rows[rows.length - 1];
   const lastText = last ? String(last.message_text || last.text || '').trim() : '';
@@ -314,6 +323,12 @@ function messageText(row) {
   return String((row && (row.message_text || row.text)) || '');
 }
 
+function signalText(row) {
+  const text = messageText(row);
+  if (fbNotices.describe(text)) return '';
+  return text;
+}
+
 function decideThread(messages, existing) {
   if (existing && existing.source === 'manual') {
     return {
@@ -322,13 +337,14 @@ function decideThread(messages, existing) {
       confidence: existing.confidence == null ? 1 : existing.confidence,
     };
   }
-  const ruled = ruleFromMessages(messages);
+  const visible = usableMessages(messages);
+  const ruled = ruleFromMessages(visible);
   if (ruled) return ruled;
-  const lastIn = [...(messages || [])].reverse().find((row) => row && row.direction === 'in');
-  const window = (messages || []).slice(-10);
+  const lastIn = [...visible].reverse().find((row) => row && row.direction === 'in');
+  const window = visible.slice(-10);
   const decided = classifyContext({
     channel: 'messenger',
-    text: lastIn ? messageText(lastIn) : '',
+    text: lastIn ? signalText(lastIn) : '',
     messages: window,
     label: null,
     prior: null,
@@ -346,13 +362,16 @@ const STOP = new Set([
 ]);
 
 function phraseSet(text) {
-  const tokens = ops.normalizeText(text).split(' ').filter((token) => token.length >= 3 && !STOP.has(token));
+  const tokens = ops.normalizeText(fbNotices.stripUrls(text))
+    .split(' ')
+    .filter((token) => token.length >= 3 && !STOP.has(token) && !fbNotices.noisePhrase(token));
   const found = new Set();
   for (const token of tokens) {
     if (token.length >= 5) found.add(token);
   }
   for (let i = 0; i < tokens.length - 1; i += 1) {
-    found.add(`${tokens[i]} ${tokens[i + 1]}`);
+    const pair = `${tokens[i]} ${tokens[i + 1]}`;
+    if (!fbNotices.noisePhrase(pair)) found.add(pair);
   }
   return found;
 }
@@ -409,10 +428,10 @@ async function refreshKeywords(labels) {
   const saleDocs = [];
   for (const label of labels || []) {
     if (label.label !== 'dv' && label.label !== 'sale') continue;
-    const messages = byThread.get(label.thread_id) || [];
+    const messages = usableMessages(byThread.get(label.thread_id) || []);
     const inbound = messages
       .filter((row) => row.direction === 'in')
-      .map((row) => row.message_text || '')
+      .map((row) => signalText(row))
       .join('\n');
     if (label.label === 'sale') {
       if (inbound.trim()) saleDocs.push(inbound);
@@ -435,9 +454,9 @@ function buildFewShot(threads) {
   for (const label of ['dv', 'sale']) {
     const picked = (threads || []).filter((thread) => thread && thread.label === label).slice(0, 4);
     for (const thread of picked) {
-      const lines = (thread.messages || []).slice(-4).map((row) => {
+      const lines = (thread.messages || []).filter((row) => signalText(row).trim()).slice(-4).map((row) => {
         const who = row.direction === 'out' ? 'Shop' : 'Khách';
-        const body = pii.maskText(String(row.message_text || row.text || '').slice(0, 160));
+        const body = pii.maskText(signalText(row).slice(0, 160));
         return `${who}: ${body}`;
       }).filter((line) => !line.endsWith(': '));
       if (!lines.length) continue;
@@ -453,9 +472,9 @@ function classificationMessages(messages, shots, hint) {
     history.push({ role: 'user', content: example.text });
     history.push({ role: 'assistant', content: example.label });
   }
-  const context = (messages || []).slice(-10).map((row) => {
+  const context = (messages || []).filter((row) => signalText(row).trim()).slice(-10).map((row) => {
     const who = row.direction === 'out' ? 'Shop' : 'Khách';
-    return `${who}: ${pii.maskText(String(row.message_text || row.text || '').slice(0, 180))}`;
+    return `${who}: ${pii.maskText(signalText(row).slice(0, 180))}`;
   }).join('\n');
   history.push({ role: 'user', content: context });
   const kw = hint && Array.isArray(hint.keywords) ? hint.keywords.slice(0, 30) : [];
@@ -602,14 +621,47 @@ async function stats() {
   };
 }
 
+function noticeForStored(row) {
+  const described = fbNotices.describe((row && (row.message_text || row.attachments_summary)) || '');
+  if (described) return described;
+  const meta = (row && row.sender_meta) || {};
+  if (!meta.system_notice) return null;
+  return {
+    kind: meta.system_notice,
+    hide: meta.system_notice === 'greeting',
+    label: fbNotices.labelFor(meta.system_notice),
+    url: meta.story_url || null,
+    storyId: meta.story_id || null,
+  };
+}
+
+function publicNotice(notice) {
+  if (!notice) return null;
+  return {
+    kind: notice.kind,
+    hide: notice.hide === true || notice.kind === 'greeting',
+    label: notice.label || fbNotices.labelFor(notice.kind),
+    url: notice.url || null,
+    storyId: notice.storyId || null,
+  };
+}
+
 function publicContextRow(row) {
+  const notice = publicNotice(noticeForStored(row));
   return {
     direction: row.direction === 'out' ? 'out' : 'in',
     sender_label: row.sender_label || null,
     text: row.message_text || row.attachments_summary || '',
     created_time: row.created_time,
     attachments_summary: row.attachments_summary || null,
+    notice,
   };
+}
+
+function contextKeeps(row) {
+  const notice = noticeForStored(row);
+  if (notice && (notice.hide || notice.kind === 'greeting' || !notice.url)) return false;
+  return !!(row.message_text || row.attachments_summary || (notice && notice.url));
 }
 
 async function contextForDraft(draft) {
@@ -631,7 +683,7 @@ async function contextForDraft(draft) {
       }
     }
   }
-  return rows.slice(Math.max(0, cut - 10), cut).map(publicContextRow).filter((row) => row.text);
+  return rows.slice(0, cut).filter(contextKeeps).slice(-10).map(publicContextRow);
 }
 
 module.exports = {

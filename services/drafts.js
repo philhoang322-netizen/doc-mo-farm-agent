@@ -1134,6 +1134,7 @@ async function moveBizLine(id, line, ctx = {}) {
 }
 
 async function inboundForMove(draft) {
+  const fbNotices = require('../public/admin/fb-notices');
   const channel = draft.channel === 'zalo' ? 'zalo' : 'fb';
   const threadId = draft.customer_user_id ? String(draft.customer_user_id) : '';
   const parts = [];
@@ -1143,14 +1144,15 @@ async function inboundForMove(draft) {
       for (const row of rows || []) {
         if (!row || row.direction === 'out') continue;
         const text = String(row.message_text || '').trim();
-        if (text) parts.push(text);
+        if (!text || fbNotices.describe(text)) continue;
+        parts.push(fbNotices.stripUrls(text));
       }
     } catch (err) {
       console.error('label move context skipped:', err.message);
     }
   }
   const query = String(draft.customer_query || draft.customer_intent || '').trim();
-  if (query) parts.push(query);
+  if (query && !fbNotices.describe(query)) parts.push(fbNotices.stripUrls(query));
   return parts.slice(-6).join(' ');
 }
 

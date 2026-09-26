@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const db = require('./database');
 const ops = require('./ops');
 const fbDvRule = require('./fbDvRule');
+const fbNotices = require('../public/admin/fb-notices');
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS label_moves (
@@ -81,16 +82,17 @@ function decay(movedAt, now) {
 }
 
 function ngrams(text) {
-  const kept = ops.normalizeText(text)
+  if (fbNotices.describe(text)) return [];
+  const kept = ops.normalizeText(fbNotices.stripUrls(text))
     .split(' ')
-    .filter((token) => token.length >= 3 && !STOP.has(token));
+    .filter((token) => token.length >= 3 && !STOP.has(token) && !fbNotices.noisePhrase(token));
   const out = [];
   for (const token of kept) {
     if (token.length >= 5 && !GREETINGS.has(token)) out.push(token);
   }
   for (let i = 0; i < kept.length - 1; i += 1) {
     const pair = `${kept[i]} ${kept[i + 1]}`;
-    if (GREETINGS.has(pair) || pair.length < 4) continue;
+    if (GREETINGS.has(pair) || pair.length < 4 || fbNotices.noisePhrase(pair)) continue;
     out.push(pair);
   }
   return out;
