@@ -681,3 +681,40 @@ test('confirm is blocked when KiotViet returns no Mã KH', async () => {
     await stop(server);
   }
 });
+
+test('the VCB QR transfer note is the Kiot code decoded from the payload', async () => {
+  const QRCode = require('qrcode');
+  const seen = [];
+  const orig = QRCode.toBuffer;
+  QRCode.toBuffer = async (payload, opts) => {
+    seen.push(String(payload));
+    return orig.call(QRCode, payload, opts);
+  };
+  const sample = {
+    id: 'web-9f3c2a10-generated',
+    code: 'DH000068',
+    created_at: '2026-09-26T06:29:00.000Z',
+    customer_name: 'Khách Thử',
+    customer_phone: '0900000099',
+    customer_code: 'KH-DEMO',
+    items: [{ name: 'Sản phẩm thử', quantity: 1, price: 10000, amount: 10000 }],
+    total: 10000,
+    amount_paid: 0,
+  };
+  try {
+    const png = await invoiceImage.render(sample);
+    assert.equal(png.readUInt32BE(0), 0x89504e47);
+    assert.equal(seen.length, 1);
+    assert.equal(emvco.valid(seen[0]), true);
+    const note = emvco.readAddInfo(seen[0]);
+    assert.equal(note, 'DH000068');
+    assert.equal(seen[0].includes('web-9f3c2a10'), false);
+    assert.equal(seen[0].includes('generated'), false);
+    const html = invoiceImage.pageHtml(sample, '/hd/DH000068/anh');
+    const caption = (html.match(/nội dung CK: [^<·]+/) || [''])[0];
+    assert.equal(caption, 'nội dung CK: DH000068');
+    assert.equal(emvco.readAddInfo(seen[0]), 'DH000068');
+  } finally {
+    QRCode.toBuffer = orig;
+  }
+});

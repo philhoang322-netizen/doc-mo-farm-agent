@@ -148,7 +148,7 @@ async function render(key, flash = null) {
         <label>Giá<input name="base_price" type="number" step="1000" value="${Number(p.base_price)}" class="in"></label>
         <label>Giá KM<input name="sale_price" type="number" step="1000" value="${p.sale_price ?? ''}" placeholder="—" class="in"></label>
         <label>Đơn vị<input name="unit" value="${esc(p.unit)}" class="in"></label>
-        <label>Tồn<input name="stock_qty" type="number" value="${p.stock_qty ?? 0}" class="in"></label>
+        <label>Còn Kho<input name="stock_qty" type="number" value="${p.stock_qty ?? 0}" class="in"></label>
       </div>
       <div class="prod-foot">
         <label class="chk"><input type="checkbox" name="is_available" ${p.is_available ? 'checked' : ''}> Đang bán</label>
@@ -164,7 +164,7 @@ async function render(key, flash = null) {
         <label>SKU<input name="sku" placeholder="DMF-XXX-001" class="in" required></label>
         <label>Giá<input name="base_price" type="number" step="1000" placeholder="0" class="in" required></label>
         <label>Đơn vị<input name="unit" placeholder="chai" class="in"></label>
-        <label>Tồn<input name="stock_qty" type="number" placeholder="0" class="in"></label>
+        <label>Còn Kho<input name="stock_qty" type="number" placeholder="0" class="in"></label>
       </div>
       <div class="prod-foot">
         <span class="sub">Thêm sản phẩm — bot dùng ngay sau 1 phút</span>

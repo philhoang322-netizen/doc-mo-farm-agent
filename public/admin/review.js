@@ -1770,8 +1770,10 @@
     const actions = el('div', { class: 'sticky-actions' });
     actions.appendChild(moreMenu(d, locked));
     if (!locked && me.canSend) {
+      actions.appendChild(el('p', { class: 'reply-send-label', text: 'Gửi câu trả lời' }));
       const sendBtn = actionButton('Duyệt & Gửi', refund ? 'send refund-mode' : 'send', () => send());
       sendBtn.id = 'btn-approve';
+      sendBtn.setAttribute('aria-label', 'Duyệt và gửi câu trả lời');
       actions.appendChild(sendBtn);
     }
     midFoot.appendChild(actions);
@@ -2079,7 +2081,9 @@
       row.setText('', true);
       enableCombo(row);
     }
+    let provinceTouched = !!(opts.parts && opts.parts.provinceTouched);
     province.input.addEventListener('input', () => {
+      provinceTouched = true;
       resetChild(district);
       resetChild(ward);
       paintLine();
@@ -2098,6 +2102,7 @@
       const api = window.vtpAddress;
       hint.hidden = true;
       if (which === province) {
+        provinceTouched = true;
         const same = province.item() && province.item().id === item.id;
         province.setItem(item);
         if (!same) {
@@ -2179,12 +2184,13 @@
     }
 
     function applyDefaultProvince() {
-      if (locked) return false;
+      if (locked || provinceTouched) return false;
       if (province.item() || province.input.value.trim()) return false;
       const item = window.vtpAddress && window.vtpAddress.defaultProvince && window.vtpAddress.defaultProvince();
       if (!item) return false;
       province.setItem(item, true);
       paintLine();
+      if (opts.onDefault) opts.onDefault();
       return true;
     }
 
@@ -2265,10 +2271,20 @@
       ));
     }
 
+    let initialSettled = false;
+    let initialFrames = 0;
+    let initialWaits = 0;
     function applyInitial() {
-      if (!box.isConnected || !window.vtpAddress || !window.vtpAddress.loaded()) return;
+      if (initialSettled) return;
+      if (!box.isConnected || !window.vtpAddress || !window.vtpAddress.loaded()) {
+        scheduleInitial();
+        return;
+      }
+      initialSettled = true;
+      if (opts.parts && opts.parts.provinceTouched) provinceTouched = true;
       if (savedParts(opts.parts)) {
         setValue(opts.parts);
+        if (!(opts.parts.provinceId || opts.parts.provinceName || opts.parts.provinceText)) applyDefaultProvince();
         paintWarnings(true);
         return;
       }
@@ -2300,6 +2316,32 @@
       paintWarnings(true);
     }
 
+    function scheduleInitial() {
+      if (initialSettled) return;
+      const kick = () => {
+        if (initialSettled) return;
+        if (!box.isConnected) {
+          initialFrames += 1;
+          if (initialFrames > 120) return;
+          if (typeof requestAnimationFrame === 'function') requestAnimationFrame(kick);
+          else setTimeout(kick, 16);
+          return;
+        }
+        const api = window.vtpAddress;
+        if (!api) return;
+        if (!api.loaded()) {
+          initialWaits += 1;
+          if (initialWaits > 8) return;
+          const wait = api.ready ? api.ready() : Promise.reject(new Error('no catalog'));
+          wait.then(() => applyInitial()).catch(() => setTimeout(scheduleInitial, 400));
+          return;
+        }
+        applyInitial();
+      };
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(kick);
+      else setTimeout(kick, 0);
+    }
+
     document.addEventListener('click', function onDoc(ev) {
       if (!box.isConnected) {
         document.removeEventListener('click', onDoc);
@@ -2312,7 +2354,7 @@
       }
     });
 
-    if (window.vtpAddress) window.vtpAddress.ready().then(applyInitial).catch(() => {});
+    scheduleInitial();
     function mark(keys, focusKey) {
       const check = window.vtpAddress && window.vtpAddress.gaps
         ? window.vtpAddress.gaps(value())
@@ -2350,7 +2392,18 @@
       }
     }
 
-    return { box, street, value, setValue, setFromText, applyDefaultProvince, validateForConfirm, paintLine, mark };
+    return {
+      box,
+      street,
+      value,
+      setValue,
+      setFromText,
+      applyDefaultProvince,
+      provinceTouched: () => provinceTouched,
+      validateForConfirm,
+      paintLine,
+      mark,
+    };
   }
 
   function actionButton(label, kind, onClick) {
@@ -2386,6 +2439,8 @@
       kiot_code: (formOf(currentDraft()).kiot_code) || null,
       kiot_total: (formOf(currentDraft()).kiot_total) || null,
       kiot_kind: (formOf(currentDraft()).kiot_kind) || null,
+      invoice_page_url: (formOf(currentDraft()).invoice_page_url) || null,
+      invoice_image_sent_at: (formOf(currentDraft()).invoice_image_sent_at) || null,
     };
   }
 
@@ -2590,6 +2645,8 @@
       image: d.qr_image_url || '',
       customerCode: d.customer_code || (kiot && kiot.code) || '',
       customerName: (kiot && kiot.name) || d.customer_name || 'Khách',
+      page: f.invoice_page_url || '',
+      imageSent: !!f.invoice_image_sent_at,
     };
   }
 
@@ -2655,10 +2712,62 @@
     if (!stock || stock.level == null || stock.level === 'unknown') return 'Chưa rõ tồn';
     if (stock.level === 'blocked') {
       if (Number(stock.available) === 0) return 'Hết hàng';
-      return 'Không đủ (còn ' + stock.available + ')';
+      return 'Không đủ (Còn Kho ' + stock.available + ')';
     }
-    if (stock.level === 'low') return 'Sắp hết (còn ' + stock.available + ')';
-    return 'Còn ' + stock.available;
+    if (stock.level === 'low') return 'Sắp hết (Còn Kho ' + stock.available + ')';
+    return 'Còn Kho ' + stock.available;
+  }
+
+  let productCatalog = null;
+  let productCatalogTask = null;
+  function loadProductCatalog() {
+    if (productCatalog) return Promise.resolve(productCatalog);
+    if (!productCatalogTask) {
+      productCatalogTask = api('/admin/api/kiotviet/products?catalog=1').then(data => {
+        productCatalog = Array.isArray(data.products) ? data.products : [];
+        return productCatalog;
+      }).catch(err => {
+        productCatalogTask = null;
+        throw err;
+      });
+    }
+    return productCatalogTask;
+  }
+
+  function foldProductQuery(s) {
+    return String(s || '')
+      .normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/đ/gi, 'd')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '');
+  }
+
+  function productQueryPhrase(text) {
+    const chunk = String(text || '').split(/[\n;]/).pop() || '';
+    return chunk.split(',').pop().replace(/^\s*\d+(?:[.,]\d+)?\s*(?:x\s+)?/i, '').trim();
+  }
+
+  function matchProducts(text, products) {
+    const phrase = productQueryPhrase(text);
+    const key = foldProductQuery(phrase);
+    if (key.length < 2) return [];
+    const upper = phrase.toUpperCase();
+    const hits = [];
+    const seen = new Set();
+    for (const raw of products || []) {
+      if (!raw) continue;
+      const nameKey = foldProductQuery(raw.name || raw.fullName || '');
+      const code = String(raw.code || '').toUpperCase();
+      const codeHit = code && (code.includes(upper) || code.includes(key.toUpperCase()));
+      const nameHit = nameKey && nameKey.includes(key);
+      if (!codeHit && !nameHit) continue;
+      const id = String(raw.id != null ? raw.id : code || nameKey);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      hits.push(raw);
+      if (hits.length >= 8) break;
+    }
+    return hits;
   }
 
   function kiotPanel(d, prefix) {
@@ -2673,6 +2782,7 @@
       : null;
     const state = {
       document: savedKiot ? savedKiot.document : 'invoice',
+      payment: savedKiot && savedKiot.payment === 'da_tt' ? 'da_tt' : 'chua_tt',
       lines: savedKiot && savedKiot.lines.length ? savedKiot.lines : [blankKiotLine()],
       quote: null,
       submitting: false,
@@ -2694,18 +2804,33 @@
       placeholder: '1 xuc xich, 2 nước nghệ lên men',
       'aria-label': 'Nhập nhanh sản phẩm và số lượng',
     });
-    quick.addEventListener('input', () => { state.touched.quick = true; dirty = true; state.quote = null; rememberKiot(); });
+    quick.addEventListener('input', () => {
+      state.touched.quick = true;
+      dirty = true;
+      state.quote = null;
+      rememberKiot();
+      scheduleSuggest(false);
+    });
     autoGrow(quick, 2);
+    const suggestBox = el('div', { class: 'kiot-suggest', hidden: 'hidden' });
+    const lookupBtn = el('button', { type: 'button', class: 'btn btn-sm kiot-lookup', text: 'Tra sản phẩm' });
+    lookupBtn.addEventListener('click', () => scheduleSuggest(true));
     const quickBtn = el('button', { type: 'button', class: 'btn btn-sm', text: 'Điền vào đơn' });
     quickBtn.addEventListener('click', () => runQuick());
     panel.appendChild(quick);
+    panel.appendChild(suggestBox);
+    panel.appendChild(lookupBtn);
     const quickMsg = el('p', { class: 'kiot-msg', hidden: 'hidden' });
     panel.appendChild(quickMsg);
 
     const exist = el('p', { class: 'banner warn', hidden: 'hidden' });
     const ackLabel = el('label', { class: 'kiot-ack', hidden: 'hidden' });
     const ack = el('input', { type: 'checkbox' });
-    ack.addEventListener('change', () => { state.acknowledge = ack.checked; });
+    ack.addEventListener('change', () => {
+      state.acknowledge = ack.checked;
+      if (ack.checked) unlockSaleForm();
+      else lockSaleForm();
+    });
     ackLabel.appendChild(ack);
     ackLabel.appendChild(el('span', { class: 'switch', 'aria-hidden': 'true' }));
     ackLabel.appendChild(document.createTextNode(' Vẫn tạo thêm một chứng từ'));
@@ -2761,6 +2886,7 @@
       parts: rawKiot && rawKiot.addressParts,
       seedText: rawKiot && rawKiot.address && !(rawKiot.addressParts) ? rawKiot.address : addressSeedText(d),
       onInput() { state.touched.address = true; rememberKiot(); },
+      onDefault() { rememberKiot(); },
     });
     const addrInput = { wrap: addressEditor.box, input: addressEditor.street };
     nameInput.input.addEventListener('input', () => {
@@ -2848,6 +2974,43 @@
     actions.appendChild(submitRow);
     panel.appendChild(actions);
 
+    const payRow = el('div', { class: 'kiot-pay', role: 'group', 'aria-label': 'Thanh toán trên ảnh xem trước' });
+    const unpaidBtn = el('button', { type: 'button', class: 'chip' + (state.payment === 'da_tt' ? '' : ' active'), text: 'Chưa TT' });
+    const paidBtn = el('button', { type: 'button', class: 'chip' + (state.payment === 'da_tt' ? ' active' : ''), text: 'Đã TT' });
+    function setPay(kind) {
+      state.payment = kind === 'da_tt' ? 'da_tt' : 'chua_tt';
+      unpaidBtn.classList.toggle('active', state.payment !== 'da_tt');
+      paidBtn.classList.toggle('active', state.payment === 'da_tt');
+      rememberKiot();
+    }
+    unpaidBtn.addEventListener('click', () => setPay('chua_tt'));
+    paidBtn.addEventListener('click', () => setPay('da_tt'));
+    payRow.appendChild(unpaidBtn);
+    payRow.appendChild(paidBtn);
+    panel.insertBefore(payRow, actions);
+
+    const previewBtn = el('button', { type: 'button', class: 'btn kiot-preview-open', id: 'kiot-preview-' + pid, text: 'Xem trước HĐ' });
+    previewBtn.addEventListener('click', () => runPreview());
+    panel.insertBefore(previewBtn, actions);
+
+    const previewBox = el('div', { class: 'kiot-preview', hidden: 'hidden' });
+    const previewImg = el('img', { class: 'kiot-invoice-img', alt: 'Mã HĐ: chờ tạo' });
+    const previewNote = el('p', { class: 'kiot-preview-note', text: '' });
+    const previewActions = el('div', { class: 'kiot-preview-actions' });
+    const editBtn = el('button', { type: 'button', class: 'btn', text: 'Sửa' });
+    const approveBtn = el('button', { type: 'button', class: 'btn btn-primary', id: 'kiot-approve-' + pid, text: 'Duyệt' });
+    editBtn.addEventListener('click', () => {
+      previewBox.hidden = true;
+      if (nameInput.input && nameInput.input.focus) nameInput.input.focus();
+    });
+    approveBtn.addEventListener('click', () => runQuote(true));
+    previewActions.appendChild(editBtn);
+    previewActions.appendChild(approveBtn);
+    previewBox.appendChild(previewImg);
+    previewBox.appendChild(previewNote);
+    previewBox.appendChild(previewActions);
+    panel.appendChild(previewBox);
+
     function createdCard(mark) {
       const box = el('div', { class: 'kiot-created' });
       const invoice = mark.kind !== 'order';
@@ -2860,8 +3023,44 @@
       if (mark.total != null && mark.total !== '') bits.push('Tổng ' + vnd(mark.total));
       bits.push(invoice ? 'Hoá đơn đã tạo' : 'Đơn đặt hàng đã tạo');
       box.appendChild(el('p', { class: 'kiot-created-note', text: bits.join(' · ') }));
-      if (invoice && mark.image) {
-        box.appendChild(el('img', { class: 'kiot-invoice-img', src: mark.image, alt: 'Hoá đơn ' + mark.code }));
+      box.appendChild(el('p', { class: 'kiot-lock-note', text: 'Sửa hoá đơn trong KiotViet' }));
+      if (invoice && mark.code) {
+        const src = '/admin/api/invoices/' + encodeURIComponent(mark.code) + '/anh';
+        const send = el('button', {
+          type: 'button',
+          class: 'btn btn-primary kiot-send',
+          id: 'kiot-send-' + pid,
+          text: mark.imageSent ? 'Đã gửi' : 'Gửi khách hàng',
+        });
+        if (mark.imageSent) send.disabled = true;
+        const status = el('p', { class: 'kiot-send-status', text: mark.imageSent ? 'Đã gửi khách hàng.' : '' });
+        send.addEventListener('click', () => sendToCustomer(send, status, mark));
+        box.appendChild(send);
+        const fallback = el('div', { class: 'kiot-fallback' });
+        fallback.appendChild(el('a', {
+          class: 'btn',
+          href: src,
+          download: mark.code + '.png',
+          text: 'Tải ảnh',
+        }));
+        const copy = el('button', { type: 'button', class: 'btn', text: 'Chép liên kết' });
+        copy.addEventListener('click', async () => {
+          const link = mark.page || status.dataset.page || '';
+          if (!link) {
+            status.textContent = 'Chưa có liên kết hoá đơn';
+            return;
+          }
+          try {
+            await copyVtpText(link);
+            status.textContent = 'Đã chép liên kết';
+          } catch (e) {
+            status.textContent = 'Không chép được liên kết';
+          }
+        });
+        fallback.appendChild(copy);
+        box.appendChild(fallback);
+        box.appendChild(status);
+        box.appendChild(el('img', { class: 'kiot-invoice-img', src: src, alt: 'Hoá đơn ' + mark.code }));
       }
       if (!invoice) {
         const issue = el('button', { type: 'button', class: 'btn btn-primary', text: 'Xuất hóa đơn' });
@@ -2873,6 +3072,113 @@
         }));
       }
       return box;
+    }
+
+    async function sendToCustomer(button, status, mark) {
+      if (button.disabled || button.dataset.sent === '1') return;
+      button.disabled = true;
+      status.textContent = '';
+      try {
+        const data = await api('/admin/api/drafts/' + d.id + '/kiotviet/send', {
+          method: 'POST',
+          body: '{}',
+        });
+        if (data.page_url) {
+          mark.page = data.page_url;
+          status.dataset.page = data.page_url;
+        }
+        if (data.draft) mergeDraft(data.draft);
+        if (data.sent || data.already) {
+          button.dataset.sent = '1';
+          button.textContent = 'Đã gửi';
+          status.textContent = data.already ? 'Đã gửi trước đó.' : 'Đã gửi khách hàng.';
+          return;
+        }
+        if (data.image_sent) {
+          button.dataset.sent = '1';
+          button.textContent = 'Đã gửi ảnh';
+          status.textContent = data.error || 'Đã gửi ảnh, chưa gửi được liên kết';
+          return;
+        }
+        button.disabled = false;
+        status.textContent = data.error || 'Chưa gửi được';
+      } catch (e) {
+        if (e.message === 'unauthorized') return;
+        button.disabled = false;
+        status.textContent = e.message;
+      }
+    }
+
+    function previewItems() {
+      return state.lines.filter(line => (line.sku || line.name) && Number(line.quantity) > 0).map(line => ({
+        name: line.name || line.sku,
+        sku: line.sku || '',
+        quantity: Number(line.quantity) || 0,
+        price: Number(line.price) || 0,
+      }));
+    }
+
+    async function runPreview() {
+      showError('');
+      const items = previewItems();
+      if (!items.length) {
+        showError('Cần ít nhất một dòng hàng.');
+        return;
+      }
+      if (items.some(item => !(item.price > 0))) {
+        showError('Chọn sản phẩm để thấy giá KiotViet.');
+        return;
+      }
+      previewBtn.disabled = true;
+      try {
+        const matched = state.kiotCustomer;
+        const data = await api('/admin/api/drafts/' + d.id + '/kiotviet/preview', {
+          method: 'POST',
+          body: JSON.stringify({
+            customer_name: nameInput.input.value.trim(),
+            customer_code: (matched && matched.code) || d.customer_code || '',
+            phone: phoneInput.input.value.trim(),
+            address: addressEditor.value().line,
+            discount: moneyVal(discountInput.input),
+            shipping_fee: moneyVal(shipInput.input),
+            payment: state.payment,
+            lines: items,
+          }),
+        });
+        if (data.created) {
+          showError('Xem trước không được tạo đơn.');
+          return;
+        }
+        previewImg.src = data.image || '';
+        previewImg.alt = data.code_label || 'Mã HĐ: chờ tạo';
+        previewNote.textContent = (data.code_label || 'Mã HĐ: chờ tạo') + ' · ' + (data.payment_label || (state.payment === 'da_tt' ? 'Đã TT' : 'Chưa TT'));
+        previewBox.hidden = false;
+        if (previewActions.scrollIntoView) previewActions.scrollIntoView({ block: 'nearest' });
+      } catch (e) {
+        if (e.message !== 'unauthorized') showError(e.message);
+      } finally {
+        if (!state.existing || state.acknowledge) previewBtn.disabled = false;
+      }
+    }
+
+    function lockSaleForm() {
+      if (!state.existing || state.acknowledge) return;
+      panel.classList.add('kiot-locked');
+      panel.querySelectorAll('input, textarea, select, button').forEach(node => {
+        if (node.closest('.kiot-created')) return;
+        if (node.closest('.kiot-ack')) return;
+        if (node.id === 'vtp-create-' + pid) return;
+        node.disabled = true;
+      });
+    }
+
+    function unlockSaleForm() {
+      panel.classList.remove('kiot-locked');
+      panel.querySelectorAll('input, textarea, select, button').forEach(node => {
+        if (node.closest('.kiot-created')) return;
+        node.disabled = false;
+      });
+      confirmBtn.disabled = true;
     }
 
     async function issueInvoice(button) {
@@ -2927,9 +3233,11 @@
         discount: discountInput.input.value,
         ship: shipInput.input.value,
         note: noteInput.input.value,
+        payment: state.payment,
         touched: state.touched,
       });
       s.kiot.addressParts = addressEditor.value();
+      s.kiot.addressParts.provinceTouched = addressEditor.provinceTouched();
       s.kiotDirty = true;
       persistOrder(d.id, s.kiot);
     }
@@ -3091,6 +3399,7 @@
       paintTotals();
       paintSummary();
       rememberKiot();
+      if (state.existing && !state.acknowledge) lockSaleForm();
     }
 
     function lineRow(line, index) {
@@ -3226,7 +3535,7 @@
       if (product.name) bits.push(product.name);
       if (product.code) bits.push(product.code);
       if (product.price != null) bits.push(vnd(product.price));
-      if (product.available != null) bits.push('Tồn ' + product.available);
+      if (product.available != null) bits.push('Còn Kho ' + product.available);
       return bits.join(' · ') || 'Sản phẩm';
     }
 
@@ -3270,6 +3579,66 @@
         line.searchPhase = 'error';
         paintSearch(box, line, index);
       }
+    }
+
+    let suggestTimer = null;
+    function paintSuggestions(products, note) {
+      suggestBox.textContent = '';
+      if (note) suggestBox.appendChild(el('p', { class: 'kiot-search-note', text: note }));
+      (products || []).forEach(product => {
+        const btn = el('button', { type: 'button', class: 'kiot-hit', text: hitText(product) });
+        btn.addEventListener('click', () => {
+          state.lines = window.kiotLines
+            ? window.kiotLines.addProduct(state.lines, product)
+            : state.lines.concat([{
+              sku: product.code || product.sku || '',
+              name: product.name || '',
+              unit: product.unit || '',
+              price: product.price != null ? Number(product.price) : null,
+              quantity: 1,
+              phrase: '',
+              status: 'matched',
+              warning: '',
+              stock: product.available != null ? { level: null, available: product.available } : null,
+              candidates: [],
+              query: '',
+              hits: [],
+              searchPhase: 'idle',
+            }]);
+          state.quote = null;
+          dirty = true;
+          suggestBox.hidden = true;
+          paintLines();
+          rememberKiot();
+        });
+        suggestBox.appendChild(btn);
+      });
+      suggestBox.hidden = !note && !(products && products.length);
+    }
+
+    function scheduleSuggest(immediate) {
+      clearTimeout(suggestTimer);
+      const run = async () => {
+        const phrase = productQueryPhrase(quick.value);
+        if (foldProductQuery(phrase).length < 2) {
+          paintSuggestions([], '');
+          return;
+        }
+        lookupBtn.disabled = true;
+        try {
+          const products = matchProducts(quick.value, await loadProductCatalog());
+          if (!panel.isConnected) return;
+          if (productQueryPhrase(quick.value) !== phrase) return;
+          paintSuggestions(products, products.length ? '' : 'Không thấy sản phẩm');
+        } catch (e) {
+          if (!panel.isConnected) return;
+          paintSuggestions([], e.message === 'unauthorized' ? '' : 'Chưa tải được danh mục sản phẩm');
+        } finally {
+          lookupBtn.disabled = false;
+        }
+      };
+      if (immediate) run();
+      else suggestTimer = setTimeout(run, 250);
     }
 
     async function runQuick() {
@@ -3336,6 +3705,7 @@
       state.submitting = true;
       quoteBtn.disabled = true;
       confirmBtn.disabled = true;
+      approveBtn.disabled = true;
       const body = {
         confirm: confirm === true,
         document: state.document,
@@ -3361,9 +3731,10 @@
           body: JSON.stringify(body),
         });
         if (!confirm) {
-          state.submitting = false;
-          quoteBtn.disabled = false;
-          state.quote = data;
+        state.submitting = false;
+        quoteBtn.disabled = false;
+        approveBtn.disabled = false;
+        state.quote = data;
           if (window.kiotLines) state.lines = window.kiotLines.mergeQuote(state.lines, data.lines || []);
           else {
             (data.lines || []).forEach((row, i) => {
@@ -3405,6 +3776,7 @@
         if (e.message !== 'unauthorized') showError(e.message);
         state.submitting = false;
         quoteBtn.disabled = false;
+        approveBtn.disabled = false;
         paintSummary();
       }
     }

@@ -66,6 +66,10 @@ test('accent-insensitive search returns the top matches with price and stock', (
   assert.equal(byCode.length, 1);
   assert.equal(byCode[0].code, 'GA01');
   assert.deepEqual(kiotviet.rankProducts(catalog, 'x'), []);
+  catalog.push({ id: 80, code: 'NN-DEMO', name: 'Nước nghệ lên men', price: 20000, available: 8, unit: 'chai' });
+  const turmeric = kiotviet.rankProducts(catalog, 'nuoc nghe');
+  assert.equal(turmeric[0].code, 'NN-DEMO');
+  assert.equal(kiotviet.rankProducts(catalog, 'nước nghệ')[0].id, 80);
 });
 
 test('the order form shows picker notes and does not create a Kiot document by itself', () => {

@@ -597,3 +597,242 @@ test('an empty order form prefills Hồ Chí Minh and keeps a parsed province', 
     server.close();
   }
 });
+
+async function loginInbox(page, base) {
+  await page.goto(base + '/admin', { waitUntil: 'domcontentloaded' });
+  await page.fill('input[name="password"]', 'secret');
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
+    page.click('button[type="submit"]'),
+  ]);
+  await page.goto(base + '/admin?pollms=60000&nhom=fb-sale&hop=pending', { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.msg-card');
+}
+
+function holdCatalog(page) {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  return page.route('**/vtp-units.json', async route => {
+    await gate;
+    await route.continue();
+  }).then(() => release);
+}
+
+test('a late catalog still prefills Hồ Chí Minh and keeps a typed province', {
+  skip: !playwright || !chrome,
+  timeout: 90000,
+}, async () => {
+  await drafts.createDraft({
+    channel: 'messenger',
+    sales_channel: 'farm',
+    biz_line: 'sale',
+    customer_name: 'Khách Trễ',
+    customer_phone: '0900000018',
+    customer_code: 'KH-DEMO',
+    customer_user_id: 'fb_demo_late_catalog',
+    customer_query: '',
+    customer_intent: '',
+    draft_reply: 'Dạ em ghi nhận.',
+    triage_level: 'hot',
+    approval_status: 'PENDING_REVIEW',
+  });
+  await drafts.createDraft({
+    channel: 'messenger',
+    sales_channel: 'farm',
+    biz_line: 'sale',
+    customer_name: 'Khách Giữ',
+    customer_phone: '0900000019',
+    customer_code: 'KH-DEMO',
+    customer_user_id: 'fb_demo_keep_province',
+    customer_query: '',
+    customer_intent: '',
+    draft_reply: 'Dạ em ghi nhận.',
+    triage_level: 'hot',
+    approval_status: 'PENDING_REVIEW',
+  });
+  const server = await appServer();
+  const base = 'http://127.0.0.1:' + server.address().port;
+  const browser = await playwright.chromium.launch({
+    executablePath: chrome,
+    headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+  });
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 800 } });
+    page.on('dialog', dialog => dialog.accept());
+    const release = await holdCatalog(page);
+    await loginInbox(page, base);
+    const src = await page.locator('script[src*="vtp-address.js"]').getAttribute('src');
+    assert.match(src, /vtp-address\.js\?v=/);
+    const reviewSrc = await page.locator('script[src*="review.js"]').getAttribute('src');
+    assert.match(reviewSrc, /review\.js\?v=/);
+    await page.locator('.msg-card', { hasText: 'Khách Trễ' }).locator('.msg').click();
+    await page.waitForSelector('#kiot-province-detail');
+    assert.equal(await page.inputValue('#kiot-province-detail'), '');
+    release();
+    await page.waitForFunction(() => {
+      const province = document.getElementById('kiot-province-detail');
+      return province && province.value === 'Hồ Chí Minh';
+    });
+    const filled = await page.evaluate(() => ({
+      province: document.getElementById('kiot-province-detail').value,
+      id: document.querySelector('#kiot-addr-block-detail input[name="province_id"]').value,
+      disabled: document.getElementById('kiot-province-detail').disabled,
+    }));
+    assert.equal(filled.province, 'Hồ Chí Minh');
+    assert.equal(filled.id, '2');
+    assert.equal(filled.disabled, false);
+
+    const kept = await browser.newPage({ viewport: { width: 390, height: 800 } });
+    kept.on('dialog', dialog => dialog.accept());
+    const releaseKept = await holdCatalog(kept);
+    await loginInbox(kept, base);
+    await kept.locator('.msg-card', { hasText: 'Khách Giữ' }).locator('.msg').click();
+    await kept.waitForSelector('#kiot-province-detail');
+    await kept.fill('#kiot-province-detail', 'Hà Nội');
+    releaseKept();
+    await kept.waitForTimeout(400);
+    const typed = await kept.inputValue('#kiot-province-detail');
+    assert.equal(typed, 'Hà Nội');
+    await kept.close();
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+test('quick entry suggests a product from the cache and the 1024 header stays intact', {
+  skip: !playwright || !chrome,
+  timeout: 90000,
+}, async () => {
+  const prevList = kiotviet.listProductsForMatch;
+  kiotviet.listProductsForMatch = async () => ([
+    { id: 2, code: 'NN-DEMO', name: 'Nước nghệ thử', price: 20000, unit: 'chai', available: 8, isActive: true },
+    { id: 1, code: 'SP-DEMO', name: 'Sản phẩm thử', price: 10000, unit: 'gói', available: 20, isActive: true },
+  ]);
+  await drafts.createDraft({
+    channel: 'messenger',
+    sales_channel: 'farm',
+    biz_line: 'sale',
+    customer_name: 'Khách Tên Dài Để Thử Cột Giờ',
+    customer_phone: '0900000021',
+    customer_code: 'KH-DEMO',
+    customer_user_id: 'fb_demo_suggest',
+    customer_query: '',
+    customer_intent: '',
+    draft_reply: 'Dạ em ghi nhận.',
+    triage_level: 'hot',
+    approval_status: 'PENDING_REVIEW',
+  });
+  const server = await appServer();
+  const base = 'http://127.0.0.1:' + server.address().port;
+  const browser = await playwright.chromium.launch({
+    executablePath: chrome,
+    headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+  });
+  const shotDir = '/opt/cursor/artifacts';
+  fs.mkdirSync(shotDir, { recursive: true });
+  try {
+    const phone = await browser.newPage({ viewport: { width: 390, height: 900 }, deviceScaleFactor: 1 });
+    phone.on('dialog', dialog => dialog.accept());
+    const calls = { catalog: 0, search: 0 };
+    phone.on('request', req => {
+      const url = req.url();
+      if (url.includes('catalog=1')) calls.catalog += 1;
+      if (url.includes('/kiotviet/products?q=')) calls.search += 1;
+    });
+    await loginInbox(phone, base);
+    await phone.locator('.msg-card', { hasText: 'Khách Tên Dài' }).locator('.msg').click();
+    await phone.waitForSelector('#kiot-province-detail');
+    await phone.waitForFunction(() => document.getElementById('kiot-province-detail').value === 'Hồ Chí Minh');
+    await phone.fill('.kiot-quick', 'nuoc nghe');
+    await phone.waitForSelector('.kiot-suggest .kiot-hit');
+    const suggestion = await phone.locator('.kiot-suggest .kiot-hit').first().innerText();
+    assert.match(suggestion, /Nước nghệ thử/);
+    assert.match(suggestion, /NN-DEMO/);
+    assert.match(suggestion, /Còn Kho 8/);
+    assert.equal(calls.search, 0);
+    assert.ok(calls.catalog >= 1);
+    await phone.locator('.kiot-suggest').scrollIntoViewIfNeeded();
+    await phone.screenshot({ path: shotDir + '/suggest-390.png' });
+    await phone.locator('.kiot-suggest .kiot-hit').first().click();
+    await phone.waitForFunction(() => {
+      const code = document.querySelector('.kiot-line .kiot-code');
+      const qty = document.querySelector('.kiot-qty input');
+      return code && code.textContent.includes('NN-DEMO') && qty && qty.value === '1';
+    });
+    const added = await phone.evaluate(() => ({
+      name: document.querySelector('.kiot-line strong').textContent,
+      code: document.querySelector('.kiot-line .kiot-code').textContent,
+      qty: document.querySelector('.kiot-qty input').value,
+      price: document.querySelector('.kiot-unit').textContent,
+      stock: document.querySelector('.kiot-stock').textContent,
+    }));
+    assert.equal(added.name, 'Nước nghệ thử');
+    assert.match(added.code, /NN-DEMO/);
+    assert.equal(added.qty, '1');
+    assert.match(added.price, /20/);
+    assert.match(added.stock, /8/);
+    await phone.fill('.kiot-quick', 'san pham');
+    await phone.getByRole('button', { name: 'Tra sản phẩm' }).click();
+    await phone.waitForSelector('.kiot-suggest .kiot-hit');
+    const fromButton = await phone.locator('.kiot-suggest .kiot-hit').first().innerText();
+    assert.match(fromButton, /Sản phẩm thử/);
+    assert.match(fromButton, /SP-DEMO/);
+    await phone.close();
+
+    const desk = await browser.newPage({ viewport: { width: 1024, height: 1100 }, deviceScaleFactor: 1 });
+    desk.on('dialog', dialog => dialog.accept());
+    await loginInbox(desk, base);
+    await desk.locator('.msg-card', { hasText: 'Khách Tên Dài' }).locator('.msg').click();
+    await desk.waitForFunction(() => document.getElementById('kiot-province-detail').value === 'Hồ Chí Minh');
+    await desk.fill('.kiot-quick', 'nuoc nghe');
+    await desk.waitForSelector('.kiot-suggest .kiot-hit');
+    await desk.evaluate(() => {
+      const side = document.querySelector('.pane-side');
+      if (side) side.scrollTop = 0;
+    });
+    await desk.screenshot({ path: shotDir + '/form-hcm-suggest-1024.png' });
+    const fit = await desk.evaluate(() => {
+      const when = document.querySelector('.pane-mid .id-when');
+      const chip = document.querySelector('.msg-card.selected .tag-fb');
+      const pane = document.querySelector('.pane-mid');
+      const list = document.querySelector('.list');
+      function clipped(el) {
+        if (!el) return true;
+        if (el.scrollWidth > el.clientWidth + 1) return true;
+        const a = el.getBoundingClientRect();
+        let node = el.parentElement;
+        while (node && node !== document.body) {
+          const style = getComputedStyle(node);
+          const overflow = style.overflowX + style.overflow;
+          if (/hidden|clip|auto|scroll/.test(overflow)) {
+            const b = node.getBoundingClientRect();
+            if (a.right > b.right + 1 || a.left < b.left - 1) return true;
+          }
+          node = node.parentElement;
+        }
+        return false;
+      }
+      return {
+        when: when ? when.textContent : '',
+        whenOk: !clipped(when) && !!pane,
+        chip: chip ? chip.textContent : '',
+        chipOk: !clipped(chip) && !!list,
+        province: document.getElementById('kiot-province-detail').value,
+      };
+    });
+    assert.equal(fit.province, 'Hồ Chí Minh');
+    assert.match(fit.when, /\d{2}:\d{2} \d{2}\/\d{2}\/\d{4}/);
+    assert.equal(fit.whenOk, true, JSON.stringify(fit));
+    assert.equal(fit.chip, 'FB / Messenger');
+    assert.equal(fit.chipOk, true, JSON.stringify(fit));
+    await desk.screenshot({ path: shotDir + '/header-chip-1024.png' });
+    await desk.close();
+  } finally {
+    kiotviet.listProductsForMatch = prevList;
+    await browser.close();
+    server.close();
+  }
+});

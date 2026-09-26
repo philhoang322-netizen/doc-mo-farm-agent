@@ -968,12 +968,14 @@ body.inbox .msg-card .msg-customer.is-clamped {
 }
 body.inbox .msg-card .msg-foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   min-width: 0;
 }
-body.inbox .msg-card .msg-time { flex: 0 0 auto; font-size: 13px; }
+body.inbox .msg-card .msg-time { flex: 1 1 auto; font-size: 13px; white-space: nowrap; }
 body.inbox .msg-card .tags {
+  flex: 1 1 100%;
   flex-wrap: wrap;
   align-content: flex-start;
   overflow: hidden;
@@ -985,9 +987,14 @@ body.inbox .msg-card .tags {
 body.inbox .msg-card .tag-prev,
 body.inbox .msg-card .tag-refund { order: -1; }
 body.inbox .msg-card .tag {
+  flex: 0 0 auto;
   font-size: 12px;
   line-height: 18px;
   padding: 0 6px;
+  white-space: nowrap;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
 }
 body.hitl .msg-card.selected { background: var(--green-soft); box-shadow: inset 3px 0 0 var(--green); }
 body.hitl .msg {
@@ -1400,6 +1407,15 @@ body.hitl .back { display: inline-flex; margin: 0 0 var(--space-2); background: 
 body.hitl .detail-meta { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin-bottom: var(--space-3); min-width: 0; }
 body.hitl .name-row { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 8px; margin-right: 0; min-width: 0; flex: 1 1 100%; overflow: hidden; }
 body.hitl .name-row .msg-names { display: flex; flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 2px; min-width: 0; overflow: hidden; }
+body.inbox .pane-mid .name-row,
+body.inbox .pane-mid .name-row .msg-names { overflow: visible; }
+body.inbox .pane-mid .id-row { flex-wrap: wrap; overflow: hidden; }
+body.inbox .pane-mid .id-when {
+  flex: 1 0 100%;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+}
 body.hitl .detail-meta h3 { margin: 0; font-size: 20px; font-weight: 700; }
 body.hitl .cust-code { font-size: 15px; font-weight: 650; color: var(--muted); }
 body.hitl .want-box {
@@ -1522,6 +1538,13 @@ body.hitl .sticky-actions {
   z-index: 28;
 }
 body.inbox .sticky-actions > .btn-primary { width: auto; flex: 1 1 160px; }
+body.inbox .reply-send-label {
+  flex: 1 0 100%;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--muted);
+}
 body.inbox .sticky-note { flex: 1 0 100%; margin: 0; }
 body.inbox .more-menu { position: relative; flex: 0 0 auto; }
 body.inbox .more-btn { font-size: 22px; line-height: 1; letter-spacing: 0; }
@@ -1581,6 +1604,24 @@ body.hitl .kiot-created {
 body.hitl .kiot-created .id-row { width: 100%; }
 body.hitl .kiot-created-note { margin: 4px 0 0; color: var(--muted); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 body.hitl .kiot-invoice-img { width: 100%; height: auto; margin-top: 8px; border-radius: 8px; background: #fff; }
+body.hitl .kiot-pay { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
+body.hitl .kiot-preview-open { width: 100%; margin: 0 0 8px; }
+body.hitl .kiot-preview { background: #fff; border-radius: var(--radius-md); padding: var(--space-3); margin: 0 0 var(--space-3); }
+body.hitl .kiot-preview[hidden] { display: none; }
+body.hitl .kiot-preview-note { margin: 8px 0 0; color: var(--muted); font-size: 15px; white-space: normal; }
+body.hitl .kiot-preview-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+body.hitl .kiot-preview-actions .btn { flex: 1 1 8em; }
+@media (max-width: 1023px) {
+  body.inbox .kiot-preview,
+  body.inbox .kiot-preview-actions {
+    scroll-margin-bottom: calc(var(--bottom-chrome, 72px) + 12px);
+  }
+}
+body.hitl .kiot-lock-note { margin: 4px 0 0; color: var(--muted); font-size: 14px; white-space: normal; }
+body.hitl .kiot-send { width: 100%; margin-top: 8px; font-weight: 700; }
+body.hitl .kiot-fallback { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+body.hitl .kiot-fallback .btn { flex: 1 1 8em; text-align: center; text-decoration: none; }
+body.hitl .kiot-send-status { margin: 8px 0 0; font-size: 14px; white-space: normal; overflow: visible; }
 body.hitl .kiot-lead { margin: 0 0 var(--space-3); color: var(--muted); font-size: 15px; }
 body.hitl .kiot-quick-row { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-2); }
 body.hitl textarea.kiot-quick { min-height: 72px; width: 100%; font-size: 16px; }
@@ -1616,7 +1657,10 @@ body.hitl .kiot-qty input { width: 7rem; margin: 0; font-size: 16px; min-height:
 body.hitl .kiot-meta { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: var(--space-2); font-size: 15px; }
 body.hitl .kiot-stock.bad { color: var(--red); font-weight: 700; }
 body.hitl .kiot-stock.warn { color: var(--orange); font-weight: 700; }
-body.hitl .kiot-results { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; position: relative; z-index: 5; }
+body.hitl .kiot-results,
+body.hitl .kiot-suggest { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; position: relative; z-index: 5; }
+body.hitl .kiot-suggest { margin: 0 0 8px; }
+body.hitl .kiot-suggest[hidden] { display: none; }
 body.hitl .kiot-search-note { margin: 4px 0 0; color: var(--muted); font-size: 14px; font-weight: 650; }
 body.hitl button.kiot-hit {
   text-align: left;
@@ -2261,6 +2305,12 @@ body.inbox .kiot-doc-head {
   gap: 8px;
   min-height: 44px;
   margin: 0 0 8px;
+}
+body.inbox .kiot-lookup {
+  width: auto;
+  min-height: 44px;
+  margin: 0 0 8px;
+  padding: 0 12px;
 }
 body.inbox .kiot-doc-head .btn {
   width: auto;

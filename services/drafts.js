@@ -496,6 +496,8 @@ function emptyReviewForm() {
     kiot_code: null,
     kiot_total: null,
     kiot_kind: null,
+    invoice_page_url: null,
+    invoice_image_sent_at: null,
   };
 }
 
@@ -551,7 +553,23 @@ function cleanReviewForm(value) {
     if (kind !== 'invoice' && kind !== 'order') throw new DraftError(400, 'Loại chứng từ KiotViet không hợp lệ');
     out.kiot_kind = kind;
   }
+  out.invoice_page_url = cleanHttpUrl(src.invoice_page_url);
+  const sentAt = cleanShort('invoice_image_sent_at', src.invoice_image_sent_at, 40);
+  out.invoice_image_sent_at = sentAt && /^\d{4}-\d{2}-\d{2}T/.test(sentAt) ? sentAt : null;
   return out;
+}
+
+function cleanHttpUrl(v) {
+  if (v == null || String(v).trim() === '') return null;
+  const s = String(v).trim();
+  if (s.length > 500) return null;
+  try {
+    const u = new URL(s);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    return u.href;
+  } catch {
+    return null;
+  }
 }
 
 function parseStoredReviewForm(raw) {
@@ -604,7 +622,11 @@ function applyEdits(draft, body) {
     next.template_name = cleanText('template_name', body.template_name);
   }
   if (Object.prototype.hasOwnProperty.call(body, 'review_form')) {
-    next.review_form = cleanReviewForm(body.review_form);
+    const incoming = cleanReviewForm(body.review_form);
+    const prev = draft.review_form || {};
+    if (prev.invoice_image_sent_at) incoming.invoice_image_sent_at = prev.invoice_image_sent_at;
+    if (!incoming.invoice_page_url && prev.invoice_page_url) incoming.invoice_page_url = prev.invoice_page_url;
+    next.review_form = incoming;
   }
   next.updated_at = new Date().toISOString();
   return next;
@@ -1450,6 +1472,80 @@ async function sendInvoicePicture(draft, sendFn) {
   return { link, detail };
 }
 
+/**
+ * One tap from the final invoice image. Sends the picture and the public
+ * link on the thread channel. Does not send the reply draft and does not
+ * mark the draft SENT. The caller records invoice_image_sent_at after a
+ * successful image so a second tap does not send again.
+ */
+async function sendInvoiceToCustomer(draft) {
+  const invoices = require('./invoices');
+  const code = String(draft && draft.invoice_code || '').trim();
+  const imageUrl = (draft && draft.qr_image_url) || (code ? invoices.imageUrl(code) : '');
+  const page = code ? invoices.pageUrl(code) : '';
+  const base = { code, image_url: imageUrl || null, page_url: page || null, sent: false, already: false };
+  if (!/^HD/i.test(code)) {
+    return { ...base, ok: false, error: 'Chưa có hoá đơn để gửi' };
+  }
+  let buffer = null;
+  try { buffer = await invoices.pngFor(code); } catch (err) {
+    console.error('Invoice image lookup failed:', err.message);
+  }
+  if (!imageUrl && !buffer) {
+    return { ...base, ok: false, error: 'Chưa có ảnh hoá đơn' };
+  }
+  const linkText = page ? `Hoá đơn ${code}: ${page}` : `Hoá đơn ${code}`;
+
+  if (draft.channel === 'messenger') {
+    const psid = messenger.psidFromUserId(draft.customer_user_id);
+    if (!psid) return { ...base, ok: false, error: 'Thiếu PSID khách' };
+    if (!messenger.enabled() || !process.env.FB_PAGE_ACCESS_TOKEN) {
+      return { ...base, ok: false, error: 'Chưa gửi được qua Messenger' };
+    }
+    const image = await messenger.sendImage(psid, imageUrl);
+    if (!image || image.ok === false) {
+      const detail = (image && image.error) || messenger.getLastError() || 'Facebook từ chối ảnh';
+      return { ...base, ok: false, error: String(detail) };
+    }
+    const text = await messenger.sendText(psid, linkText);
+    if (!text || text.ok === false) {
+      const detail = (text && text.error) || messenger.getLastError() || 'Đã gửi ảnh, chưa gửi được liên kết';
+      return { ...base, ok: false, image_sent: true, error: String(detail) };
+    }
+    return { ...base, ok: true, sent: true };
+  }
+
+  const uid = String(draft.customer_user_id || '').trim();
+  if (!uid) return { ...base, ok: false, error: 'Thiếu user id khách' };
+  if (uid.startsWith('bot_')) {
+    const chatId = uid.slice(4);
+    if (!chatId || !process.env.ZALO_BOT_TOKEN) {
+      return { ...base, ok: false, error: 'Chưa gửi được qua Zalo Bot' };
+    }
+    const photo = await botService.sendPhoto(chatId, imageUrl, `Hoá đơn ${code}`);
+    if (!photo) return { ...base, ok: false, error: 'Zalo Bot không nhận ảnh' };
+    const text = await botService.sendMessage(chatId, linkText);
+    if (!text) return { ...base, ok: false, image_sent: true, error: 'Đã gửi ảnh, chưa gửi được liên kết' };
+    return { ...base, ok: true, sent: true };
+  }
+  if (!zaloService.getTokens().accessToken) {
+    return { ...base, ok: false, error: 'Chưa có token Zalo OA' };
+  }
+  const sent = await zaloService.sendImageMessage(uid, { buffer, url: imageUrl });
+  if (!sent) {
+    const last = zaloService.getLastError();
+    const detail = last && typeof last === 'object' ? (last.message || '') : (last || '');
+    return { ...base, ok: false, error: detail || 'Zalo OA không nhận ảnh' };
+  }
+  const text = await zaloService.sendTextMessage(uid, linkText);
+  if (!text) {
+    const last = zaloService.getLastError();
+    const detail = last && typeof last === 'object' ? (last.message || '') : (last || '');
+    return { ...base, ok: false, image_sent: true, error: detail || 'Đã gửi ảnh, chưa gửi được liên kết' };
+  }
+  return { ...base, ok: true, sent: true };
+}
+
 async function noteImageFallback(sendText, draftText, fail) {
   if (!fail) return null;
   const link = fail.link;
@@ -1875,6 +1971,7 @@ module.exports = {
   listDrafts,
   getDraft,
   updateDraft,
+  sendInvoiceToCustomer,
   conversationLine,
   findBySourceMsg,
   moveBizLine,
