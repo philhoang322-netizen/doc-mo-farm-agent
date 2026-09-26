@@ -1805,6 +1805,11 @@ body.hitl .qr { max-width: 220px; }
   body.inbox .detail-main,
   body.inbox .detail-side { display: contents; }
   body.inbox .cust-fold { order: -1; }
+  body.inbox .inbox-section-head {
+    position: sticky;
+    top: calc(var(--app-bar-h) + var(--queue-head-h, 0px));
+    z-index: 15;
+  }
 }
 
 @media (min-width: 1024px) {

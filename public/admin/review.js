@@ -192,6 +192,8 @@
   function syncBarHeight() {
     const bar = document.getElementById('app-bar');
     if (bar) document.body.style.setProperty('--app-bar-h', bar.offsetHeight + 'px');
+    const queueHead = document.querySelector('#queue .queue-head');
+    if (queueHead) document.body.style.setProperty('--queue-head-h', queueHead.offsetHeight + 'px');
     let chrome = 0;
     if (!isDesktop() && document.body.classList.contains('show-detail')) {
       const sticky = document.querySelector('#detail .sticky-actions');
@@ -343,12 +345,14 @@
       const open = filterPanel.hidden;
       filterPanel.hidden = !open;
       filterToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      syncBarHeight();
     });
     document.addEventListener('click', (e) => {
       if (filterPanel.hidden) return;
       if (e.target.closest('#filter-panel') || e.target.closest('#filter-toggle')) return;
       filterPanel.hidden = true;
       filterToggle.setAttribute('aria-expanded', 'false');
+      syncBarHeight();
     });
   }
 
@@ -3708,6 +3712,7 @@
   function setSearch(open) {
     document.body.classList.toggle('search-open', open);
     if (searchToggle) searchToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    syncBarHeight();
     if (open && searchInput) searchInput.focus();
   }
   if (searchToggle) {

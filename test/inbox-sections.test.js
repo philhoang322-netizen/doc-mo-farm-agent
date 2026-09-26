@@ -104,6 +104,8 @@ test('inbox page loads the section script and a 48px header', () => {
   assert.match(js, /inboxSections\.setOpen\(nhom/);
   assert.match(js, /refreshSection\(section\)/);
   assert.match(css, /body\.inbox \.inbox-section-head \{[^}]*min-height:\s*48px/s);
+  assert.match(css, /position:\s*sticky;\s*top:\s*calc\(var\(--app-bar-h\) \+ var\(--queue-head-h, 0px\)\)/);
+  assert.match(js, /--queue-head-h/);
   assert.equal(sections.TITLES.today, 'Hôm nay');
   assert.equal(sections.TITLES.week, 'Trong tuần');
   assert.equal(sections.TITLES.month, 'Trong tháng');
