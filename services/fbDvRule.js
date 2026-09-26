@@ -1,55 +1,131 @@
 /**
  * FB-DV labeling rule. Pure code: no model calls.
  *
- * The customer's latest message that hits a topic decides. Page text is
- * used only when the customer never hits a topic. A product, a price,
- * shipping, or an order is Sale. Service wording and FAQ service entries
- * are DV. A Lành sign-off is only a tiebreaker when nothing has a topic.
- * DV keywords are learned only from service-topic DV threads.
+ * Three classes. Service wording is DV. Shipping, an order, or a real
+ * product name is Sale. Price words (giá, mua, đặt, cọc, tiền) never set
+ * a topic, so a later price question keeps the earlier topic. A message
+ * with both a service and a product stays DV unless it also has an order
+ * or shipping word. Neutral-only messages are skipped. Page text is used
+ * only when the customer never states a topic. A Lành sign-off is only a
+ * tiebreaker. DV keywords are learned only from service-topic DV threads.
  */
 const ops = require('./ops');
+const bizLine = require('./bizLine');
 const catalog = require('./catalog');
 const lanhMark = require('./lanhMark');
 
-const SERVICE_WORDS = [
+/**
+ * Brand and generic tokens shared with the label sample. A catalog pair
+ * that contains one of these is not a product phrase ("doc mo", "thong tin").
+ */
+const GENERIC_NAME_TOKENS = new Set([
+  'doc', 'mo', 'farm', 'thien', 'nhien', 'thong', 'tin', 'suc', 'khoe',
+  'an', 'toan', 'su', 'dung', 'hang', 'tuan', 'thu', 'gian',
+  'cao', 'cap', 'combo', 'va',
+]);
+
+/** Stay, visit, and ticket wording. Bare "ve" and bare "dem" are not included. */
+const SERVICE_CORE = [
   'phong',
+  'dat phong',
   'farmstay',
+  'homestay',
   'luu tru',
   'nghi dem',
   'qua dem',
+  'nghi qua dem',
+  'may dem',
+  'o lai',
+  'ngu lai',
   'su kien',
   'chuong trinh',
   'team building',
+  'teambuilding',
   'cam trai',
-  've',
   'tham quan',
   'trai nghiem',
   'booking',
+  'check in',
+  'check out',
+  'tour',
+  'tour trong ngay',
+  'tiec',
+  'workshop',
+  'nha nghi',
+  'nghi duong',
+  'villa',
+  'bungalow',
+  'leu',
+  'nhan phong',
+  'tra phong',
+  'bao nhieu nguoi',
+  'ngay den',
+  'ngay di',
+  'di trong ngay',
+  'dat cho',
+  'phong o',
+  'mua ve',
+  'gia ve',
+  've tham quan',
+  've vao cong',
 ];
 
-/** Price, shipping, and ordering goods. Bare "dat" is not included, so "đặt phòng" stays a service hit. */
-const GOODS_WORDS = [
-  'gia',
-  'xin gia',
+/** Order and shipping. These are Sale even when the message also talks about a stay. */
+const ORDER_SHIP = [
   'ship',
   'phi ship',
   'giao hang',
+  'van chuyen',
   'dat hang',
   'dat mua',
-  'mua',
   'order',
-  'van chuyen',
+  'cod',
+  'gio hang',
 ];
 
-const SALES_TOKENS = new Set(['gia', 'ship', 'dat', 'mua']);
+/** Strong Sale that is not an order word. Product names are added from the catalog. */
+const STRONG_EXTRA = [
+  'con hang',
+  'het hang',
+  'san pham',
+];
+
+/** Never sets a topic. "gia" must not flip "gia đình", and "mua" must not flip "mùa". */
+const NEUTRAL_WORDS = [
+  'gia',
+  'xin gia',
+  'bao nhieu',
+  'mua',
+  'dat',
+  'dat coc',
+  'coc',
+  'chuyen khoan',
+  'tien',
+];
+
+const SALES_TOKENS = new Set([
+  'gia', 'xin', 'ship', 'dat', 'mua', 'coc', 'tien', 'order', 'cod',
+]);
 const SERVICE_GROUPS = new Set(['dv', 'dich vu', 'service']);
 
 let productCache = null;
 let serviceCache = null;
+let nounCache = null;
 
 function resetForTests() {
   productCache = null;
   serviceCache = null;
+  nounCache = null;
+}
+
+function staticServicePhrases() {
+  const set = new Set();
+  for (const phrase of [...SERVICE_CORE, ...bizLine.DV_PHRASES]) {
+    const n = ops.normalizeText(phrase);
+    if (!n || n === 've' || n === 'dem') continue;
+    set.add(n);
+  }
+  return [...set];
 }
 
 function paddedHit(text, phrases) {
@@ -64,30 +140,78 @@ function paddedHit(text, phrases) {
 
 function servicePhrases() {
   const extra = serviceCache ? [...serviceCache] : [];
-  return [...SERVICE_WORDS, ...extra];
+  return [...staticServicePhrases(), ...extra];
+}
+
+function nightStay(text) {
+  const folded = ops.normalizeText(text);
+  if (!folded) return false;
+  return /(?:^|\s)(?:\d+|may)\s+dem(?:\s|$)/.test(` ${folded} `);
 }
 
 function hasService(text) {
-  return paddedHit(text, servicePhrases());
+  return nightStay(text) || paddedHit(text, servicePhrases());
 }
 
-function phrasesFromName(name) {
+function nameTokens(name) {
+  return ops.normalizeText(name).split(' ').filter((token) => token.length >= 2);
+}
+
+function nounsFromNames(names) {
+  const nouns = new Set();
+  for (const name of names) {
+    for (const token of nameTokens(name)) {
+      if (!GENERIC_NAME_TOKENS.has(token)) nouns.add(token);
+    }
+  }
+  return nouns;
+}
+
+function catalogNouns() {
+  if (nounCache) return nounCache;
+  nounCache = nounsFromNames(catalog.rows().map((row) => row.name_vi));
+  return nounCache;
+}
+
+function mentionsNoun(name, nouns) {
+  const tokens = nameTokens(name);
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (nouns.has(tokens[i])) return true;
+    if (i > 0 && nouns.has(`${tokens[i - 1]} ${tokens[i]}`)) return true;
+  }
+  return false;
+}
+
+/**
+ * Full catalog name, plus adjacent pairs that contain a catalog noun and
+ * no brand/generic token. All-generic names ("doc mo", "thong tin") yield nothing.
+ */
+function phrasesFromName(name, nouns) {
   const folded = ops.normalizeText(name);
   if (!folded || folded.length < 4) return [];
-  const tokens = folded.split(' ').filter((token) => token.length >= 2);
+  const tokens = nameTokens(folded);
+  const content = tokens.filter((token) => !GENERIC_NAME_TOKENS.has(token));
+  if (!content.length) return [];
+  const known = nouns || catalogNouns();
+  if (!mentionsNoun(folded, known)) return [];
   const out = [];
   if (tokens.length >= 2 || folded.length >= 6) out.push(folded);
   for (let i = 0; i < tokens.length - 1; i += 1) {
-    const pair = `${tokens[i]} ${tokens[i + 1]}`;
-    if (pair.length >= 4) out.push(pair);
+    const left = tokens[i];
+    const right = tokens[i + 1];
+    if (GENERIC_NAME_TOKENS.has(left) || GENERIC_NAME_TOKENS.has(right)) continue;
+    const pair = `${left} ${right}`;
+    if (pair.length < 4) continue;
+    if (!known.has(left) && !known.has(right)) continue;
+    out.push(pair);
   }
   return out;
 }
 
-function collectPhrases(names) {
+function collectPhrases(names, nouns) {
   const set = new Set();
   for (const name of names) {
-    for (const phrase of phrasesFromName(name)) set.add(phrase);
+    for (const phrase of phrasesFromName(name, nouns)) set.add(phrase);
   }
   return set;
 }
@@ -100,11 +224,21 @@ function faqIsService(item) {
   if (!item) return false;
   const group = ops.normalizeText(item.group || '');
   if (SERVICE_GROUPS.has(group)) return true;
-  return paddedHit(`${item.group || ''} ${item.product || ''}`, SERVICE_WORDS);
+  return paddedHit(`${item.group || ''} ${item.product || ''}`, staticServicePhrases());
+}
+
+function serviceNamePhrase(name) {
+  const folded = ops.normalizeText(name);
+  if (!folded || folded.length < 4) return [];
+  if (!nameTokens(folded).some((token) => !GENERIC_NAME_TOKENS.has(token))) return [];
+  return [folded];
 }
 
 async function loadProductPhrases() {
-  const productNames = catalog.rows().map((row) => row.name_vi);
+  const catalogNames = catalog.rows().map((row) => row.name_vi);
+  const nouns = nounsFromNames(catalogNames);
+  nounCache = nouns;
+  const productNames = [...catalogNames];
   const serviceNames = [];
   try {
     const items = await require('./faqStore').all();
@@ -113,21 +247,48 @@ async function loadProductPhrases() {
       if (faqIsService(item)) {
         if (item.product) serviceNames.push(item.product);
         if (item.group) serviceNames.push(item.group);
-      } else if (item.product) {
+      } else if (item.product && mentionsNoun(item.product, nouns)) {
         productNames.push(item.product);
       }
     }
   } catch (err) {
     console.error('FAQ products skipped:', err.message);
   }
-  productCache = collectPhrases(productNames);
-  serviceCache = collectPhrases(serviceNames);
+  productCache = collectPhrases(productNames, nouns);
+  serviceCache = new Set();
+  for (const name of serviceNames) {
+    for (const phrase of serviceNamePhrase(name)) serviceCache.add(phrase);
+  }
   return productCache;
 }
 
 function productPhrases() {
   if (productCache) return productCache;
-  return collectPhrases(catalog.rows().map((row) => row.name_vi));
+  const names = catalog.rows().map((row) => row.name_vi);
+  return collectPhrases(names, nounsFromNames(names));
+}
+
+function saleProductNouns() {
+  const neutral = new Set();
+  for (const phrase of NEUTRAL_WORDS) {
+    for (const token of ops.normalizeText(phrase).split(' ')) {
+      if (token) neutral.add(token);
+    }
+  }
+  const order = new Set(ORDER_SHIP.map((phrase) => ops.normalizeText(phrase)));
+  const out = [];
+  for (const phrase of bizLine.SALE_PHRASES) {
+    const n = ops.normalizeText(phrase);
+    if (!n || order.has(n)) continue;
+    const tokens = n.split(' ').filter(Boolean);
+    if (tokens.some((token) => GENERIC_NAME_TOKENS.has(token) || neutral.has(token))) continue;
+    out.push(n);
+  }
+  return out;
+}
+
+function strongPhrases() {
+  return [...ORDER_SHIP, ...STRONG_EXTRA, ...saleProductNouns(), ...productPhrases()];
 }
 
 function hasProduct(text) {
@@ -153,33 +314,24 @@ function blockedKeyword(phrase) {
   return false;
 }
 
-/** Start index of the rightmost whole-phrase hit, or -1. */
-function lastHitIndex(text, phrases) {
-  const folded = ops.normalizeText(text);
-  if (!folded) return -1;
-  const hay = ` ${folded} `;
-  let best = -1;
-  for (const phrase of phrases) {
-    const n = ops.normalizeText(phrase);
-    if (!n) continue;
-    const at = hay.lastIndexOf(` ${n} `);
-    if (at > best) best = at;
-  }
-  return best;
-}
-
 /**
- * Rightmost topic in one message. A later service word beats an earlier
- * price word ("xin giá phòng" is DV). A later product beats an earlier
- * room word. The same start index counts as Sale.
+ * One message. Service only is DV. Strong Sale only is Sale. Both is DV
+ * unless an order or shipping word is present. Neutral words never set a
+ * topic, so the caller keeps the previous topic. previous is not applied
+ * here; pass it through classifyMessage.
  * @returns {'sale'|'dv'|null}
  */
 function topicOf(text) {
-  const serviceAt = lastHitIndex(text, servicePhrases());
-  const productAt = lastHitIndex(text, [...productPhrases(), ...GOODS_WORDS]);
-  if (serviceAt < 0 && productAt < 0) return null;
-  if (productAt >= serviceAt) return 'sale';
-  return 'dv';
+  return classifyMessage(text, null);
+}
+
+function classifyMessage(text, previous) {
+  const service = hasService(text);
+  const strong = paddedHit(text, strongPhrases());
+  if (service && strong) return paddedHit(text, ORDER_SHIP) ? 'sale' : 'dv';
+  if (service) return 'dv';
+  if (strong) return 'sale';
+  return previous || null;
 }
 
 function messageText(row) {
@@ -188,15 +340,16 @@ function messageText(row) {
 
 function latestTopic(messages, inboundOnly) {
   const rows = messages || [];
-  for (let i = rows.length - 1; i >= 0; i -= 1) {
+  let topic = null;
+  for (let i = 0; i < rows.length; i += 1) {
     const row = rows[i];
     if (!row) continue;
     const inbound = row.direction !== 'out';
     if (inboundOnly !== inbound) continue;
-    const topic = topicOf(messageText(row));
-    if (topic) return topic;
+    const next = classifyMessage(messageText(row), null);
+    if (next) topic = next;
   }
-  return null;
+  return topic;
 }
 
 function isPageSignoff(row) {
@@ -228,8 +381,11 @@ function decide(messages) {
 }
 
 module.exports = {
-  SERVICE_WORDS,
-  GOODS_WORDS,
+  SERVICE_WORDS: SERVICE_CORE,
+  GOODS_WORDS: [...ORDER_SHIP, ...STRONG_EXTRA],
+  GENERIC_NAME_TOKENS,
+  NEUTRAL_WORDS,
+  ORDER_SHIP,
   resetForTests,
   paddedHit,
   hasService,
@@ -241,6 +397,7 @@ module.exports = {
   blockedKeyword,
   phrasesFromName,
   topicOf,
+  classifyMessage,
   decide,
   faqIsService,
 };

@@ -1,12 +1,14 @@
 /**
  * FB-Sale vs FB-DV labels.
  *
- * Topic decides. The customer's latest message that hits a topic wins;
- * page text is used only when the customer has no topic. Product, price,
- * ship, and order are Sale, even when Lành signed. Service words and FAQ
- * service entries are DV. A Lành sign-off is only a tiebreaker when no
- * topic is detected; from.name never selects the label. A manual Sale or
- * DV label always wins.
+ * Topic decides. The customer's latest message that states a topic wins.
+ * A price-only message does not state a topic, so the earlier topic stays.
+ * Page text is used only when the customer has no topic. Shipping, an
+ * order, or a product name is Sale, even when Lành signed. Service words
+ * and FAQ service entries are DV. Both in one message stay DV unless the
+ * message also orders or ships. A Lành sign-off is only a tiebreaker when
+ * no topic is detected; from.name never selects the label. A manual Sale
+ * or DV label always wins.
  *
  * DV keywords are learned only from threads labeled DV by a service topic,
  * never from a sign-off. Catalog product names and generic sales words are
@@ -166,7 +168,7 @@ function classifyContext({ channel, text, messages, label, prior }) {
   const priorTexts = (messages || []).map((row) => signalText(row));
   const newestRaw = String(text || '');
   const newest = fbNotices.describe(newestRaw) ? '' : newestRaw;
-  const newestLine = bizLine.classify(newest);
+  const newestLine = fbDvRule.topicOf(newest);
   const priorDv = priorTexts.some((part) => dvHit(part));
   const labeledDv = label && label.label === 'dv';
   if (labeledDv) {

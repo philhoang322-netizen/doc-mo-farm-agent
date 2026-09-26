@@ -59,10 +59,6 @@ const PRODUCT_EXTRA = [
   'nong san',
 ];
 
-const GENERIC_NAME_TOKENS = new Set([
-  'nuoc', 'len', 'men', 'cao', 'cap', 'chat', 'loai', 'hang', 'farm',
-]);
-
 const SIGNOFF_PARTICLES = new Set(['a', 'nha', 'nhe', 'ha', 'ah', 'oi', 'shop']);
 
 function clampLimit(value) {
@@ -98,17 +94,7 @@ function paddedHit(text, phrases) {
 }
 
 function phrasesFromName(name) {
-  const folded = ops.normalizeText(name);
-  if (!folded || folded.length < 4) return [];
-  const tokens = folded.split(' ').filter((token) => token.length >= 2);
-  const out = [];
-  if (tokens.length >= 2 || folded.length >= 6) out.push(folded);
-  for (let i = 0; i < tokens.length - 1; i += 1) {
-    const pair = `${tokens[i]} ${tokens[i + 1]}`;
-    const bothGeneric = GENERIC_NAME_TOKENS.has(tokens[i]) && GENERIC_NAME_TOKENS.has(tokens[i + 1]);
-    if (!bothGeneric && pair.length >= 4) out.push(pair);
-  }
-  return out;
+  return fbDvRule.phrasesFromName(name);
 }
 
 async function catalogEntries() {

@@ -99,7 +99,7 @@ test('topic decides, a sign-off is only a tiebreaker, and a manual label wins', 
     { direction: 'in', message_text: 'ở farmstay và mua nước nghệ lên men' },
     out('Dạ còn phòng\nLành'),
   ], null);
-  assert.equal(goodsLater.label, 'sale');
+  assert.equal(goodsLater.label, 'dv');
   assert.equal(goodsLater.source, 'keyword');
 
   const customerTopic = threadLabels.decideThread([
@@ -358,11 +358,78 @@ test('relabel learns service words only and drops catalog and sales words', asyn
     assert.equal(fbDvRule.hasService('suối đêm riêng'), true);
     assert.equal([...fbDvRule.productPhrases()].some((phrase) => phrase.includes('suoi dem')), false);
     assert.equal(fbDvRule.hasService('mình muốn check-in và booking'), true);
-    assert.equal(fbDvRule.hasService('check-in lúc 14h'), false);
+    assert.equal(fbDvRule.hasService('check-in lúc 14h'), true);
     assert.equal(fbDvRule.hasService('lấy nước nghệ lên men'), false);
   } finally {
     llm.setTransportForTests(null);
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.FB_CLASSIFY_MODEL;
   }
+});
+
+test('product pairs drop brand and generic tokens', () => {
+  const phrases = new Set(fbDvRule.phrasesFromName('Doc Mo Farm thiên nhiên'));
+  for (const dropped of ['doc mo', 'mo farm', 'farm thien', 'thien nhien']) {
+    assert.equal(phrases.has(dropped), false, dropped);
+  }
+  assert.equal(fbDvRule.phrasesFromName('Thông tin sức khỏe').length, 0);
+  assert.equal(fbDvRule.phrasesFromName('Cách sử dụng an toàn').length, 0);
+  const shampoo = new Set(fbDvRule.phrasesFromName('Dầu gội cao cấp'));
+  assert.equal(shampoo.has('dau goi'), true);
+  assert.equal(shampoo.has('dau goi cao cap'), true);
+  assert.equal(shampoo.has('goi cao'), false);
+  assert.equal(shampoo.has('cao cap'), false);
+  const ginger = new Set(fbDvRule.phrasesFromName('Nước gừng lên men'));
+  assert.equal(ginger.has('nuoc gung'), true);
+  assert.equal(ginger.has('len men'), true);
+});
+
+test('neutral words do not set a topic and a stay survives a later price question', async () => {
+  assert.equal(fbDvRule.topicOf('sang mùa rồi'), null);
+  assert.equal(fbDvRule.topicOf('gia đình đi chơi'), null);
+  assert.equal(fbDvRule.topicOf('xem vé'), null);
+  assert.equal(fbDvRule.topicOf('đêm nay trời mát'), null);
+  assert.equal(fbDvRule.hasService('2 đêm'), true);
+  assert.equal(fbDvRule.hasService('mấy đêm'), true);
+
+  assert.equal(fbDvRule.topicOf('cho mình xin thông tin lưu trú Doc Mo'), 'dv');
+  assert.equal(fbDvRule.topicOf('gia đình 4 người ở 2 đêm'), 'dv');
+  assert.equal(fbDvRule.topicOf('ship về nhà giúp mình'), 'sale');
+  assert.equal(fbDvRule.topicOf('ở farmstay và mua nước nghệ lên men'), 'dv');
+  assert.equal(fbDvRule.topicOf('phòng còn không ship dầu gội về'), 'sale');
+
+  const stayThenPrice = threadLabels.decideThread([
+    { direction: 'in', message_text: 'còn phòng không shop' },
+    { direction: 'in', message_text: 'xin giá bao nhiêu' },
+  ], null);
+  assert.equal(stayThenPrice.label, 'dv');
+  assert.equal(stayThenPrice.source, 'keyword');
+
+  const stayThenGoods = threadLabels.decideThread([
+    { direction: 'in', message_text: 'còn phòng không shop' },
+    { direction: 'in', message_text: 'mua dầu gội' },
+  ], null);
+  assert.equal(stayThenGoods.label, 'sale');
+  assert.equal(stayThenGoods.source, 'keyword');
+
+  const season = threadLabels.decideThread([
+    { direction: 'in', message_text: 'sang mùa rồi' },
+  ], null);
+  assert.equal(season.label, 'unknown');
+
+  await faqStore.replaceAll([
+    {
+      code: 'info',
+      product: 'Thông tin sức khỏe',
+      question: 'cau hoi mau',
+      answer: 'tra loi mau',
+      action_flag: 'answer',
+      verify_status: 'approved',
+    },
+  ]);
+  await fbDvRule.loadProductPhrases();
+  const loaded = [...fbDvRule.productPhrases()];
+  assert.equal(loaded.some((phrase) => phrase.includes('thong tin') || phrase.includes('suc khoe')), false);
+  assert.equal(loaded.some((phrase) => phrase === 'doc mo' || phrase === 'mo farm'), false);
+  assert.equal(fbDvRule.topicOf('cho mình xin thông tin lưu trú Doc Mo'), 'dv');
 });
