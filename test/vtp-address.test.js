@@ -51,13 +51,75 @@ test('parse a Hanoi street and keep the street as the detail', () => {
   assert.equal(parsed.line, 'Số 5A ngách 22 ngõ 282 Kim Giang, Phường Đại Kim, Quận Hoàng Mai, Hà Nội');
 });
 
-test('province and ward are required once an address is started', () => {
-  assert.equal(vtp.validate({}).ok, false);
-  assert.equal(vtp.validate({ provinceId: '51' }).ok, false);
-  assert.equal(vtp.validate({ wardId: '9904' }).ok, false);
-  const ok = vtp.validate({ provinceId: '51', wardId: '9904' });
+test('an incomplete address warns and does not block', () => {
+  const empty = vtp.validate({});
+  assert.equal(empty.ok, true);
+  assert.deepEqual(empty.warnings, []);
+
+  const provinceOnly = vtp.validate({ provinceId: '51', detail: 'Ấp Phúc Nhạc' });
+  assert.equal(provinceOnly.ok, true);
+  assert.deepEqual(provinceOnly.errors, []);
+  assert.ok(provinceOnly.missing.includes('district'));
+  assert.ok(provinceOnly.missing.includes('ward'));
+  assert.match(provinceOnly.warnings.join(' '), /Thiếu quận, phường/);
+
+  const unmatched = vtp.validate({
+    provinceId: '2',
+    districtId: '51',
+    wardText: 'Phường Không Có',
+    detail: '12 Đường Thử',
+  });
+  assert.equal(unmatched.ok, true);
+  assert.deepEqual(unmatched.missing, []);
+  assert.deepEqual(unmatched.invalid, ['ward']);
+  assert.match(unmatched.warnings.join(' '), /Chưa khớp phường/);
+
+  const streetEmpty = vtp.validate({ provinceId: '2', districtId: '51', wardId: '884' });
+  assert.equal(streetEmpty.ok, true);
+  assert.deepEqual(streetEmpty.missing, ['street']);
+  assert.equal(streetEmpty.focus, 'street');
+
+  const ok = vtp.validate({ provinceId: '51', districtId: '576', wardId: '9904', detail: 'Ấp Phúc Nhạc' });
   assert.equal(ok.ok, true);
-  assert.deepEqual(ok.errors, []);
+  assert.deepEqual(ok.warnings, []);
+});
+
+test('partial parse keeps a province and leaves the missing levels empty', () => {
+  const parsed = vtp.parse('12 Đường Thử, Hồ Chí Minh');
+  assert.equal(parsed.detail, '12 Đường Thử');
+  assert.equal(parsed.province && parsed.province.id, '2');
+  assert.equal(parsed.district, null);
+  assert.equal(parsed.ward, null);
+  assert.equal(parsed.districtText, '');
+  assert.equal(parsed.wardText, '');
+  assert.equal(parsed.line, '12 Đường Thử, Hồ Chí Minh');
+});
+
+test('an unmatched ward stays in the ward field as free text', () => {
+  const parsed = vtp.parse('12 Đường Thử, Phường Không Có, Hồ Chí Minh');
+  assert.equal(parsed.detail, '12 Đường Thử');
+  assert.equal(parsed.province && parsed.province.id, '2');
+  assert.equal(parsed.ward, null);
+  assert.equal(parsed.wardText, 'Phường Không Có');
+  assert.match(parsed.line, /12 Đường Thử, Phường Không Có, Hồ Chí Minh/);
+});
+
+test('an unmatched district stays editable and a catalog miss stays on the street', () => {
+  const district = vtp.parse('12 Đường Thử, Quận Không Có, Hồ Chí Minh');
+  assert.equal(district.district, null);
+  assert.equal(district.districtText, 'Quận Không Có');
+  assert.equal(district.province && district.province.id, '2');
+  assert.equal(district.detail, '12 Đường Thử');
+
+  const unknown = vtp.parse('Nhà số 9 ngõ lạ không có trên bản đồ');
+  assert.equal(unknown.province, null);
+  assert.equal(unknown.district, null);
+  assert.equal(unknown.ward, null);
+  assert.match(unknown.detail, /ngõ lạ/);
+
+  const streetEmpty = vtp.parse('Hồ Chí Minh');
+  assert.equal(streetEmpty.province && streetEmpty.province.id, '2');
+  assert.equal(streetEmpty.detail, '');
 });
 
 test('invoice page shows the normalized address on its own row', () => {

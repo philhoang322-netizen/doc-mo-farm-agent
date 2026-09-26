@@ -1085,12 +1085,14 @@ function mount(app) {
   app.get('/admin/review.css', requirePageAsset, sendAsset('review.css', 'text/css; charset=utf-8'));
   app.get('/admin/inbox-refresh.js', requirePageAsset, sendAsset('inbox-refresh.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/inbox-order.js', requirePageAsset, sendAsset('inbox-order.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/inbox-sections.js', requirePageAsset, sendAsset('inbox-sections.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/kiot-picker.js', requirePageAsset, sendAsset('kiot-picker.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/kiot-lines.js', requirePageAsset, sendAsset('kiot-lines.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/card-time.js', requirePageAsset, sendAsset('card-time.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/undo-delete.js', requirePageAsset, sendAsset('undo-delete.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/send-once.js', requirePageAsset, sendAsset('send-once.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/vtp-address.js', requirePageAsset, sendAsset('vtp-address.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/vtp-order.js', requirePageAsset, sendAsset('vtp-order.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/vtp-units.json', requirePageAsset, sendAsset('vtp-units.json', 'application/json; charset=utf-8'));
   app.get('/admin/thread-context.css', requirePageAsset, sendAsset('thread-context.css', 'text/css; charset=utf-8'));
   app.get('/admin/fb-notices.js', requirePageAsset, sendAsset('fb-notices.js', 'text/javascript; charset=utf-8'));

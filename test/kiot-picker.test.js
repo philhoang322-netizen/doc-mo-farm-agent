@@ -82,8 +82,8 @@ test('the order form shows picker notes and does not create a Kiot document by i
   assert.match(js, /fillSearch\(query, results, line, index\), 250\)/);
   assert.match(js, /searchPhase = 'error'/);
   assert.match(js, /searchPhase = products\.length \? 'ok' : 'empty'/);
-  assert.match(js, /Xác nhận tạo hoá đơn/);
-  assert.match(js, /Xác nhận tạo đơn đặt hàng/);
+  assert.match(js, /Tạo đơn KiotViet/);
+  assert.match(js, /Tạo đơn VTP/);
   assert.doesNotMatch(js, /fillSearch[\s\S]{0,500}confirm:\s*true/);
   assert.match(css, /\.msg-card \{[^}]*overflow:\s*visible/);
   assert.match(css, /button\.kiot-hit \{[^}]*min-height:\s*44px/s);
