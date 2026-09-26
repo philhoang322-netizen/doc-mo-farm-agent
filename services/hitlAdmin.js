@@ -200,7 +200,14 @@ async function page(req, res) {
     return res.status(200).type('html').send(loginHtml('Tài khoản đã khóa hoặc không còn.'));
   }
   const html = await fs.promises.readFile(path.join(PUBLIC, 'review.html'), 'utf8');
-  res.type('html').send(brand.applyTemplate(html));
+  const province = String(process.env.DEFAULT_PROVINCE || '').trim();
+  const boot = province
+    ? '<script>window.DEFAULT_PROVINCE=' + JSON.stringify(province).replace(/</g, '\\u003c') + ';</script>\n'
+    : '';
+  res.type('html').send(brand.applyTemplate(html.replace(
+    '<script src="/admin/vtp-address.js"></script>',
+    boot + '<script src="/admin/vtp-address.js"></script>',
+  )));
 }
 
 async function login(req, res) {

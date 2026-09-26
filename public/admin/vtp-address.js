@@ -27,6 +27,8 @@
     dn: 'da nang',
     'da nang': 'da nang',
   };
+  // Prefill when the form has no province. Override with the DEFAULT_PROVINCE env var.
+  const DEFAULT_PROVINCE = 'Hồ Chí Minh';
 
   let index = null;
   let pending = null;
@@ -180,6 +182,30 @@
     if (districtId) list = index.wardsByDistrict.get(String(districtId)) || [];
     else if (provinceId) list = index.wardsByProvince.get(String(provinceId)) || [];
     return searchList(list, query, limit);
+  }
+
+  function configuredProvinceName() {
+    const fromWindow = typeof globalThis !== 'undefined' ? globalThis.DEFAULT_PROVINCE : '';
+    if (fromWindow && String(fromWindow).trim()) return String(fromWindow).trim();
+    const fromEnv = typeof process !== 'undefined' && process.env ? process.env.DEFAULT_PROVINCE : '';
+    if (fromEnv && String(fromEnv).trim()) return String(fromEnv).trim();
+    return DEFAULT_PROVINCE;
+  }
+
+  function defaultProvince() {
+    if (!index) return null;
+    const name = configuredProvinceName();
+    const folded = fold(name);
+    const alias = PROVINCE_ALIAS[folded] || PROVINCE_ALIAS[stripAdmin(folded)] || '';
+    const bare = stripAdmin(alias || folded);
+    return (index.provinces || []).find(item => (
+      item.label === name
+      || item.name === name
+      || item.fold === folded
+      || item.bare === bare
+      || item.noParen === bare
+      || (alias && (item.bare === alias || item.noParen === alias))
+    )) || null;
   }
 
   function getProvince(id) { return index && index.provinceById.get(String(id || '')) || null; }
@@ -452,6 +478,9 @@
     searchProvinces,
     searchDistricts,
     searchWards,
+    DEFAULT_PROVINCE,
+    configuredProvinceName,
+    defaultProvince,
     getProvince,
     getDistrict,
     getWard,

@@ -488,3 +488,112 @@ test('a complete address copies the VTP order and shows the toast', {
     server.close();
   }
 });
+
+test('an empty order form prefills Hồ Chí Minh and keeps a parsed province', {
+  skip: !playwright || !chrome,
+  timeout: 90000,
+}, async () => {
+  await drafts.createDraft({
+    channel: 'messenger',
+    sales_channel: 'farm',
+    biz_line: 'sale',
+    customer_name: 'Khách Trống',
+    customer_phone: '0900000016',
+    customer_code: 'KH-DEMO',
+    customer_user_id: 'fb_demo_default_province',
+    customer_query: '',
+    customer_intent: '',
+    draft_reply: 'Dạ em ghi nhận.',
+    triage_level: 'hot',
+    approval_status: 'PENDING_REVIEW',
+  });
+  await drafts.createDraft({
+    channel: 'messenger',
+    sales_channel: 'farm',
+    biz_line: 'sale',
+    customer_name: 'Khách Hà Nội',
+    customer_phone: '0900000017',
+    customer_code: 'KH-DEMO',
+    customer_user_id: 'fb_demo_hanoi',
+    customer_query: '12 Đường Thử, Hà Nội',
+    customer_intent: '',
+    draft_reply: 'Dạ em ghi nhận.',
+    triage_level: 'hot',
+    approval_status: 'PENDING_REVIEW',
+  });
+  const server = await appServer();
+  const base = 'http://127.0.0.1:' + server.address().port;
+  const browser = await playwright.chromium.launch({
+    executablePath: chrome,
+    headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+  });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1024, height: 800 } });
+    page.on('dialog', dialog => dialog.accept());
+    await openCard(page, base, 'Khách Trống');
+    await page.waitForFunction(() => {
+      const province = document.getElementById('kiot-province-detail');
+      return province && province.value === 'Hồ Chí Minh';
+    });
+    const blank = await page.evaluate(() => {
+      const province = document.getElementById('kiot-province-detail');
+      const warn = document.querySelector('#kiot-addr-block-detail .addr-warn');
+      return {
+        province: province.value,
+        id: document.querySelector('#kiot-addr-block-detail input[name="province_id"]').value,
+        disabled: province.disabled,
+        readOnly: province.readOnly,
+        warn: warn && !warn.hidden ? warn.textContent : '',
+        create: document.getElementById('kiot-create-detail').textContent,
+      };
+    });
+    assert.equal(blank.province, 'Hồ Chí Minh');
+    assert.equal(blank.id, '2');
+    assert.equal(blank.disabled, false);
+    assert.equal(blank.readOnly, false);
+    assert.match(blank.warn, /quận/);
+    assert.match(blank.warn, /phường/);
+    assert.equal(/tỉnh/.test(blank.warn), false);
+    assert.match(blank.create, /Tạo đơn KiotViet/);
+    await page.evaluate(() => {
+      const input = document.getElementById('kiot-district-detail');
+      input.blur();
+      input.focus();
+    });
+    await page.waitForSelector('#kiot-district-detail ~ .addr-hits .addr-hit', { state: 'visible' });
+    const districts = await page.locator('#kiot-district-detail ~ .addr-hits .addr-hit').allTextContents();
+    assert.ok(districts.includes('Quận 6'), districts.join('|'));
+    assert.ok(districts.includes('Quận 5'), districts.join('|'));
+    assert.equal(districts.some(text => /Hoàng Mai|Ba Đình/.test(text)), false);
+
+    await page.locator('#kiot-province-detail').fill('Dong Nai');
+    await page.locator('#kiot-province-detail ~ .addr-hits .addr-hit', { hasText: 'Đồng Nai' }).first().click();
+    await page.waitForFunction(() => document.getElementById('kiot-province-detail').value === 'Đồng Nai');
+    const stored = await page.evaluate(() => sessionStorage.getItem('dmf_order_pane') || localStorage.getItem('dmf_order_pane') || '');
+    assert.match(stored, /Đồng Nai/);
+
+    await page.locator('.msg-card', { hasText: 'Khách Hà Nội' }).locator('.msg').click();
+    await page.waitForFunction(() => {
+      const province = document.getElementById('kiot-province-detail');
+      return province && province.value === 'Hà Nội';
+    });
+    const parsed = await page.evaluate(() => ({
+      province: document.getElementById('kiot-province-detail').value,
+      id: document.querySelector('#kiot-addr-block-detail input[name="province_id"]').value,
+      street: document.getElementById('kiot-address-detail').value,
+    }));
+    assert.equal(parsed.province, 'Hà Nội');
+    assert.equal(parsed.id, '1');
+    assert.match(parsed.street, /12 Đường Thử/);
+
+    await page.locator('.msg-card', { hasText: 'Khách Trống' }).locator('.msg').click();
+    await page.waitForFunction(() => {
+      const province = document.getElementById('kiot-province-detail');
+      return province && province.value === 'Đồng Nai';
+    });
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});

@@ -139,6 +139,48 @@ test('invoice page shows the normalized address on its own row', () => {
   assert.match(html, /Ấp Phúc Nhạc, Xã Gia Kiệm, Huyện Thống Nhất, Đồng Nai/);
 });
 
+test('the default province is the Hồ Chí Minh catalog entry', () => {
+  const prev = process.env.DEFAULT_PROVINCE;
+  const prevWindow = globalThis.DEFAULT_PROVINCE;
+  delete process.env.DEFAULT_PROVINCE;
+  delete globalThis.DEFAULT_PROVINCE;
+  try {
+    assert.equal(vtp.DEFAULT_PROVINCE, 'Hồ Chí Minh');
+    assert.equal(vtp.configuredProvinceName(), 'Hồ Chí Minh');
+    const item = vtp.defaultProvince();
+    assert.equal(item.id, '2');
+    assert.equal(item.code, 'HCM');
+    assert.equal(item.label, 'Hồ Chí Minh');
+    const districts = vtp.searchDistricts('', item.id, 8);
+    assert.ok(districts.length >= 1);
+    assert.ok(districts.every(row => row.provinceId === '2'));
+    assert.ok(districts.some(row => row.label === 'Quận 6'));
+    const warn = vtp.gaps({ provinceId: item.id, provinceName: item.label });
+    assert.equal(warn.ok, true);
+    assert.equal(warn.missing.includes('province'), false);
+    assert.ok(warn.missing.includes('district'));
+    assert.ok(warn.missing.includes('ward'));
+    const text = warn.warnings.join(' ');
+    assert.match(text, /quận/);
+    assert.match(text, /phường/);
+    assert.equal(/tỉnh/.test(text), false);
+
+    process.env.DEFAULT_PROVINCE = 'Hà Nội';
+    assert.equal(vtp.configuredProvinceName(), 'Hà Nội');
+    assert.equal(vtp.defaultProvince().id, '1');
+    process.env.DEFAULT_PROVINCE = 'TP. Hồ Chí Minh';
+    assert.equal(vtp.defaultProvince().id, '2');
+    assert.equal(vtp.defaultProvince().label, 'Hồ Chí Minh');
+    process.env.DEFAULT_PROVINCE = 'Tỉnh Không Có';
+    assert.equal(vtp.defaultProvince(), null);
+  } finally {
+    if (prev == null) delete process.env.DEFAULT_PROVINCE;
+    else process.env.DEFAULT_PROVINCE = prev;
+    if (prevWindow == null) delete globalThis.DEFAULT_PROVINCE;
+    else globalThis.DEFAULT_PROVINCE = prevWindow;
+  }
+});
+
 test('catalog is the live 3-level Viettel Post list, not the 34-province map', () => {
   assert.equal(units.levels, 3);
   assert.ok(units.p.length >= 63);
