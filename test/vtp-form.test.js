@@ -567,16 +567,11 @@ test('an empty order form prefills Hồ Chí Minh and keeps a parsed province', 
     assert.ok(districts.includes('Quận 5'), districts.join('|'));
     assert.equal(districts.some(text => /Hoàng Mai|Ba Đình/.test(text)), false);
 
-    await page.locator('#kiot-province-detail').fill('Ha Noi');
-    await page.locator('#kiot-province-detail ~ .addr-hits .addr-hit', { hasText: 'Hà Nội' }).first().click();
-    await page.waitForFunction(() => document.getElementById('kiot-province-detail').value === 'Hà Nội');
-    await page.reload({ waitUntil: 'domcontentloaded' });
-    await page.goto(base + '/admin?pollms=60000&nhom=fb-sale&hop=pending', { waitUntil: 'domcontentloaded' });
-    await page.locator('.msg-card', { hasText: 'Khách Trống' }).locator('.msg').click();
-    await page.waitForFunction(() => {
-      const province = document.getElementById('kiot-province-detail');
-      return province && province.value === 'Hà Nội';
-    });
+    await page.locator('#kiot-province-detail').fill('Dong Nai');
+    await page.locator('#kiot-province-detail ~ .addr-hits .addr-hit', { hasText: 'Đồng Nai' }).first().click();
+    await page.waitForFunction(() => document.getElementById('kiot-province-detail').value === 'Đồng Nai');
+    const stored = await page.evaluate(() => sessionStorage.getItem('dmf_order_pane') || localStorage.getItem('dmf_order_pane') || '');
+    assert.match(stored, /Đồng Nai/);
 
     await page.locator('.msg-card', { hasText: 'Khách Hà Nội' }).locator('.msg').click();
     await page.waitForFunction(() => {
@@ -591,6 +586,12 @@ test('an empty order form prefills Hồ Chí Minh and keeps a parsed province', 
     assert.equal(parsed.province, 'Hà Nội');
     assert.equal(parsed.id, '1');
     assert.match(parsed.street, /12 Đường Thử/);
+
+    await page.locator('.msg-card', { hasText: 'Khách Trống' }).locator('.msg').click();
+    await page.waitForFunction(() => {
+      const province = document.getElementById('kiot-province-detail');
+      return province && province.value === 'Đồng Nai';
+    });
   } finally {
     await browser.close();
     server.close();
