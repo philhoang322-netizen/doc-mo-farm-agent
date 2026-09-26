@@ -221,7 +221,7 @@ test('backfill resumes after a failed page and backs off on rate limit', async (
   assert.ok(urls.some((url) => decodeURIComponent(url).includes('after=CURSOR2')));
 });
 
-test('Lành is DV by sender name and, when that is missing, by signature', () => {
+test('the Lành detector still reports a sender name and a sign-off', () => {
   assert.equal(threadLabels.lanhAttribution([
     {
       direction: 'out',
@@ -351,7 +351,7 @@ test('relabel assigns pending drafts and keeps a manual label', async () => {
   assert.equal(moved.approval_status, 'PENDING_REVIEW');
   const labeled = await store.getLabel('fb', 'fb_555');
   assert.equal(labeled.label, 'dv');
-  assert.equal(labeled.source, 'signature');
+  assert.equal(labeled.source, 'keyword');
   const kept = await store.getLabel('fb', 'fb_keep');
   assert.equal(kept.source, 'manual');
   assert.equal(kept.label, 'sale');

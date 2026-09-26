@@ -1,17 +1,17 @@
 /**
  * FB-Sale vs FB-DV labels.
  *
- * A thread is DV when a page reply is attributed to staff member Lành:
- * sender metadata (from.name) when Graph actually names Lành, otherwise a
- * sign-off (the name at the end of a page message, or a line that is only
- * the name). An inline mention does not count. A sign-off thread that is
- * only about a catalog product, with no service wording, is Sale.
- * A manual Sale or DV label always wins.
+ * Topic decides. The customer's latest message that hits a topic wins;
+ * page text is used only when the customer has no topic. Product, price,
+ * ship, and order are Sale, even when Lành signed. Service words and FAQ
+ * service entries are DV. A Lành sign-off is only a tiebreaker when no
+ * topic is detected; from.name never selects the label. A manual Sale or
+ * DV label always wins.
  *
- * DV keywords are learned only from signature threads that also use service
- * words. Catalog product names and generic sales words are not learned.
- * Backfill and relabel stay local: they do not call Claude. Live
- * classification may, and that call gets at most eight short sanitized
+ * DV keywords are learned only from threads labeled DV by a service topic,
+ * never from a sign-off. Catalog product names and generic sales words are
+ * not learned. Backfill and relabel stay local: they do not call Claude.
+ * Live classification may, and that call gets at most eight short sanitized
  * examples plus the thread label and learned keywords. Message bodies
  * are not logged.
  */
@@ -95,10 +95,9 @@ function textHasLanh(text) {
 
 /**
  * @returns {'staff_lanh'|'signature'|null}
- * Metadata wins when a page message's from.name is Lành.
- * The text signature is a sign-off only. A different human name blocks
- * the signature on that one message. Product-only sign-off threads are
- * decided in ruleFromMessages, not here.
+ * Detector only. ruleFromMessages does not use this: from.name never
+ * selects a label, and a sign-off counts only when fbDvRule finds no topic.
+ * A different human name blocks the signature on that one message.
  */
 function lanhAttribution(messages) {
   let signature = false;
@@ -118,13 +117,7 @@ function lanhAttribution(messages) {
 }
 
 function ruleFromMessages(messages) {
-  const attr = lanhAttribution(messages);
-  if (attr === 'staff_lanh') return { label: 'dv', source: 'staff_lanh', confidence: 0.95 };
-  if (attr === 'signature') {
-    if (fbDvRule.isProductOnly(messages)) return { label: 'sale', source: 'keyword', confidence: 0.8 };
-    return { label: 'dv', source: 'signature', confidence: 0.9 };
-  }
-  return null;
+  return fbDvRule.decide(messages);
 }
 
 /**
@@ -194,10 +187,7 @@ async function ensureLearned() {
   if (keywordCache) return keywordCache;
   keywordCache = (async () => {
     const labels = await store.allLabels('fb');
-    const ground = labels.filter((row) => (
-      row.source === 'staff_lanh' || row.source === 'signature' || row.source === 'manual'
-    ));
-    await refreshKeywords(ground.length ? ground : labels);
+    await refreshKeywords(labels);
     shotCache = await fewShotFromStore(labels);
   })().catch((err) => {
     keywordCache = null;
@@ -422,8 +412,9 @@ async function refreshKeywords(labels) {
       if (inbound.trim()) saleDocs.push(inbound);
       continue;
     }
-    const signatureDv = label.source === 'signature';
-    if (!signatureDv || !fbDvRule.hasService(fbDvRule.threadBlob(messages))) continue;
+    if (label.source !== 'keyword') continue;
+    const topic = fbDvRule.decide(messages);
+    if (!topic || topic.label !== 'dv' || topic.source !== 'keyword') continue;
     if (inbound.trim()) dvDocs.push(inbound);
   }
   const ranked = extractKeywords(dvDocs, saleDocs)
@@ -595,12 +586,9 @@ async function relabel() {
 
 async function stats() {
   const labels = await store.allLabels('fb');
-  const ground = labels.filter((row) => (
-    row.source === 'staff_lanh' || row.source === 'signature' || row.source === 'manual'
-  ));
   return {
     counts: countLabels(labels),
-    keywords: await refreshKeywords(ground.length ? ground : labels),
+    keywords: await refreshKeywords(labels),
   };
 }
 

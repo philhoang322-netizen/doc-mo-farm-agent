@@ -1,5 +1,5 @@
 /**
- * Tightened FB-DV rule. Synthetic fixtures only. No model calls.
+ * Topic FB-DV rule. Synthetic fixtures only. No model calls.
  */
 const path = require('path');
 const os = require('os');
@@ -59,31 +59,84 @@ test('a signature is a sign-off, not an inline or lowercase adjective', () => {
   ]), 'staff_lanh');
 });
 
-test('product-only sign-off threads are Sale and a manual label wins', async () => {
-  const product = threadLabels.decideThread([
-    { direction: 'in', message_text: 'mình lấy nước nghệ lên men' },
-    out('Dạ còn chai\nLành'),
+test('topic decides, a sign-off is only a tiebreaker, and a manual label wins', async () => {
+  const priced = threadLabels.decideThread([
+    { direction: 'in', message_text: 'xin giá dầu gội' },
+    out('Dạ 120k một chai\nLành'),
   ], null);
-  assert.equal(product.label, 'sale');
-  assert.equal(product.source, 'keyword');
+  assert.equal(priced.label, 'sale');
+  assert.equal(priced.source, 'keyword');
 
-  const stay = threadLabels.decideThread([
-    { direction: 'in', message_text: 'mình muốn thuê phòng farmstay' },
-    out('Dạ còn phòng\nLành'),
+  const rooms = threadLabels.decideThread([
+    { direction: 'in', message_text: 'còn phòng không shop' },
+    { direction: 'out', message_text: 'Dạ còn phòng ạ', sender_meta: page },
   ], null);
-  assert.equal(stay.label, 'dv');
-  assert.equal(stay.source, 'signature');
+  assert.equal(rooms.label, 'dv');
+  assert.equal(rooms.source, 'keyword');
 
-  const both = threadLabels.decideThread([
+  const moved = threadLabels.decideThread([
+    { direction: 'in', message_text: 'còn phòng farmstay không' },
+    out('Dạ còn phòng'),
+    { direction: 'in', message_text: 'thôi mình lấy dầu gội' },
+  ], null);
+  assert.equal(moved.label, 'sale');
+  assert.equal(moved.source, 'keyword');
+
+  const backToRooms = threadLabels.decideThread([
+    { direction: 'in', message_text: 'xin giá dầu gội' },
+    out('Dạ 120k'),
+    { direction: 'in', message_text: 'thôi mình đặt phòng qua đêm' },
+  ], null);
+  assert.equal(backToRooms.label, 'dv');
+  assert.equal(backToRooms.source, 'keyword');
+
+  const priceOfRoom = threadLabels.decideThread([
+    { direction: 'in', message_text: 'xin giá phòng' },
+  ], null);
+  assert.equal(priceOfRoom.label, 'dv');
+
+  const goodsLater = threadLabels.decideThread([
     { direction: 'in', message_text: 'ở farmstay và mua nước nghệ lên men' },
     out('Dạ còn phòng\nLành'),
   ], null);
-  assert.equal(both.label, 'dv');
-  assert.equal(both.source, 'signature');
+  assert.equal(goodsLater.label, 'sale');
+  assert.equal(goodsLater.source, 'keyword');
+
+  const customerTopic = threadLabels.decideThread([
+    { direction: 'in', message_text: 'mình muốn thuê phòng' },
+    out('Dạ dầu gội còn chai\nLành'),
+  ], null);
+  assert.equal(customerTopic.label, 'dv');
+  assert.equal(customerTopic.source, 'keyword');
+
+  const pageOnly = threadLabels.decideThread([
+    { direction: 'in', message_text: 'alo' },
+    out('Dạ còn phòng farmstay'),
+  ], null);
+  assert.equal(pageOnly.label, 'dv');
+  assert.equal(pageOnly.source, 'keyword');
+
+  const tie = threadLabels.decideThread([
+    { direction: 'in', message_text: 'alo' },
+    out('Dạ em chào\nLành'),
+  ], null);
+  assert.equal(tie.label, 'dv');
+  assert.equal(tie.source, 'signature');
+
+  const named = threadLabels.decideThread([
+    { direction: 'in', message_text: 'alo' },
+    {
+      direction: 'out',
+      message_text: 'Dạ em chào',
+      sender_meta: { from_name: 'Lành', from_id: '111', page_id: '111' },
+    },
+  ], null);
+  assert.equal(named.label, 'unknown');
+  assert.equal(named.source, 'keyword');
 
   const manual = threadLabels.decideThread([
-    { direction: 'in', message_text: 'mình lấy nước nghệ lên men' },
-    out('Dạ còn chai\nLành'),
+    { direction: 'in', message_text: 'xin giá dầu gội' },
+    out('Dạ 120k một chai\nLành'),
   ], { label: 'dv', source: 'manual', confidence: 1 });
   assert.equal(manual.label, 'dv');
   assert.equal(manual.source, 'manual');
@@ -112,21 +165,32 @@ test('relabel learns service words only and drops catalog and sales words', asyn
     return { content: [{ type: 'text', text: 'dv' }] };
   });
   try {
-    await faqStore.replaceAll([{
-      code: 'siro',
-      product: 'Siro gừng nhà',
-      question: 'siro gừng nhà giá sao',
-      answer: 'Dạ còn ạ',
-      action_flag: 'answer',
-      verify_status: 'approved',
-    }]);
+    await faqStore.replaceAll([
+      {
+        code: 'siro',
+        product: 'Siro gừng nhà',
+        question: 'siro gừng nhà giá sao',
+        answer: 'Dạ còn ạ',
+        action_flag: 'answer',
+        verify_status: 'approved',
+      },
+      {
+        code: 'suoi',
+        group: 'Dịch vụ',
+        product: 'Suối đêm riêng',
+        question: 'suối đêm riêng còn không',
+        answer: 'Dạ còn ạ',
+        action_flag: 'answer',
+        verify_status: 'approved',
+      },
+    ]);
 
     for (const id of ['fb_stay_a', 'fb_stay_b']) {
       await store.record({
         channel: 'fb',
         thread_id: id,
         direction: 'in',
-        message_text: 'mình muốn thuê phòng farmstay, xin giá nước nghệ lên men và siro gừng nhà',
+        message_text: 'mình muốn thuê phòng farmstay team building',
         source_msg_id: `${id}-in`,
         created_time: fresh,
       });
@@ -174,6 +238,84 @@ test('relabel learns service words only and drops catalog and sales words', asyn
       source_msg_id: 'inline-in',
       created_time: fresh,
     });
+    await store.record({
+      channel: 'fb',
+      thread_id: 'fb_rooms',
+      direction: 'in',
+      message_text: 'còn phòng không shop',
+      source_msg_id: 'rooms-in',
+      created_time: fresh,
+    });
+    await store.record({
+      channel: 'fb',
+      thread_id: 'fb_rooms',
+      direction: 'out',
+      message_text: 'Dạ còn phòng ạ',
+      sender_meta: page,
+      source_msg_id: 'rooms-out',
+      created_time: fresh,
+    });
+    await store.record({
+      channel: 'fb',
+      thread_id: 'fb_moved',
+      direction: 'in',
+      message_text: 'còn phòng farmstay không',
+      source_msg_id: 'moved-in-1',
+      created_time: fresh,
+    });
+    await store.record({
+      channel: 'fb',
+      thread_id: 'fb_moved',
+      direction: 'in',
+      message_text: 'thôi mình lấy dầu gội',
+      source_msg_id: 'moved-in-2',
+      created_time: fresh,
+    });
+    await store.record({
+      channel: 'fb',
+      thread_id: 'fb_faq',
+      direction: 'in',
+      message_text: 'mình hỏi suối đêm riêng',
+      source_msg_id: 'faq-in',
+      created_time: fresh,
+    });
+    for (const id of ['fb_sign_a', 'fb_sign_b']) {
+      await store.record({
+        channel: 'fb',
+        thread_id: id,
+        direction: 'in',
+        message_text: 'alo xyzokhang',
+        source_msg_id: `${id}-in`,
+        created_time: fresh,
+      });
+      await store.record({
+        channel: 'fb',
+        thread_id: id,
+        direction: 'out',
+        message_text: 'Dạ em chào\nLành',
+        sender_meta: page,
+        source_msg_id: `${id}-out`,
+        created_time: fresh,
+      });
+    }
+    await store.record({
+      channel: 'fb',
+      thread_id: 'fb_named',
+      direction: 'in',
+      message_text: 'alo',
+      source_msg_id: 'named-in',
+      created_time: fresh,
+    });
+    await store.record({
+      channel: 'fb',
+      thread_id: 'fb_named',
+      direction: 'out',
+      message_text: 'Dạ em chào',
+      sender_meta: { from_name: 'Lành', from_id: '111', page_id: '111' },
+      source_msg_id: 'named-out',
+      created_time: fresh,
+    });
+
     await store.setLabel('fb', 'fb_manual', { label: 'sale', source: 'manual', confidence: 1 });
     await store.record({
       channel: 'fb',
@@ -188,21 +330,35 @@ test('relabel learns service words only and drops catalog and sales words', asyn
     const result = await threadLabels.relabel();
     assert.equal(calls, 0);
     assert.equal((await store.getLabel('fb', 'fb_stay_a')).label, 'dv');
-    assert.equal((await store.getLabel('fb', 'fb_stay_a')).source, 'signature');
+    assert.equal((await store.getLabel('fb', 'fb_stay_a')).source, 'keyword');
     assert.equal((await store.getLabel('fb', 'fb_product')).label, 'sale');
     assert.equal((await store.getLabel('fb', 'fb_product')).source, 'keyword');
     assert.equal((await store.getLabel('fb', 'fb_inline')).source, 'keyword');
     assert.equal((await store.getLabel('fb', 'fb_inline')).label, 'dv');
+    assert.equal((await store.getLabel('fb', 'fb_rooms')).label, 'dv');
+    assert.equal((await store.getLabel('fb', 'fb_rooms')).source, 'keyword');
+    assert.equal((await store.getLabel('fb', 'fb_moved')).label, 'sale');
+    assert.equal((await store.getLabel('fb', 'fb_moved')).source, 'keyword');
+    assert.equal((await store.getLabel('fb', 'fb_faq')).label, 'dv');
+    assert.equal((await store.getLabel('fb', 'fb_faq')).source, 'keyword');
+    assert.equal((await store.getLabel('fb', 'fb_sign_a')).label, 'dv');
+    assert.equal((await store.getLabel('fb', 'fb_sign_a')).source, 'signature');
+    assert.equal((await store.getLabel('fb', 'fb_named')).label, 'unknown');
     assert.equal((await store.getLabel('fb', 'fb_manual')).source, 'manual');
     assert.equal((await store.getLabel('fb', 'fb_manual')).label, 'sale');
 
     const folded = result.keywords.map((word) => ops.normalizeText(word));
+    assert.equal(folded.includes('team building'), true);
+    assert.equal(folded.includes('xyzokhang'), false);
     for (const blocked of ['len men', 'nuoc nghe', 'nghe len', 'dau goi', 'xin gia', 'siro gung', 'gia', 'ship', 'dat', 'mua']) {
       assert.equal(folded.includes(blocked), false, blocked);
     }
     assert.equal(fbDvRule.blockedKeyword('xin giá'), true);
     assert.equal(fbDvRule.blockedKeyword('siro gừng'), true);
+    assert.equal(fbDvRule.hasService('suối đêm riêng'), true);
+    assert.equal([...fbDvRule.productPhrases()].some((phrase) => phrase.includes('suoi dem')), false);
     assert.equal(fbDvRule.hasService('mình muốn check-in và booking'), true);
+    assert.equal(fbDvRule.hasService('check-in lúc 14h'), false);
     assert.equal(fbDvRule.hasService('lấy nước nghệ lên men'), false);
   } finally {
     llm.setTransportForTests(null);

@@ -191,7 +191,8 @@ test('sample returns the page snippet, a short first customer line, and the prod
   assert.equal(result.signature_dv.product_only, 2);
   assert.equal(result.signature_dv.service_only, 1);
   assert.equal(result.signature_dv.both, 0);
-  assert.equal(result.rule_counts.dv.signature, 1);
+  assert.equal(result.rule_counts.dv.keyword, 1);
+  assert.equal(result.rule_counts.dv.signature, 0);
   assert.equal(result.rule_counts.dv.total, 1);
   assert.equal(result.rule_counts.sale.keyword, 2);
   assert.equal(result.rule_counts.sale.total, 2);
