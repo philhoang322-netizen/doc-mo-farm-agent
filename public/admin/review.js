@@ -2178,6 +2178,16 @@
       paintLine();
     }
 
+    function applyDefaultProvince() {
+      if (locked) return false;
+      if (province.item() || province.input.value.trim()) return false;
+      const item = window.vtpAddress && window.vtpAddress.defaultProvince && window.vtpAddress.defaultProvince();
+      if (!item) return false;
+      province.setItem(item, true);
+      paintLine();
+      return true;
+    }
+
     function setFromText(text) {
       const api = window.vtpAddress;
       if (!api || !api.loaded()) return null;
@@ -2186,6 +2196,7 @@
         || parsed.provinceText || parsed.districtText || parsed.wardText;
       if (!any) return null;
       setValue(parsed);
+      if (!(parsed.province || parsed.provinceText)) applyDefaultProvince();
       paintWarnings(false);
       return parsed;
     }
@@ -2279,10 +2290,12 @@
           wardId: f.ward_id,
           wardName: f.ward_name,
         });
+        if (!(f.province_id || f.province_name)) applyDefaultProvince();
         paintWarnings(true);
         return;
       }
       const parsed = setFromText(opts.seedText || addressSeedText(opts.draft));
+      if (!parsed) applyDefaultProvince();
       if (parsed && (parsed.province || parsed.ward || parsed.wardText)) hint.hidden = false;
       paintWarnings(true);
     }
@@ -2337,7 +2350,7 @@
       }
     }
 
-    return { box, street, value, setValue, setFromText, validateForConfirm, paintLine, mark };
+    return { box, street, value, setValue, setFromText, applyDefaultProvince, validateForConfirm, paintLine, mark };
   }
 
   function actionButton(label, kind, onClick) {
