@@ -168,10 +168,14 @@ async function getByCode(code) {
   if (!clean) return null;
   await ensure();
   if (!db.DB_ENABLED) {
+    // Same rule as the SQL path: the newest row for this code. An older
+    // row with the same code must not supply the image for a later sale.
+    let hit = null;
     for (const row of memory.values()) {
-      if (row.code === clean || row.order_code === clean) return { ...row, items: itemsOf(row.items) };
+      if (row.code !== clean && row.order_code !== clean) continue;
+      if (!hit || String(row.created_at) >= String(hit.created_at)) hit = row;
     }
-    return null;
+    return hit ? { ...hit, items: itemsOf(hit.items) } : null;
   }
   const r = await db.pool.query(
     `SELECT * FROM kiot_invoices WHERE code = $1 OR order_code = $1 ORDER BY created_at DESC LIMIT 1`,

@@ -1770,8 +1770,10 @@
     const actions = el('div', { class: 'sticky-actions' });
     actions.appendChild(moreMenu(d, locked));
     if (!locked && me.canSend) {
+      actions.appendChild(el('p', { class: 'reply-send-label', text: 'Gửi câu trả lời' }));
       const sendBtn = actionButton('Duyệt & Gửi', refund ? 'send refund-mode' : 'send', () => send());
       sendBtn.id = 'btn-approve';
+      sendBtn.setAttribute('aria-label', 'Duyệt và gửi câu trả lời');
       actions.appendChild(sendBtn);
     }
     midFoot.appendChild(actions);
@@ -2713,7 +2715,7 @@
       return 'Không đủ (còn ' + stock.available + ')';
     }
     if (stock.level === 'low') return 'Sắp hết (còn ' + stock.available + ')';
-    return 'Còn ' + stock.available;
+    return 'Còn Kho ' + stock.available;
   }
 
   let productCatalog = null;
@@ -3151,7 +3153,7 @@
         previewImg.alt = data.code_label || 'Mã HĐ: chờ tạo';
         previewNote.textContent = (data.code_label || 'Mã HĐ: chờ tạo') + ' · ' + (data.payment_label || (state.payment === 'da_tt' ? 'Đã TT' : 'Chưa TT'));
         previewBox.hidden = false;
-        if (previewBox.scrollIntoView) previewBox.scrollIntoView({ block: 'nearest' });
+        if (previewActions.scrollIntoView) previewActions.scrollIntoView({ block: 'nearest' });
       } catch (e) {
         if (e.message !== 'unauthorized') showError(e.message);
       } finally {

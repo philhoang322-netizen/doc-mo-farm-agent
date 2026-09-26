@@ -27,6 +27,7 @@ const drafts = require('../services/drafts');
 const hitlAdmin = require('../services/hitlAdmin');
 const kiotviet = require('../services/kiotviet');
 const invoiceImage = require('../services/invoiceImage');
+const invoices = require('../services/invoices');
 const emvco = require('../services/emvco');
 const messenger = require('../services/messenger');
 
@@ -35,6 +36,7 @@ const CATALOG = [
 ];
 
 const creates = [];
+let saleCode = 'HD000068';
 const realMessenger = { sendImage: messenger.sendImage, sendText: messenger.sendText };
 let imageSends = [];
 let textSends = [];
@@ -51,7 +53,7 @@ kiotviet.createSaleDocument = async (input) => {
   const qty = (input.lines || []).reduce((sum, line) => sum + Number(line.quantity || 0), 0);
   return {
     ok: true,
-    code: 'HD000068',
+    code: saleCode,
     total: 10000 * (qty || 1),
     documentType: input.documentType || 'invoice',
     branchId: 1,
@@ -133,6 +135,7 @@ test('a preview image shows Mã HĐ chờ tạo and a VCB QR that is not a docum
   assert.match(html, /Chưa TT/);
   assert.match(html, /nội dung CK: chờ tạo/);
   assert.equal(/HD\d|DH\d/.test(html), false);
+  assert.equal(/Còn Kho|Tồn/.test(html), false);
   const paid = invoiceImage.pageHtml({ ...row, amount_paid: 10000 }, '');
   assert.match(paid, /Đã TT/);
   const seen = [];
@@ -164,8 +167,50 @@ test('a preview image shows Mã HĐ chờ tạo and a VCB QR that is not a docum
   }
 });
 
+test('a later sale with the same code is the one drawn on the invoice image', async () => {
+  const seen = [];
+  const orig = invoiceImage.render;
+  invoiceImage.render = async (invoice) => {
+    seen.push(invoice);
+    return orig(invoice);
+  };
+  try {
+    await invoices.recordSale({
+      code: 'HD000077',
+      documentType: 'invoice',
+      customerName: 'Khách Xem',
+      customerCode: 'KH-CU',
+      total: 10000,
+      items: [{ name: 'Sản phẩm thử', quantity: 1, price: 10000, amount: 10000 }],
+    });
+    await invoices.recordSale({
+      code: 'HD000077',
+      documentType: 'invoice',
+      customerName: 'Khách Ảnh',
+      customerCode: 'KH-DEMO',
+      total: 20000,
+      items: [{ name: 'Sản phẩm thử', quantity: 2, price: 10000, amount: 20000 }],
+    });
+    const row = await invoices.getByCode('HD000077');
+    assert.equal(row.customer_name, 'Khách Ảnh');
+    assert.equal(row.customer_code, 'KH-DEMO');
+    assert.equal(row.total, 20000);
+    const png = await invoices.pngFor('HD000077');
+    assert.equal(png.readUInt32BE(0), 0x89504e47);
+    const drawn = seen[seen.length - 1];
+    assert.equal(drawn.code, 'HD000077');
+    assert.equal(drawn.customer_name, row.customer_name);
+    assert.equal(drawn.customer_code, row.customer_code);
+    assert.equal(drawn.total, row.total);
+    assert.equal(/Còn Kho|Tồn/.test(invoiceImage.pageHtml(drawn, '')), false);
+  } finally {
+    invoiceImage.render = orig;
+  }
+});
+
 test('preview does not create, Duyệt creates once, and Gửi khách hàng sends the real code once', async () => {
   creates.length = 0;
+  saleCode = 'HD000068';
   const server = await appServer();
   const base = `http://127.0.0.1:${server.address().port}`;
   const draft = await seedDraft();
@@ -346,7 +391,20 @@ test('the order form previews at 390 and shows Gửi khách hàng at 1024', {
   timeout: 90000,
 }, async () => {
   creates.length = 0;
+  saleCode = 'HD000168';
   installSend();
+  const drawn = [];
+  const origRender = invoiceImage.render;
+  invoiceImage.render = async (invoice) => {
+    drawn.push({
+      pending: !!invoice.pending,
+      code: invoice.code || '',
+      name: invoice.customer_name,
+      kh: invoice.customer_code || '',
+      total: Math.round(Number(invoice.total) || 0),
+    });
+    return origRender(invoice);
+  };
   await seedDraft({
     customer_name: 'Khách Ảnh',
     customer_phone: '0900000022',
@@ -387,6 +445,23 @@ test('the order form previews at 390 and shows Gửi khách hàng at 1024', {
     assert.match(note, /Mã HĐ: chờ tạo/);
     assert.match(note, /Chưa TT/);
     assert.equal(/HD\d|DH\d/.test(note), false);
+    await page.locator('.kiot-preview-actions').scrollIntoViewIfNeeded();
+    const place = await page.evaluate(() => {
+      const row = document.querySelector('.kiot-preview-actions');
+      const sticky = document.querySelector('#detail .sticky-actions');
+      const a = row.getBoundingClientRect();
+      const s = sticky.getBoundingClientRect();
+      return {
+        texts: [...row.querySelectorAll('button')].map(btn => btn.textContent.trim()),
+        above: a.bottom <= s.top + 1,
+        label: document.querySelector('.reply-send-label').textContent,
+        chat: document.getElementById('btn-approve').textContent.trim(),
+      };
+    });
+    assert.deepEqual(place.texts, ['Sửa', 'Duyệt']);
+    assert.equal(place.above, true, 'invoice Duyệt is covered by the chat reply button');
+    assert.equal(place.label, 'Gửi câu trả lời');
+    assert.equal(place.chat, 'Duyệt & Gửi');
     await page.locator('.kiot-preview').screenshot({ path: '/opt/cursor/artifacts/preview-390.png' });
 
     await page.locator('.kiot-preview button', { hasText: 'Sửa' }).click();
@@ -415,13 +490,30 @@ test('the order form previews at 390 and shows Gửi khách hàng at 1024', {
     assert.equal(locked.qty, true);
     assert.match(locked.note, /KiotViet/);
     assert.equal(locked.send, 'Gửi khách hàng');
-    assert.equal(locked.code, 'HD000068');
+    assert.equal(locked.code, 'HD000168');
+    assert.equal(imageSends.length, 0);
+    assert.equal(textSends.length, 0);
     await page.setViewportSize({ width: 1024, height: 800 });
     await page.locator('.kiot-created').scrollIntoViewIfNeeded();
     await page.waitForFunction(() => {
       const img = document.querySelector('.kiot-created img');
       return img && img.complete && img.naturalWidth > 0;
     });
+    const header = await page.evaluate(() => ({
+      name: document.querySelector('.kiot-created .id-name').textContent.trim(),
+      kh: document.querySelector('.kiot-created .id-code[title="Mã KH"]').textContent.trim(),
+      code: document.querySelector('.kiot-created .id-code[title="Mã HĐ"]').textContent.trim(),
+      note: document.querySelector('.kiot-created .kiot-created-note').textContent,
+    }));
+    const drawnFinal = drawn.filter(row => !row.pending).at(-1);
+    assert.equal(header.name, 'Khách Ảnh');
+    assert.equal(header.kh, 'KH-DEMO');
+    assert.equal(header.code, 'HD000168');
+    assert.match(header.note, /20\.000đ/);
+    assert.equal(drawnFinal.code, header.code);
+    assert.equal(drawnFinal.name, header.name);
+    assert.equal(drawnFinal.kh, header.kh);
+    assert.equal(drawnFinal.total, 20000);
     await page.locator('.kiot-created').screenshot({ path: '/opt/cursor/artifacts/final-send-1024.png' });
 
     await page.locator('#kiot-send-detail').click();
@@ -431,13 +523,14 @@ test('the order form previews at 390 and shows Gửi khách hàng at 1024', {
       btn.click();
     });
     assert.equal(imageSends.length, 1);
-    assert.match(imageSends[0].url, /HD000068/);
+    assert.match(imageSends[0].url, /HD000168/);
     assert.equal(textSends.length, 1);
-    assert.match(textSends[0].text, /HD000068/);
+    assert.match(textSends[0].text, /HD000168/);
     assert.equal(creates.length, 1);
     const sent = await page.locator('#kiot-send-detail').isDisabled();
     assert.equal(sent, true);
   } finally {
+    invoiceImage.render = origRender;
     messenger.sendImage = realMessenger.sendImage;
     messenger.sendText = realMessenger.sendText;
     delete process.env.MESSENGER_ENABLED;
