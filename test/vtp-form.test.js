@@ -182,8 +182,8 @@ test('partial address stays editable and confirm stays enabled', {
     assert.equal(calls.length, 0);
     await page.locator('button', { hasText: 'Kiểm kho' }).click();
     await page.waitForFunction(() => {
-      const btn = [...document.querySelectorAll('button')].find(node => /Xác nhận tạo/.test(node.textContent));
-      return btn && !btn.disabled;
+      const btn = document.getElementById('kiot-create-detail');
+      return btn && !btn.disabled && /Tạo đơn KiotViet/.test(btn.textContent);
     });
     assert.equal(calls.length, 0, 'stock check must not create a KiotViet document');
 
@@ -191,7 +191,7 @@ test('partial address stays editable and confirm stays enabled', {
       if (!res.url().includes('/kiotviet') || res.request().method() !== 'POST') return false;
       return (res.request().postData() || '').includes('"confirm":true');
     });
-    await page.locator('button', { hasText: 'Xác nhận tạo' }).click();
+    await page.locator('#kiot-create-detail').click();
     const created = await pending;
     assert.equal(created.status(), 200);
     assert.equal(calls.length, 1);
@@ -273,6 +273,213 @@ test('changing a parent resets and re-enables the child fields', {
     await page.locator('#kiot-district-detail').fill('Quận Mới');
     assert.equal(await page.locator('#kiot-district-detail').isDisabled(), false);
     assert.equal(await page.locator('input[name="district_name"]').inputValue(), 'Quận Mới');
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+async function openCard(page, base, who) {
+  await page.goto(base + '/admin', { waitUntil: 'domcontentloaded' });
+  await page.fill('input[name="password"]', 'secret');
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
+    page.click('button[type="submit"]'),
+  ]);
+  await page.goto(base + '/admin?pollms=60000&nhom=fb-sale&hop=pending', { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.msg-card');
+  await page.locator('.msg-card', { hasText: who }).locator('.msg').click();
+  await page.waitForSelector('#vtp-create-detail');
+  await page.waitForFunction(() => window.vtpAddress && window.vtpAddress.loaded() && window.vtpOrder);
+}
+
+async function stubClipboard(context) {
+  await context.addInitScript(() => {
+    window.__vtpCopies = [];
+    const writeText = (text) => {
+      window.__vtpCopies.push(String(text));
+      return Promise.resolve();
+    };
+    try {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText, readText: () => Promise.resolve(window.__vtpCopies[window.__vtpCopies.length - 1] || '') },
+      });
+    } catch (e) { /* clipboard stays native */ }
+  });
+}
+
+function buttonBox(page) {
+  return page.evaluate(() => {
+    const kiot = document.getElementById('kiot-create-detail');
+    const vtp = document.getElementById('vtp-create-detail');
+    const kb = kiot.getBoundingClientRect();
+    const vb = vtp.getBoundingClientRect();
+    const actions = document.querySelector('.kiot-actions');
+    return {
+      width: document.documentElement.clientWidth,
+      overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+      kiotText: kiot.textContent.trim(),
+      vtpText: vtp.textContent.trim(),
+      kiotDisabled: kiot.disabled,
+      vtpDisabled: vtp.disabled,
+      sameRow: Math.abs(kb.top - vb.top) < 8,
+      kiotH: Math.round(kb.height),
+      vtpH: Math.round(vb.height),
+      kiotW: Math.round(kb.width),
+      vtpW: Math.round(vb.width),
+      actionText: actions ? actions.innerText.replace(/\s+/g, ' ').trim() : '',
+      districtInvalid: document.getElementById('kiot-district-detail').getAttribute('aria-invalid'),
+      copies: window.__vtpCopies ? window.__vtpCopies.slice() : [],
+      toast: document.getElementById('toast') && !document.getElementById('toast').hidden
+        ? document.getElementById('toast').textContent.trim()
+        : '',
+    };
+  });
+}
+
+test('partial address keeps Kiot enabled and VTP highlights without copying', {
+  skip: !playwright || !chrome,
+  timeout: 90000,
+}, async () => {
+  calls.length = 0;
+  await drafts.createDraft({
+    channel: 'messenger',
+    sales_channel: 'farm',
+    biz_line: 'sale',
+    customer_name: 'Khách Ba',
+    customer_phone: '0900000004',
+    customer_code: 'KH-DEMO',
+    customer_user_id: 'fb_demo_buttons',
+    customer_query: 'Đặt 1 sản phẩm thử',
+    customer_intent: '[sales] đặt hàng',
+    draft_reply: 'Dạ em ghi nhận đơn thử.',
+    triage_level: 'hot',
+    approval_status: 'PENDING_REVIEW',
+    review_form: {
+      address_line: '12 Đường Thử, Phường Không Có, Hồ Chí Minh',
+    },
+  });
+  const server = await appServer();
+  const base = 'http://127.0.0.1:' + server.address().port;
+  const browser = await playwright.chromium.launch({
+    executablePath: chrome,
+    headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+  });
+  try {
+    const context = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor: 2,
+    });
+    await stubClipboard(context);
+    const page = await context.newPage();
+    await openCard(page, base, 'Khách Ba');
+    await page.waitForFunction(() => {
+      const ward = document.getElementById('kiot-ward-detail');
+      return ward && ward.value.indexOf('Không Có') !== -1;
+    });
+    await page.locator('.kiot-line input[type="search"]').fill('thử');
+    await page.waitForSelector('.kiot-hit');
+    await page.locator('.kiot-hit').first().click();
+    await page.locator('button', { hasText: 'Kiểm kho' }).click();
+    await page.waitForFunction(() => {
+      const btn = document.getElementById('kiot-create-detail');
+      return btn && !btn.disabled;
+    });
+    await page.locator('#vtp-create-detail').click();
+    await page.locator('.kiot-lead').click();
+    const box = await buttonBox(page);
+    assert.equal(box.width, 390);
+    assert.equal(box.overflow, false);
+    assert.equal(box.kiotText, 'Tạo đơn KiotViet');
+    assert.equal(box.vtpText, 'Tạo đơn VTP');
+    assert.equal(box.kiotDisabled, false);
+    assert.equal(box.vtpDisabled, false);
+    assert.equal(box.sameRow, true);
+    assert.ok(box.kiotH >= 44, 'kiot tap ' + box.kiotH);
+    assert.ok(box.vtpH >= 44, 'vtp tap ' + box.vtpH);
+    assert.ok(box.kiotW >= 120, 'kiot width ' + box.kiotW);
+    assert.ok(box.vtpW >= 100, 'vtp width ' + box.vtpW);
+    assert.equal(box.actionText, 'Kiểm kho và xem lại Tạo đơn KiotViet Tạo đơn VTP');
+    assert.equal(box.districtInvalid, 'true');
+    assert.deepEqual(box.copies, []);
+    assert.equal(box.toast, '');
+    assert.equal(calls.length, 0);
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+test('a complete address copies the VTP order and shows the toast', {
+  skip: !playwright || !chrome,
+  timeout: 90000,
+}, async () => {
+  calls.length = 0;
+  await drafts.createDraft({
+    channel: 'messenger',
+    sales_channel: 'farm',
+    biz_line: 'sale',
+    customer_name: 'Khách Bốn',
+    customer_phone: '0900000005',
+    customer_code: 'KH-DEMO',
+    customer_user_id: 'fb_demo_vtp_copy',
+    customer_query: 'Đặt 1 sản phẩm thử',
+    customer_intent: '[sales] đặt hàng',
+    draft_reply: 'Dạ em ghi nhận đơn thử.',
+    triage_level: 'hot',
+    approval_status: 'PENDING_REVIEW',
+    review_form: {
+      address_detail: '12 Đường Thử',
+      province_id: '2',
+      province_name: 'Hồ Chí Minh',
+      district_id: '51',
+      district_name: 'Bình Thạnh',
+      ward_id: '884',
+      ward_name: 'Phường 26',
+      address_line: '12 Đường Thử, Phường 26, Bình Thạnh, Hồ Chí Minh',
+    },
+  });
+  const server = await appServer();
+  const base = 'http://127.0.0.1:' + server.address().port;
+  const browser = await playwright.chromium.launch({
+    executablePath: chrome,
+    headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+  });
+  try {
+    const context = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor: 2,
+    });
+    await stubClipboard(context);
+    const page = await context.newPage();
+    await openCard(page, base, 'Khách Bốn');
+    await page.waitForFunction(() => {
+      const province = document.getElementById('kiot-province-detail');
+      const ward = document.getElementById('kiot-ward-detail');
+      return province && /Hồ Chí Minh/.test(province.value) && ward && /Phường 26/.test(ward.value);
+    });
+    await page.locator('#kiot-note-detail').fill('giao thử');
+    await page.locator('.kiot-line input[type="search"]').fill('thử');
+    await page.waitForSelector('.kiot-hit');
+    await page.locator('.kiot-hit').first().click();
+    await page.locator('#vtp-create-detail').click();
+    await page.waitForFunction(() => {
+      const toast = document.getElementById('toast');
+      return toast && !toast.hidden && /Đã chép đơn VTP/.test(toast.textContent);
+    });
+    const copied = await page.evaluate(() => (window.__vtpCopies || [])[0] || '');
+    assert.match(copied, /Người nhận: Khách Bốn/);
+    assert.match(copied, /SĐT: 0900000005/);
+    assert.match(copied, /Địa chỉ: 12 Đường Thử, Phường 26, Quận Bình Thạnh, Hồ Chí Minh/);
+    assert.match(copied, /Hàng: Sản phẩm thử × 1/);
+    assert.match(copied, /COD: 10000/);
+    assert.match(copied, /Ghi chú: giao thử/);
+    assert.equal(calls.length, 0, 'VTP copy must not create a KiotViet document');
+    const toast = await page.locator('#toast').innerText();
+    assert.match(toast, /Đã chép đơn VTP/);
   } finally {
     await browser.close();
     server.close();

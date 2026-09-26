@@ -2089,7 +2089,39 @@
     });
 
     if (window.vtpAddress) window.vtpAddress.ready().then(applyInitial).catch(() => {});
-    return { box, street, value, setValue, setFromText, validateForConfirm, paintLine };
+    function mark(keys, focusKey) {
+      const check = window.vtpAddress && window.vtpAddress.gaps
+        ? window.vtpAddress.gaps(value())
+        : { missing: [], invalid: [] };
+      const bad = new Set([].concat(check.missing || [], check.invalid || [], keys || []));
+      [
+        [province, 'province'],
+        [district, 'district'],
+        [ward, 'ward'],
+      ].forEach(([row, key]) => {
+        const on = bad.has(key);
+        row.wrap.classList.toggle('addr-bad', on);
+        row.input.setAttribute('aria-invalid', on ? 'true' : 'false');
+        row.input.disabled = locked;
+      });
+      const streetBad = bad.has('street');
+      streetWrap.classList.toggle('addr-bad', streetBad);
+      street.setAttribute('aria-invalid', streetBad ? 'true' : 'false');
+      street.disabled = locked;
+      const target = {
+        province: province.input,
+        district: district.input,
+        ward: ward.input,
+        street,
+      }[focusKey];
+      if (target && !locked) {
+        target.disabled = false;
+        target.scrollIntoView({ block: 'center', inline: 'nearest' });
+        target.focus();
+      }
+    }
+
+    return { box, street, value, setValue, setFromText, validateForConfirm, paintLine, mark };
   }
 
   function actionButton(label, kind, onClick) {
@@ -2479,12 +2511,20 @@
       dirty = true;
       nameHint.textContent = '';
       nameHint.hidden = true;
+      if (nameInput.input.value.trim()) {
+        nameInput.wrap.classList.remove('addr-bad');
+        nameInput.input.setAttribute('aria-invalid', 'false');
+      }
       rememberKiot();
     });
     phoneInput.input.addEventListener('input', () => {
       state.touched.phone = true;
       dirty = true;
       state.quote = null;
+      if (String(phoneInput.input.value || '').replace(/\D/g, '').length >= 9) {
+        phoneInput.wrap.classList.remove('addr-bad');
+        phoneInput.input.setAttribute('aria-invalid', 'false');
+      }
       scheduleKiotLookup();
       rememberKiot();
     });
@@ -2528,12 +2568,27 @@
 
     const actions = el('div', { class: 'kiot-actions' });
     const quoteBtn = el('button', { type: 'button', class: 'btn', text: 'Kiểm kho và xem lại' });
-    const confirmBtn = el('button', { type: 'button', class: 'btn btn-primary', text: 'Xác nhận tạo hoá đơn' });
+    const submitRow = el('div', { class: 'kiot-submit' });
+    const confirmBtn = el('button', {
+      type: 'button',
+      class: 'btn btn-primary',
+      id: 'kiot-create-' + pid,
+      text: 'Tạo đơn KiotViet',
+    });
+    const vtpBtn = el('button', {
+      type: 'button',
+      class: 'btn',
+      id: 'vtp-create-' + pid,
+      text: 'Tạo đơn VTP',
+    });
     confirmBtn.disabled = true;
     quoteBtn.addEventListener('click', () => runQuote(false));
     confirmBtn.addEventListener('click', () => runQuote(true));
+    vtpBtn.addEventListener('click', () => { runVtp(); });
+    submitRow.appendChild(confirmBtn);
+    submitRow.appendChild(vtpBtn);
     actions.appendChild(quoteBtn);
-    actions.appendChild(confirmBtn);
+    actions.appendChild(submitRow);
     panel.appendChild(actions);
 
     function createdCard(mark) {
@@ -2662,9 +2717,80 @@
       totals.textContent = ready ? ('Tổng ' + vnd(localTotal())) : 'Chọn sản phẩm để thấy giá KiotViet.';
     }
 
+    function vtpOrderFromForm() {
+      const priced = state.quote && state.quote.total != null ? Number(state.quote.total) : localTotal();
+      return {
+        receiver: nameInput.input.value.trim(),
+        phone: phoneInput.input.value.trim(),
+        address: addressEditor.value(),
+        items: state.lines.filter(line => (line.sku || line.name) && Number(line.quantity) > 0).map(line => ({
+          name: line.name || line.sku,
+          sku: line.sku || '',
+          quantity: Number(line.quantity) || 0,
+        })),
+        total: priced,
+        // A new KiotViet invoice uses method Transfer and totalPayment 0, so it is Chưa TT.
+        paymentStatus: 'chua_tt',
+        note: noteInput.input.value.trim(),
+      };
+    }
+
+    function showVtpGaps(missing, focus) {
+      const addrKeys = (missing || []).filter(key => key === 'province' || key === 'district' || key === 'ward' || key === 'street');
+      addressEditor.mark(addrKeys, addrKeys.indexOf(focus) >= 0 ? focus : '');
+      const nameBad = (missing || []).indexOf('name') >= 0;
+      const phoneBad = (missing || []).indexOf('phone') >= 0;
+      nameInput.wrap.classList.toggle('addr-bad', nameBad);
+      nameInput.input.setAttribute('aria-invalid', nameBad ? 'true' : 'false');
+      phoneInput.wrap.classList.toggle('addr-bad', phoneBad);
+      phoneInput.input.setAttribute('aria-invalid', phoneBad ? 'true' : 'false');
+      linesEl.classList.toggle('addr-bad', (missing || []).indexOf('items') >= 0);
+      const node = focus === 'name' ? nameInput.input : focus === 'phone' ? phoneInput.input : focus === 'items' ? linesEl.querySelector('input') : null;
+      if (node && node.focus) {
+        node.scrollIntoView({ block: 'center', inline: 'nearest' });
+        node.focus();
+      }
+    }
+
+    async function copyVtpText(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('readonly', 'readonly');
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+    }
+
+    async function runVtp() {
+      if (!window.vtpOrder) return;
+      const order = vtpOrderFromForm();
+      const env = window.VIETTELPOST_CONFIG || {};
+      const decided = window.vtpOrder.plan(order, env);
+      showVtpGaps(decided.missing, decided.focus);
+      if (!decided.ok) return;
+      if (decided.mode === 'api') {
+        try {
+          await window.vtpOrder.createOrder(order, env, window.vtpCreateOrder);
+        } catch (e) {
+          toast(e && e.code === 'VTP_NOT_WIRED' ? 'Viettel Post chưa nối' : 'Không tạo được đơn VTP');
+        }
+        return;
+      }
+      try {
+        await copyVtpText(decided.text);
+        toast('Đã chép đơn VTP');
+      } catch (e) {
+        toast('Không chép được');
+      }
+    }
+
     function paintSummary() {
       const q = state.quote;
-      confirmBtn.textContent = state.document === 'order' ? 'Xác nhận tạo đơn đặt hàng' : 'Xác nhận tạo hoá đơn';
       if (!q || q.created) {
         summary.classList.add('hidden');
         confirmBtn.disabled = true;
@@ -2697,6 +2823,9 @@
     function paintLines() {
       linesEl.textContent = '';
       linesEl.dataset.count = String(state.lines.length);
+      if (state.lines.some(line => (line.sku || line.name) && Number(line.quantity) > 0)) {
+        linesEl.classList.remove('addr-bad');
+      }
       state.lines.forEach((line, index) => linesEl.appendChild(lineRow(line, index)));
       paintTotals();
       paintSummary();
