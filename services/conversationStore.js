@@ -450,7 +450,7 @@ async function attributionSummary() {
     if (meta.from_name) names.set(meta.from_name, (names.get(meta.from_name) || 0) + 1);
     for (const tag of meta.tags || []) tags.set(tag, (tags.get(tag) || 0) + 1);
     if (meta.app_id) apps.set(meta.app_id, (apps.get(meta.app_id) || 0) + 1);
-    if (lanhMark.textHasLanh(row.message_text)) signatureLanh += 1;
+    if (lanhMark.isSignoff(row.message_text)) signatureLanh += 1;
   }
   const pack = (map) => [...map.entries()]
     .map(([key, count]) => ({ key, count }))

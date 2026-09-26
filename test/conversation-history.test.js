@@ -58,7 +58,7 @@ function threadOne() {
         },
         {
           id: 'm.sign',
-          message: `Giữ phòng giúp anh nha\nLành ${SECRET_BODY}`,
+          message: `Giữ phòng giúp anh nha ${SECRET_BODY}\nLành`,
           from: { id: '111', name: 'Dốc Mơ Farm' },
           created_time: fresh,
         },

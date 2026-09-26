@@ -27,8 +27,8 @@ function textHasLanh(text) {
 }
 
 /**
- * Same predicate as textHasLanh, with the original substring and offsets.
- * Read-only. Does not change what counts as a match.
+ * Same token predicate as textHasLanh, with the original substring and offsets.
+ * A labeling sign-off is narrower: see isSignoff.
  */
 function findLanhTokens(text) {
   const src = String(text || '');
@@ -46,9 +46,45 @@ function findLanhTokens(text) {
   return hits;
 }
 
+const SIGNOFF_PARTICLES = new Set(['a', 'nha', 'nhe', 'aa']);
+
+function rawTokens(text) {
+  return String(text || '').match(/[\p{L}\p{N}]+/gu) || [];
+}
+
+function withoutTrailingParticles(words) {
+  const core = words.slice();
+  while (core.length && SIGNOFF_PARTICLES.has(ops.normalizeText(core[core.length - 1]))) core.pop();
+  return core;
+}
+
+function lineIsName(line) {
+  const core = withoutTrailingParticles(rawTokens(line));
+  return core.length === 1 && isLanhToken(core[0]);
+}
+
+/**
+ * Sign-off only. The name is the last word (punctuation and emoji ignored,
+ * and ạ / nha / nhé / ạa may follow it), or a line that is only the name
+ * plus those particles. An inline mention does not count. A lowercase
+ * "lành" counts only on a name-only line, so "hiền lành" and "lành tính" do not.
+ */
+function isSignoff(text) {
+  const src = String(text || '');
+  if (!src.trim()) return false;
+  if (src.split('\n').some(lineIsName)) return true;
+  const core = withoutTrailingParticles(rawTokens(src));
+  if (!core.length) return false;
+  const last = core[core.length - 1];
+  if (!isLanhToken(last)) return false;
+  if (last === last.toLowerCase()) return false;
+  return true;
+}
+
 module.exports = {
   tokens,
   isLanhToken,
   textHasLanh,
   findLanhTokens,
+  isSignoff,
 };
