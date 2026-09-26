@@ -2079,7 +2079,9 @@
       row.setText('', true);
       enableCombo(row);
     }
+    let provinceTouched = !!(opts.parts && opts.parts.provinceTouched);
     province.input.addEventListener('input', () => {
+      provinceTouched = true;
       resetChild(district);
       resetChild(ward);
       paintLine();
@@ -2098,6 +2100,7 @@
       const api = window.vtpAddress;
       hint.hidden = true;
       if (which === province) {
+        provinceTouched = true;
         const same = province.item() && province.item().id === item.id;
         province.setItem(item);
         if (!same) {
@@ -2179,12 +2182,13 @@
     }
 
     function applyDefaultProvince() {
-      if (locked) return false;
+      if (locked || provinceTouched) return false;
       if (province.item() || province.input.value.trim()) return false;
       const item = window.vtpAddress && window.vtpAddress.defaultProvince && window.vtpAddress.defaultProvince();
       if (!item) return false;
       province.setItem(item, true);
       paintLine();
+      if (opts.onDefault) opts.onDefault();
       return true;
     }
 
@@ -2265,10 +2269,20 @@
       ));
     }
 
+    let initialSettled = false;
+    let initialFrames = 0;
+    let initialWaits = 0;
     function applyInitial() {
-      if (!box.isConnected || !window.vtpAddress || !window.vtpAddress.loaded()) return;
+      if (initialSettled) return;
+      if (!box.isConnected || !window.vtpAddress || !window.vtpAddress.loaded()) {
+        scheduleInitial();
+        return;
+      }
+      initialSettled = true;
+      if (opts.parts && opts.parts.provinceTouched) provinceTouched = true;
       if (savedParts(opts.parts)) {
         setValue(opts.parts);
+        if (!(opts.parts.provinceId || opts.parts.provinceName || opts.parts.provinceText)) applyDefaultProvince();
         paintWarnings(true);
         return;
       }
@@ -2300,6 +2314,32 @@
       paintWarnings(true);
     }
 
+    function scheduleInitial() {
+      if (initialSettled) return;
+      const kick = () => {
+        if (initialSettled) return;
+        if (!box.isConnected) {
+          initialFrames += 1;
+          if (initialFrames > 120) return;
+          if (typeof requestAnimationFrame === 'function') requestAnimationFrame(kick);
+          else setTimeout(kick, 16);
+          return;
+        }
+        const api = window.vtpAddress;
+        if (!api) return;
+        if (!api.loaded()) {
+          initialWaits += 1;
+          if (initialWaits > 8) return;
+          const wait = api.ready ? api.ready() : Promise.reject(new Error('no catalog'));
+          wait.then(() => applyInitial()).catch(() => setTimeout(scheduleInitial, 400));
+          return;
+        }
+        applyInitial();
+      };
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(kick);
+      else setTimeout(kick, 0);
+    }
+
     document.addEventListener('click', function onDoc(ev) {
       if (!box.isConnected) {
         document.removeEventListener('click', onDoc);
@@ -2312,7 +2352,7 @@
       }
     });
 
-    if (window.vtpAddress) window.vtpAddress.ready().then(applyInitial).catch(() => {});
+    scheduleInitial();
     function mark(keys, focusKey) {
       const check = window.vtpAddress && window.vtpAddress.gaps
         ? window.vtpAddress.gaps(value())
@@ -2350,7 +2390,18 @@
       }
     }
 
-    return { box, street, value, setValue, setFromText, applyDefaultProvince, validateForConfirm, paintLine, mark };
+    return {
+      box,
+      street,
+      value,
+      setValue,
+      setFromText,
+      applyDefaultProvince,
+      provinceTouched: () => provinceTouched,
+      validateForConfirm,
+      paintLine,
+      mark,
+    };
   }
 
   function actionButton(label, kind, onClick) {
@@ -2661,6 +2712,58 @@
     return 'Còn ' + stock.available;
   }
 
+  let productCatalog = null;
+  let productCatalogTask = null;
+  function loadProductCatalog() {
+    if (productCatalog) return Promise.resolve(productCatalog);
+    if (!productCatalogTask) {
+      productCatalogTask = api('/admin/api/kiotviet/products?catalog=1').then(data => {
+        productCatalog = Array.isArray(data.products) ? data.products : [];
+        return productCatalog;
+      }).catch(err => {
+        productCatalogTask = null;
+        throw err;
+      });
+    }
+    return productCatalogTask;
+  }
+
+  function foldProductQuery(s) {
+    return String(s || '')
+      .normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/đ/gi, 'd')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '');
+  }
+
+  function productQueryPhrase(text) {
+    const chunk = String(text || '').split(/[\n;]/).pop() || '';
+    return chunk.split(',').pop().replace(/^\s*\d+(?:[.,]\d+)?\s*(?:x\s+)?/i, '').trim();
+  }
+
+  function matchProducts(text, products) {
+    const phrase = productQueryPhrase(text);
+    const key = foldProductQuery(phrase);
+    if (key.length < 2) return [];
+    const upper = phrase.toUpperCase();
+    const hits = [];
+    const seen = new Set();
+    for (const raw of products || []) {
+      if (!raw) continue;
+      const nameKey = foldProductQuery(raw.name || raw.fullName || '');
+      const code = String(raw.code || '').toUpperCase();
+      const codeHit = code && (code.includes(upper) || code.includes(key.toUpperCase()));
+      const nameHit = nameKey && nameKey.includes(key);
+      if (!codeHit && !nameHit) continue;
+      const id = String(raw.id != null ? raw.id : code || nameKey);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      hits.push(raw);
+      if (hits.length >= 8) break;
+    }
+    return hits;
+  }
+
   function kiotPanel(d, prefix) {
     const pid = prefix ? String(prefix) : 'detail';
     const cardSnap = ensureCard(d);
@@ -2694,11 +2797,22 @@
       placeholder: '1 xuc xich, 2 nước nghệ lên men',
       'aria-label': 'Nhập nhanh sản phẩm và số lượng',
     });
-    quick.addEventListener('input', () => { state.touched.quick = true; dirty = true; state.quote = null; rememberKiot(); });
+    quick.addEventListener('input', () => {
+      state.touched.quick = true;
+      dirty = true;
+      state.quote = null;
+      rememberKiot();
+      scheduleSuggest(false);
+    });
     autoGrow(quick, 2);
+    const suggestBox = el('div', { class: 'kiot-suggest', hidden: 'hidden' });
+    const lookupBtn = el('button', { type: 'button', class: 'btn btn-sm kiot-lookup', text: 'Tra sản phẩm' });
+    lookupBtn.addEventListener('click', () => scheduleSuggest(true));
     const quickBtn = el('button', { type: 'button', class: 'btn btn-sm', text: 'Điền vào đơn' });
     quickBtn.addEventListener('click', () => runQuick());
     panel.appendChild(quick);
+    panel.appendChild(suggestBox);
+    panel.appendChild(lookupBtn);
     const quickMsg = el('p', { class: 'kiot-msg', hidden: 'hidden' });
     panel.appendChild(quickMsg);
 
@@ -2761,6 +2875,7 @@
       parts: rawKiot && rawKiot.addressParts,
       seedText: rawKiot && rawKiot.address && !(rawKiot.addressParts) ? rawKiot.address : addressSeedText(d),
       onInput() { state.touched.address = true; rememberKiot(); },
+      onDefault() { rememberKiot(); },
     });
     const addrInput = { wrap: addressEditor.box, input: addressEditor.street };
     nameInput.input.addEventListener('input', () => {
@@ -2930,6 +3045,7 @@
         touched: state.touched,
       });
       s.kiot.addressParts = addressEditor.value();
+      s.kiot.addressParts.provinceTouched = addressEditor.provinceTouched();
       s.kiotDirty = true;
       persistOrder(d.id, s.kiot);
     }
@@ -3270,6 +3386,66 @@
         line.searchPhase = 'error';
         paintSearch(box, line, index);
       }
+    }
+
+    let suggestTimer = null;
+    function paintSuggestions(products, note) {
+      suggestBox.textContent = '';
+      if (note) suggestBox.appendChild(el('p', { class: 'kiot-search-note', text: note }));
+      (products || []).forEach(product => {
+        const btn = el('button', { type: 'button', class: 'kiot-hit', text: hitText(product) });
+        btn.addEventListener('click', () => {
+          state.lines = window.kiotLines
+            ? window.kiotLines.addProduct(state.lines, product)
+            : state.lines.concat([{
+              sku: product.code || product.sku || '',
+              name: product.name || '',
+              unit: product.unit || '',
+              price: product.price != null ? Number(product.price) : null,
+              quantity: 1,
+              phrase: '',
+              status: 'matched',
+              warning: '',
+              stock: product.available != null ? { level: null, available: product.available } : null,
+              candidates: [],
+              query: '',
+              hits: [],
+              searchPhase: 'idle',
+            }]);
+          state.quote = null;
+          dirty = true;
+          suggestBox.hidden = true;
+          paintLines();
+          rememberKiot();
+        });
+        suggestBox.appendChild(btn);
+      });
+      suggestBox.hidden = !note && !(products && products.length);
+    }
+
+    function scheduleSuggest(immediate) {
+      clearTimeout(suggestTimer);
+      const run = async () => {
+        const phrase = productQueryPhrase(quick.value);
+        if (foldProductQuery(phrase).length < 2) {
+          paintSuggestions([], '');
+          return;
+        }
+        lookupBtn.disabled = true;
+        try {
+          const products = matchProducts(quick.value, await loadProductCatalog());
+          if (!panel.isConnected) return;
+          if (productQueryPhrase(quick.value) !== phrase) return;
+          paintSuggestions(products, products.length ? '' : 'Không thấy sản phẩm');
+        } catch (e) {
+          if (!panel.isConnected) return;
+          paintSuggestions([], e.message === 'unauthorized' ? '' : 'Chưa tải được danh mục sản phẩm');
+        } finally {
+          lookupBtn.disabled = false;
+        }
+      };
+      if (immediate) run();
+      else suggestTimer = setTimeout(run, 250);
     }
 
     async function runQuick() {

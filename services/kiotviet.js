@@ -169,11 +169,51 @@ async function findProduct({ sku, name }) {
 // ------------------------------------------------------------------
 // Customers
 // ------------------------------------------------------------------
+function customerHasAddress(row) {
+  if (!row || typeof row !== 'object') return false;
+  return [row.address, row.locationName, row.wardName].some(part => String(part || '').trim());
+}
+
+function customerCreatedAt(row) {
+  const raw = row && (row.createdDate || row.createdDateUtc);
+  const t = Date.parse(raw || '');
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * Several Kiot customers can share one phone. Prefer any row that has an
+ * address. Inside that group, take the newest createdDate. If nobody has an
+ * address, take the newest overall. Missing dates and ties stay deterministic.
+ */
+function pickCustomer(rows) {
+  const list = (Array.isArray(rows) ? rows : []).filter(row => row && typeof row === 'object');
+  if (!list.length) return null;
+  const addressed = list.filter(customerHasAddress);
+  const pool = addressed.length ? addressed : list;
+  const ranked = pool.slice().sort((a, b) => {
+    const ta = customerCreatedAt(a);
+    const tb = customerCreatedAt(b);
+    if (ta == null && tb != null) return 1;
+    if (tb == null && ta != null) return -1;
+    if (ta != null && tb != null && ta !== tb) return tb - ta;
+    const idA = Number(a.id);
+    const idB = Number(b.id);
+    const aOk = Number.isFinite(idA);
+    const bOk = Number.isFinite(idB);
+    if (aOk && bOk && idA !== idB) return idB - idA;
+    if (aOk !== bOk) return aOk ? -1 : 1;
+    return String(a.code || '').localeCompare(String(b.code || ''));
+  });
+  return ranked[0];
+}
+
 /** Lookup only. Does not create a KiotViet customer. */
 async function findCustomerByPhone(phone) {
   if (!phone || !enabled()) return null;
-  const found = await call('get', '/customers', { params: { contactNumber: phone, pageSize: 1 } });
-  return found?.data?.[0] || null;
+  const found = await module.exports.call('get', '/customers', {
+    params: { contactNumber: phone, pageSize: 20 },
+  });
+  return pickCustomer(found?.data || []);
 }
 
 /** Recent invoices for one KiotViet customer id. Newest first when the API sorts. */
@@ -247,8 +287,8 @@ async function findOrCreateCustomer({ name, phone, comments, customerId, custome
   }
   if (!phone) return null;
   try {
-    const found = await call('get', '/customers', { params: { contactNumber: phone, pageSize: 1 } });
-    if (found?.data?.length) return found.data[0];
+    const picked = await module.exports.findCustomerByPhone(phone);
+    if (picked) return picked;
   } catch (e) {
     console.warn('KiotViet customer lookup failed:', e.message);
   }
@@ -961,6 +1001,7 @@ module.exports = {
   getOnHand, sellableFromInventories,
   searchProducts, rankProducts, aliasFor, saleBranchId, salePayload, createSaleDocument,
   listProductsForMatch, findCustomerByPhone, findOrCreateCustomer, getCustomer,
+  pickCustomer, customerHasAddress,
   ensureSaleCustomerCode, listInvoicesByCustomer,
   explainKiotError, paymentFromInvoice, readInvoicePayment, issueInvoiceFromOrder,
   cleanCustomerCode, MISSING_CUSTOMER_CODE, call,

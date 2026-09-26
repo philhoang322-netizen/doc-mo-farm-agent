@@ -26,6 +26,7 @@ const faqAdmin = require('./faqAdmin');
 const faqBody = require('./faqBody');
 
 const PUBLIC = path.join(__dirname, '..', 'public', 'admin');
+const ASSET_REV = '42';
 
 const fails = new Map();
 
@@ -204,10 +205,13 @@ async function page(req, res) {
   const boot = province
     ? '<script>window.DEFAULT_PROVINCE=' + JSON.stringify(province).replace(/</g, '\\u003c') + ';</script>\n'
     : '';
-  res.type('html').send(brand.applyTemplate(html.replace(
+  const busted = html.replace(
     '<script src="/admin/vtp-address.js"></script>',
     boot + '<script src="/admin/vtp-address.js"></script>',
-  )));
+  ).replace(/src="(\/admin\/[^"]+\.js)"/g, (match, src) => (
+    src.includes('?') ? match : `src="${src}?v=${ASSET_REV}"`
+  ));
+  res.type('html').send(brand.applyTemplate(busted));
 }
 
 async function login(req, res) {
@@ -249,8 +253,9 @@ function logout(req, res) {
 
 function sendAsset(name, type) {
   return (req, res) => {
+    res.set('Cache-Control', 'no-store');
     res.type(type);
-    res.sendFile(path.join(PUBLIC, name));
+    res.sendFile(path.join(PUBLIC, name), { cacheControl: false });
   };
 }
 
@@ -655,6 +660,10 @@ async function rosterSave(req, res) {
 async function kiotSearch(req, res) {
   try {
     if (!kiotviet.enabled()) return res.status(503).json({ error: 'KiotViet chưa cấu hình' });
+    if (String(req.query.catalog || '') === '1') {
+      const products = await kiotviet.listProductsForMatch();
+      return res.json({ products });
+    }
     const q = String(req.query.q || '').slice(0, 80);
     const products = await kiotviet.searchProducts(q, 8);
     res.json({ products });

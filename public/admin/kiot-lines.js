@@ -84,6 +84,18 @@
     return cloneLines(lines).concat([blankLine()]);
   }
 
+  /** Put the picked product on the first empty line, or append it. Quantity stays 1. */
+  function addProduct(lines, product) {
+    const next = cloneLines(lines);
+    let idx = next.findIndex(line => !line.sku && !String(line.name || '').trim());
+    if (idx < 0) {
+      next.push(blankLine());
+      idx = next.length - 1;
+    }
+    fillProduct(next[idx], product, 1);
+    return next;
+  }
+
   function removeLine(lines, index) {
     const next = cloneLines(lines).filter((_, i) => i !== index);
     return next.length ? next : [blankLine()];
@@ -219,6 +231,7 @@
     blankLine,
     cloneLines,
     addLine,
+    addProduct,
     removeLine,
     chooseProduct,
     applyQuick,

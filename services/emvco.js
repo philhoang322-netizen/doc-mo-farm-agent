@@ -83,11 +83,37 @@ function valid(payload) {
   return crc16(s.slice(0, -4)) === s.slice(-4);
 }
 
+function parseTlv(input) {
+  const s = String(input || '');
+  const out = [];
+  let i = 0;
+  while (i + 4 <= s.length) {
+    const id = s.slice(i, i + 2);
+    const len = Number(s.slice(i + 2, i + 4));
+    if (!/^\d{2}$/.test(id) || !Number.isFinite(len)) break;
+    const value = s.slice(i + 4, i + 4 + len);
+    if (value.length !== len) break;
+    out.push({ id, value });
+    i += 4 + len;
+  }
+  return out;
+}
+
+/** Transfer description from tag 62 / subtag 08. Empty when the payload is not EMVCo. */
+function readAddInfo(payload) {
+  const extra = parseTlv(payload).find(field => field.id === '62');
+  if (!extra) return '';
+  const note = parseTlv(extra.value).find(field => field.id === '08');
+  return note ? note.value : '';
+}
+
 module.exports = {
   crc16,
   tlv,
   buildPayload,
   valid,
+  parseTlv,
+  readAddInfo,
   VCB_BIN,
   ACCOUNT,
   ACCOUNT_NAME,

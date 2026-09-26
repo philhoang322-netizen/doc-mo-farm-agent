@@ -21,6 +21,24 @@ const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 
 const linesApi = require('../public/admin/kiot-lines');
+
+test('a picked suggestion fills quantity 1 and leaves an existing line', () => {
+  const first = linesApi.addProduct([linesApi.blankLine()], {
+    code: 'NN-DEMO', name: 'Nước nghệ thử', price: 20000, unit: 'chai', available: 8,
+  });
+  assert.equal(first.length, 1);
+  assert.equal(first[0].sku, 'NN-DEMO');
+  assert.equal(first[0].quantity, 1);
+  assert.equal(first[0].price, 20000);
+  assert.equal(first[0].stock.available, 8);
+  const second = linesApi.addProduct(first, {
+    code: 'SP-DEMO', name: 'Sản phẩm thử', price: 10000, available: 3,
+  });
+  assert.equal(second.length, 2);
+  assert.equal(second[0].sku, 'NN-DEMO');
+  assert.equal(second[1].sku, 'SP-DEMO');
+  assert.equal(second[1].quantity, 1);
+});
 const quick = require('../services/quickEntry');
 const kiotviet = require('../services/kiotviet');
 const kiotInbox = require('../services/kiotInbox');

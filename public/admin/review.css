@@ -968,12 +968,14 @@ body.inbox .msg-card .msg-customer.is-clamped {
 }
 body.inbox .msg-card .msg-foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   min-width: 0;
 }
-body.inbox .msg-card .msg-time { flex: 0 0 auto; font-size: 13px; }
+body.inbox .msg-card .msg-time { flex: 1 1 auto; font-size: 13px; white-space: nowrap; }
 body.inbox .msg-card .tags {
+  flex: 1 1 100%;
   flex-wrap: wrap;
   align-content: flex-start;
   overflow: hidden;
@@ -985,9 +987,14 @@ body.inbox .msg-card .tags {
 body.inbox .msg-card .tag-prev,
 body.inbox .msg-card .tag-refund { order: -1; }
 body.inbox .msg-card .tag {
+  flex: 0 0 auto;
   font-size: 12px;
   line-height: 18px;
   padding: 0 6px;
+  white-space: nowrap;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
 }
 body.hitl .msg-card.selected { background: var(--green-soft); box-shadow: inset 3px 0 0 var(--green); }
 body.hitl .msg {
@@ -1400,6 +1407,15 @@ body.hitl .back { display: inline-flex; margin: 0 0 var(--space-2); background: 
 body.hitl .detail-meta { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin-bottom: var(--space-3); min-width: 0; }
 body.hitl .name-row { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 8px; margin-right: 0; min-width: 0; flex: 1 1 100%; overflow: hidden; }
 body.hitl .name-row .msg-names { display: flex; flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 2px; min-width: 0; overflow: hidden; }
+body.inbox .pane-mid .name-row,
+body.inbox .pane-mid .name-row .msg-names { overflow: visible; }
+body.inbox .pane-mid .id-row { flex-wrap: wrap; overflow: hidden; }
+body.inbox .pane-mid .id-when {
+  flex: 1 0 100%;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+}
 body.hitl .detail-meta h3 { margin: 0; font-size: 20px; font-weight: 700; }
 body.hitl .cust-code { font-size: 15px; font-weight: 650; color: var(--muted); }
 body.hitl .want-box {
@@ -1616,7 +1632,10 @@ body.hitl .kiot-qty input { width: 7rem; margin: 0; font-size: 16px; min-height:
 body.hitl .kiot-meta { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: var(--space-2); font-size: 15px; }
 body.hitl .kiot-stock.bad { color: var(--red); font-weight: 700; }
 body.hitl .kiot-stock.warn { color: var(--orange); font-weight: 700; }
-body.hitl .kiot-results { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; position: relative; z-index: 5; }
+body.hitl .kiot-results,
+body.hitl .kiot-suggest { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; position: relative; z-index: 5; }
+body.hitl .kiot-suggest { margin: 0 0 8px; }
+body.hitl .kiot-suggest[hidden] { display: none; }
 body.hitl .kiot-search-note { margin: 4px 0 0; color: var(--muted); font-size: 14px; font-weight: 650; }
 body.hitl button.kiot-hit {
   text-align: left;
@@ -2261,6 +2280,12 @@ body.inbox .kiot-doc-head {
   gap: 8px;
   min-height: 44px;
   margin: 0 0 8px;
+}
+body.inbox .kiot-lookup {
+  width: auto;
+  min-height: 44px;
+  margin: 0 0 8px;
+  padding: 0 12px;
 }
 body.inbox .kiot-doc-head .btn {
   width: auto;
