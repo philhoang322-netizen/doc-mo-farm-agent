@@ -216,6 +216,7 @@
       discount: src.discount == null ? '0' : String(src.discount),
       ship: src.ship == null ? '0' : String(src.ship),
       note: src.note || '',
+      payment: src.payment === 'da_tt' ? 'da_tt' : 'chua_tt',
       touched: Object.assign({}, src.touched || {}),
     };
   }

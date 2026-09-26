@@ -26,7 +26,7 @@ const faqAdmin = require('./faqAdmin');
 const faqBody = require('./faqBody');
 
 const PUBLIC = path.join(__dirname, '..', 'public', 'admin');
-const ASSET_REV = '42';
+const ASSET_REV = '43';
 
 const fails = new Map();
 
@@ -832,6 +832,141 @@ async function kiotIssue(req, res) {
   }
 }
 
+function previewMoney(value) {
+  if (value == null || value === '') return 0;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 1e12) return null;
+  return Math.round(n);
+}
+
+function previewLines(raw) {
+  if (!Array.isArray(raw) || !raw.length) return { error: 'Cần ít nhất một dòng hàng' };
+  if (raw.length > 30) return { error: 'Tối đa 30 dòng hàng' };
+  const lines = [];
+  for (const row of raw) {
+    if (!row || typeof row !== 'object') return { error: 'Dòng hàng không hợp lệ' };
+    const name = String(row.name || row.product_name || '').replace(/\0/g, '').trim().slice(0, 200);
+    const qty = Number(row.quantity);
+    const price = Number(row.price);
+    if (!name || !Number.isFinite(qty) || qty <= 0) continue;
+    if (!Number.isFinite(price) || price < 0) return { error: 'Giá dòng hàng không hợp lệ' };
+    lines.push({
+      name,
+      quantity: qty,
+      price: Math.round(price),
+      amount: Math.round(price * qty),
+    });
+  }
+  if (!lines.length) return { error: 'Cần ít nhất một dòng hàng' };
+  return { lines };
+}
+
+async function kiotPreview(req, res) {
+  try {
+    const p = await who(req);
+    if (!access.canKiot(p)) return deny(res);
+    const existing = await drafts.getDraft(req.params.id);
+    if (!existing || !access.canSee(p, existing)) return res.status(404).json({ error: 'Không thấy bản nháp' });
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+    const parsed = previewLines(body.lines);
+    if (parsed.error) return res.status(400).json({ error: parsed.error, created: false });
+    const discount = previewMoney(body.discount);
+    const shipping = previewMoney(body.shipping_fee);
+    if (discount == null || shipping == null) {
+      return res.status(400).json({ error: 'Giảm giá hoặc phí ship không hợp lệ', created: false });
+    }
+    const subtotal = parsed.lines.reduce((sum, line) => sum + line.amount, 0);
+    const total = Math.max(0, subtotal - discount + shipping);
+    const paid = body.payment === 'da_tt' ? total : 0;
+    const model = {
+      pending: true,
+      customer_name: String(body.customer_name || existing.customer_name || 'Khách').replace(/\0/g, '').trim().slice(0, 200) || 'Khách',
+      customer_code: String(body.customer_code || existing.customer_code || '').replace(/\0/g, '').trim().slice(0, 40),
+      customer_phone: String(body.phone || existing.customer_phone || '').replace(/\0/g, '').trim().slice(0, 20),
+      delivery_address: String(body.address || '').replace(/\0/g, '').trim().slice(0, 300),
+      items: parsed.lines,
+      total,
+      amount_paid: paid,
+      created_at: new Date().toISOString(),
+    };
+    const png = await invoiceImage.render(model);
+    res.json({
+      ok: true,
+      created: false,
+      pending: true,
+      code_label: invoiceImage.PENDING_CODE,
+      payment_label: invoiceImage.payLabel(model),
+      image: `data:image/png;base64,${png.toString('base64')}`,
+    });
+  } catch (e) {
+    console.error('Invoice preview failed:', e.message);
+    res.status(500).json({ error: 'Không xem trước được hoá đơn', created: false });
+  }
+}
+
+const invoiceSends = new Map();
+
+function queueInvoiceSend(id, fn) {
+  const prev = invoiceSends.get(id) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  invoiceSends.set(id, next.then(() => {}, () => {}));
+  return next;
+}
+
+async function kiotSendInvoice(req, res) {
+  try {
+    const p = await who(req);
+    if (!access.canKiot(p) || !(await access.canSend(p))) return deny(res);
+    const existing = await drafts.getDraft(req.params.id);
+    if (!existing || !access.canSee(p, existing)) return res.status(404).json({ error: 'Không thấy bản nháp' });
+    const result = await queueInvoiceSend(req.params.id, () => deliverInvoiceImage(req));
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.error('Invoice send failed:', e.message);
+    res.status(500).json({ error: 'Không gửi được hoá đơn', sent: false });
+  }
+}
+
+async function deliverInvoiceImage(req) {
+  const draft = await drafts.getDraft(req.params.id);
+  if (!draft) return { status: 404, body: { error: 'Không thấy bản nháp', sent: false } };
+  const form = draft.review_form || {};
+  const code = String(draft.invoice_code || '').trim();
+  if (form.invoice_image_sent_at) {
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        already: true,
+        sent: false,
+        code,
+        image_url: draft.qr_image_url || null,
+        page_url: form.invoice_page_url || null,
+      },
+    };
+  }
+  const result = await drafts.sendInvoiceToCustomer(draft);
+  if (!(result.sent || result.image_sent)) return { status: 200, body: result };
+  const nextForm = { ...(draft.review_form || {}), invoice_image_sent_at: new Date().toISOString() };
+  if (result.page_url) nextForm.invoice_page_url = result.page_url;
+  let saved = null;
+  try {
+    const updated = await drafts.updateDraft(draft.id, {
+      review_form: nextForm,
+      actor_name: actorNameFrom(req),
+    }, { actorName: actorNameFrom(req) });
+    saved = updated && updated.draft;
+  } catch (err) {
+    console.error('Invoice send stamp failed:', err.message);
+  }
+  if (result.sent) {
+    try { await invoices.markSent(code, actorNameFrom(req)); } catch (err) {
+      console.error('Invoice sent mark failed:', err.message);
+    }
+  }
+  return { status: 200, body: { ...result, draft: saved } };
+}
+
 async function kiotCreate(req, res) {
   try {
     const p = await who(req);
@@ -1165,6 +1300,8 @@ function mount(app) {
   app.post('/admin/api/kiotviet/quick-entry', requireApi, kiotQuick);
   app.get('/admin/api/drafts/:id/kiotviet', requireApi, kiotPrefill);
   app.post('/admin/api/drafts/:id/kiotviet', requireApi, kiotCreate);
+  app.post('/admin/api/drafts/:id/kiotviet/preview', requireApi, kiotPreview);
+  app.post('/admin/api/drafts/:id/kiotviet/send', requireApi, kiotSendInvoice);
   app.post('/admin/api/drafts/:id/kiotviet/invoice', requireApi, kiotIssue);
   app.post('/admin/api/customers/resume', requireApi, resumeCustomer);
   app.get('/admin/api/drafts/:id/customer', requireApi, customerCard);

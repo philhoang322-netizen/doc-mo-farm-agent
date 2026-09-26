@@ -1597,6 +1597,18 @@ body.hitl .kiot-created {
 body.hitl .kiot-created .id-row { width: 100%; }
 body.hitl .kiot-created-note { margin: 4px 0 0; color: var(--muted); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 body.hitl .kiot-invoice-img { width: 100%; height: auto; margin-top: 8px; border-radius: 8px; background: #fff; }
+body.hitl .kiot-pay { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
+body.hitl .kiot-preview-open { width: 100%; margin: 0 0 8px; }
+body.hitl .kiot-preview { background: #fff; border-radius: var(--radius-md); padding: var(--space-3); margin: 0 0 var(--space-3); }
+body.hitl .kiot-preview[hidden] { display: none; }
+body.hitl .kiot-preview-note { margin: 8px 0 0; color: var(--muted); font-size: 15px; white-space: normal; }
+body.hitl .kiot-preview-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+body.hitl .kiot-preview-actions .btn { flex: 1 1 8em; }
+body.hitl .kiot-lock-note { margin: 4px 0 0; color: var(--muted); font-size: 14px; white-space: normal; }
+body.hitl .kiot-send { width: 100%; margin-top: 8px; font-weight: 700; }
+body.hitl .kiot-fallback { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+body.hitl .kiot-fallback .btn { flex: 1 1 8em; text-align: center; text-decoration: none; }
+body.hitl .kiot-send-status { margin: 8px 0 0; font-size: 14px; white-space: normal; overflow: visible; }
 body.hitl .kiot-lead { margin: 0 0 var(--space-3); color: var(--muted); font-size: 15px; }
 body.hitl .kiot-quick-row { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-2); }
 body.hitl textarea.kiot-quick { min-height: 72px; width: 100%; font-size: 16px; }

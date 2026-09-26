@@ -604,6 +604,7 @@ async function prepareOrCreate(id, body, actorName) {
       kiot_total: String(created.total),
       kiot_kind: created.documentType || kind,
     };
+    if (isInvoice && link) nextForm.invoice_page_url = link;
     const patch = {
       invoice_code: created.code,
       kiot_summary: summary,
@@ -766,6 +767,7 @@ async function issueInvoice(id, actorName) {
       kiot_total: String(savedRow.total),
       kiot_kind: 'invoice',
     };
+    if (link) nextForm.invoice_page_url = link;
     const patch = {
       invoice_code: issued.code,
       kiot_summary: `${issued.code} · ${formatVnd(savedRow.total)}`,
