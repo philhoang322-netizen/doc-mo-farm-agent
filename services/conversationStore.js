@@ -7,6 +7,7 @@
  */
 const crypto = require('crypto');
 const db = require('./database');
+const fbNotices = require('../public/admin/fb-notices');
 
 const memory = new Map();
 const labels = new Map();
@@ -97,6 +98,22 @@ function cleanMeta(meta) {
   if (Array.isArray(src.tags) && src.tags.length) {
     out.tags = src.tags.map((t) => String(t).slice(0, 80)).filter(Boolean).slice(0, 20);
   }
+  const kinds = ['greeting', 'post', 'ad', 'story', 'comment', 'reel'];
+  if (kinds.includes(src.system_notice)) out.system_notice = src.system_notice;
+  if (src.story_url && /^https?:\/\//i.test(String(src.story_url))) {
+    out.story_url = String(src.story_url).slice(0, 500);
+  }
+  if (src.story_id) out.story_id = String(src.story_id).slice(0, 120);
+  return out;
+}
+
+function noticeMeta(text, meta) {
+  const out = cleanMeta(meta);
+  const notice = fbNotices.describe(text);
+  if (!notice) return out;
+  out.system_notice = notice.kind;
+  if (notice.url) out.story_url = notice.url.slice(0, 500);
+  if (notice.storyId) out.story_id = String(notice.storyId).slice(0, 120);
   return out;
 }
 
@@ -149,7 +166,10 @@ async function mergeExisting(existing, incoming) {
   const sender_label = existing.sender_label || incoming.sender_label || null;
   const message_text = existing.message_text || incoming.message_text || '';
   const attachments_summary = existing.attachments_summary || incoming.attachments_summary || null;
-  const sender_meta = { ...cleanMeta(existing.sender_meta), ...cleanMeta(incoming.sender_meta) };
+  const sender_meta = noticeMeta(message_text, {
+    ...cleanMeta(existing.sender_meta),
+    ...cleanMeta(incoming.sender_meta),
+  });
   const next = {
     ...existing,
     sender_label,
@@ -200,8 +220,9 @@ async function record(input) {
     message_text: clip(input.message_text, 8000) || '',
     attachments_summary: clip(input.attachments_summary, 200),
     created_time: toIso(input.created_time),
-    sender_meta: cleanMeta(input.sender_meta),
+    sender_meta: null,
   };
+  row.sender_meta = noticeMeta(row.message_text, input.sender_meta);
 
   await ensure();
   const existing = await getById(sourceMsgId);
@@ -413,6 +434,7 @@ async function promptTurns(externalKey, limit = 10) {
   const channel = key.startsWith('fb_') ? 'fb' : 'zalo';
   const rows = await recent(channel, key, limit);
   return rows.map((row) => {
+    if (fbNotices.describe(row.message_text || '')) return null;
     const body = row.message_text || row.attachments_summary || '';
     if (!body) return null;
     const content = row.direction === 'out' && row.sender_label
@@ -450,7 +472,7 @@ async function attributionSummary() {
     if (meta.from_name) names.set(meta.from_name, (names.get(meta.from_name) || 0) + 1);
     for (const tag of meta.tags || []) tags.set(tag, (tags.get(tag) || 0) + 1);
     if (meta.app_id) apps.set(meta.app_id, (apps.get(meta.app_id) || 0) + 1);
-    if (lanhMark.isSignoff(row.message_text)) signatureLanh += 1;
+    if (!fbNotices.describe(row.message_text) && lanhMark.isSignoff(row.message_text)) signatureLanh += 1;
   }
   const pack = (map) => [...map.entries()]
     .map(([key, count]) => ({ key, count }))

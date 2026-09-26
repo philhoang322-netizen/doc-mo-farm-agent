@@ -16,6 +16,7 @@ const store = require('./conversationStore');
 const threadLabels = require('./threadLabels');
 const fbDvRule = require('./fbDvRule');
 const labelMoves = require('./labelMoves');
+const fbNotices = require('../public/admin/fb-notices');
 
 const REASONS = ['staff_lanh', 'signature', 'keyword', 'manual', 'model'];
 const LABELS = ['sale', 'dv', 'unknown'];
@@ -163,10 +164,14 @@ function snippetAround(text, start, end) {
   return pii.maskText(snippet);
 }
 
+function isNotice(row) {
+  return !!fbNotices.describe((row && (row.message_text || row.text)) || '');
+}
+
 function signatureHits(messages) {
   const hits = [];
   for (const row of messages || []) {
-    if (!pageIdentity(row)) continue;
+    if (!pageIdentity(row) || isNotice(row)) continue;
     const text = row.message_text || row.text || '';
     for (const hit of lanhMark.findLanhTokens(text)) {
       hits.push({
@@ -180,13 +185,18 @@ function signatureHits(messages) {
 }
 
 function firstCustomer(messages) {
-  const row = (messages || []).find((item) => item && item.direction === 'in' && String(item.message_text || '').trim());
+  const row = (messages || []).find((item) => (
+    item && item.direction === 'in' && String(item.message_text || '').trim() && !isNotice(item)
+  ));
   if (!row) return '';
   return pii.maskText(String(row.message_text)).slice(0, CUSTOMER_CAP);
 }
 
 function threadBlob(messages) {
-  return (messages || []).map((row) => row.message_text || row.text || '').join('\n');
+  return (messages || [])
+    .filter((row) => !isNotice(row))
+    .map((row) => row.message_text || row.text || '')
+    .join('\n');
 }
 
 function matchedCatalog(blob, entries) {

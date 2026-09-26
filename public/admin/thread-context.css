@@ -24,6 +24,34 @@ body.hitl .thread-row.in .thread-bubble { background: #ece7e0; color: var(--ink)
 body.hitl .thread-row.out .thread-bubble { background: var(--green-soft); color: var(--ink); }
 body.hitl .thread-meta { font-size: 12px; font-weight: 650; color: var(--muted); margin-bottom: 2px; }
 body.hitl .thread-text { white-space: normal; }
+body.hitl .thread-row.notice { justify-content: center; }
+body.hitl .thread-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: #efeae3;
+  color: var(--green-deep);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+body.hitl a.thread-chip { color: var(--green-deep); text-decoration: none; }
+body.hitl .thread-link {
+  color: var(--green-deep);
+  font-weight: 650;
+  text-decoration: underline;
+  overflow-wrap: normal;
+  word-break: keep-all;
+  white-space: nowrap;
+  cursor: pointer;
+}
 body.hitl .thread-more {
   align-self: flex-start;
   background: transparent;
