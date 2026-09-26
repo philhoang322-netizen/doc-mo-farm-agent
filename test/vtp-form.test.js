@@ -171,6 +171,9 @@ test('partial address stays editable and confirm stays enabled', {
     assert.equal(state.street.value, '12 Đường Thử');
     assert.match(state.warn, /Thiếu quận/);
     assert.match(state.warn, /Chưa khớp phường/);
+    assert.equal(await page.locator('.addr-ids').count(), 0);
+    assert.equal(await page.locator('#kiot-addr-block-detail .addr-line').count(), 0);
+    assert.equal(await page.evaluate(() => document.body.innerText.includes('PROVINCE_ID') || document.body.innerText.includes('WARDS_ID')), false);
 
     await page.locator('#kiot-ward-detail').fill('Phường Khác');
     assert.equal(await page.locator('input[name="ward_name"]').inputValue(), 'Phường Khác');

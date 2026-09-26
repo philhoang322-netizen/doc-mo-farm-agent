@@ -1403,7 +1403,6 @@ body.hitl .addr-block {
   margin-bottom: var(--space-4);
 }
 body.hitl .addr-grid3 { display: grid; grid-template-columns: 1fr; gap: var(--space-3); margin-bottom: var(--space-3); }
-body.hitl .addr-ids { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: var(--space-2); font-size: 13px; font-weight: 600; color: #3f4841; }
 body.hitl .addr-head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; margin-bottom: 8px; }
 body.hitl .addr-head h4 { margin: 0; font-size: 16px; }
 body.hitl .addr-hint, body.hitl .addr-prefill { color: var(--muted); font-size: 13px; margin: 0 0 6px; }

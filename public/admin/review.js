@@ -1793,15 +1793,7 @@
       row.input.disabled = locked;
     }
 
-    const lineEl = el('p', { class: 'addr-line', id: opts.lineId || 'addr-line' });
     const lineInput = el('input', { type: 'hidden', name: 'address_line' });
-    const ids = el('div', { class: 'addr-ids', 'aria-label': 'Mã ViettelPost' });
-    const provinceCode = el('code', { id: 'd-province-id', text: '—' });
-    const districtCode = el('code', { id: 'd-district-id', text: '—' });
-    const wardCode = el('code', { id: 'd-ward-id', text: '—' });
-    ids.appendChild(el('span', null, [document.createTextNode('PROVINCE_ID '), provinceCode]));
-    ids.appendChild(el('span', null, [document.createTextNode('DISTRICT_ID '), districtCode]));
-    ids.appendChild(el('span', null, [document.createTextNode('WARDS_ID '), wardCode]));
 
     const slot = el('select', { id: 'd-delivery-slot', name: 'delivery_slot', 'aria-label': 'Thời gian hẹn giao' });
     SLOTS.forEach(opt => {
@@ -1817,10 +1809,8 @@
     box.appendChild(ward.wrap);
     box.appendChild(streetWrap);
     box.appendChild(err);
-    box.appendChild(lineEl);
     box.appendChild(lineInput);
     box.appendChild(hint);
-    box.appendChild(ids);
     box.appendChild(el('div', { class: 'field-block' }, [
       el('label', { for: 'd-delivery-slot', text: 'Thời gian hẹn giao' }),
       slot,
@@ -1943,12 +1933,7 @@
     }
 
     function paintLine() {
-      const v = value();
-      lineEl.textContent = v.line;
-      lineInput.value = v.line;
-      provinceCode.textContent = v.provinceId || '—';
-      districtCode.textContent = v.districtId || '—';
-      wardCode.textContent = v.wardId || '—';
+      lineInput.value = value().line;
     }
 
     function putCombo(row, item, text) {
@@ -2498,7 +2483,6 @@
       wardInputId: 'kiot-ward-' + pid,
       districtInputId: 'kiot-district-' + pid,
       provinceInputId: 'kiot-province-' + pid,
-      lineId: 'kiot-addr-line-' + pid,
       blockId: 'kiot-addr-block-' + pid,
       heading: true,
       parts: rawKiot && rawKiot.addressParts,
