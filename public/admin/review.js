@@ -96,6 +96,7 @@
   const pendingDeletes = new Map();
   const settledDeletes = new Set();
   let me = { role: 'manager', canSend: true, canDelete: true, canKiot: true, canManageUsers: true };
+  const pendingPay = new Map();
   let listScrollY = 0;
   let detailPushed = false;
   let advanceTo = null;
@@ -1168,6 +1169,135 @@
     return api.mount(d && d.thread_context, { nested: !!nested });
   }
 
+  function payState(d) {
+    const pending = pendingPay.get(d && d.id);
+    if (pending) return { status: pending.status, method: pending.method };
+    const f = formOf(d);
+    return {
+      status: f.payment_status === 'da_tt' ? 'da_tt' : 'chua_tt',
+      method: f.payment_method === 'cash' ? 'cash' : 'transfer',
+    };
+  }
+
+  function showOrderChip(d) {
+    if (!d || d.deleted_at || !me.canKiot) return false;
+    const f = formOf(d);
+    if (f.kiot_code || f.payment_status || f.kiot_kind) return true;
+    if (d.triage_level === 'hot') return true;
+    if (/sales/i.test(d.assigned_department || '')) return true;
+    return false;
+  }
+
+  function commitPay(d, status, method) {
+    const f = formOf(d);
+    d.review_form = Object.assign({}, f, {
+      payment_status: status,
+      payment_method: method === 'cash' ? 'cash' : 'transfer',
+      paid_at: status === 'da_tt' ? (f.paid_at || new Date().toISOString()) : null,
+      paid_by: status === 'da_tt' ? (actorName() || 'manager') : null,
+    });
+  }
+
+  function clearPayToast(id) {
+    const node = document.querySelector('#undo-toasts [data-pay="' + id + '"]');
+    if (node) node.remove();
+  }
+
+  function pushPayToast(id, status) {
+    const host = document.getElementById('undo-toasts');
+    const node = el('div', { class: 'toast', role: 'status' });
+    node.dataset.pay = id;
+    node.appendChild(document.createTextNode(status === 'da_tt' ? 'Đã chuyển sang Đã TT. ' : 'Đã chuyển sang Chưa TT. '));
+    const b = el('button', { type: 'button', class: 'linkish', text: 'Hoàn tác' });
+    b.addEventListener('click', () => undoPay(id));
+    node.appendChild(b);
+    if (host) host.appendChild(node);
+  }
+
+  function undoPay(id) {
+    const pending = pendingPay.get(id);
+    if (!pending || !pending.timer) return;
+    pending.timer.undo();
+    pendingPay.delete(id);
+    clearPayToast(id);
+    const d = drafts.find(item => item.id === id);
+    if (!d) return;
+    commitPay(d, pending.previous.status, pending.previous.method);
+    renderList();
+    if (selectedId === id) renderDetail();
+  }
+
+  async function finalizePay(id) {
+    const pending = pendingPay.get(id);
+    if (!pending) return;
+    pendingPay.delete(id);
+    clearPayToast(id);
+    try {
+      await api('/admin/api/drafts/' + encodeURIComponent(id) + '/payment', {
+        method: 'POST',
+        body: JSON.stringify({ status: pending.status, method: pending.method }),
+      });
+    } catch (err) {
+      const d = drafts.find(item => item.id === id);
+      if (d) {
+        commitPay(d, pending.previous.status, pending.previous.method);
+        renderList();
+        if (selectedId === id) renderDetail();
+      }
+      toast(err.message || 'Không lưu được thanh toán');
+    }
+  }
+
+  function schedulePay(d, status, method) {
+    const policy = window.payToggle;
+    if (!policy || !d) return;
+    const now = payState(d);
+    const methodName = method === 'cash' ? 'cash' : 'transfer';
+    if (now.status === status && now.method === methodName && !pendingPay.get(d.id)) return;
+    const held = pendingPay.get(d.id);
+    const previous = held ? held.previous : { status: now.status, method: now.method };
+    if (held && held.timer) held.timer.undo();
+    clearPayToast(d.id);
+    commitPay(d, status, methodName);
+    const timer = policy.schedule(d.id, { onFinalize: () => finalizePay(d.id) });
+    pendingPay.set(d.id, { status, method: methodName, previous, timer });
+    if (status !== previous.status) pushPayToast(d.id, status);
+    renderList();
+    if (selectedId === d.id) renderDetail();
+  }
+
+  function payControls(d) {
+    const state = payState(d);
+    const wrap = el('div', { class: 'pay-controls' });
+    const chip = el('button', {
+      type: 'button',
+      class: 'pay-chip' + (state.status === 'da_tt' ? ' is-paid' : ''),
+      text: state.status === 'da_tt' ? 'Đã TT' : 'Chưa TT',
+    });
+    chip.setAttribute('aria-pressed', state.status === 'da_tt' ? 'true' : 'false');
+    chip.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const current = payState(d);
+      schedulePay(d, current.status === 'da_tt' ? 'chua_tt' : 'da_tt', current.method);
+    });
+    wrap.appendChild(chip);
+    [['transfer', 'Chuyển khoản'], ['cash', 'Tiền mặt']].forEach(([method, label]) => {
+      const b = el('button', {
+        type: 'button',
+        class: 'pay-method' + (state.method === method ? ' is-on' : ''),
+        text: label,
+      });
+      b.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        schedulePay(d, payState(d).status, method);
+      });
+      wrap.appendChild(b);
+    });
+    return wrap;
+  }
+
   function buildCard(d) {
       const s = ensureCard(d);
       if (!s.dirty) s.reply = d.draft_reply || d.ai_suggested_draft || '';
@@ -1223,6 +1353,13 @@
       });
       if (window.inboxOrder) card.dataset.sortKey = window.inboxOrder.stamp(d);
       card.appendChild(btn);
+      if (showOrderChip(d)) {
+        const order = el('div', { class: 'card-order' });
+        const code = String((formOf(d).kiot_code) || '').trim();
+        if (code) order.appendChild(el('span', { class: 'card-order-code', text: code }));
+        order.appendChild(payControls(d));
+        card.appendChild(order);
+      }
 
       const openReply = d.approval_status !== 'SENT' && d.approval_status !== 'REJECTED' && !d.deleted_at;
       const replyId = 'card-reply-' + d.id;
@@ -2406,6 +2543,7 @@
 
     const totals = el('p', { class: 'kiot-total', text: '' });
     panel.appendChild(totals);
+    if (!state.existing) panel.appendChild(payControls(d));
     const summary = el('div', { class: 'kiot-summary hidden' });
     panel.appendChild(summary);
     const err = el('p', { class: 'banner bad hidden' });
@@ -2428,7 +2566,10 @@
       row.appendChild(el('span', { class: 'id-name', text: mark.customerName || 'Khách' }));
       if (mark.customerCode) row.appendChild(el('span', { class: 'id-code', title: 'Mã KH', text: mark.customerCode }));
       row.appendChild(el('span', { class: 'id-code', title: 'Mã HĐ', text: mark.code }));
-      box.appendChild(row);
+      const head = el('div', { class: 'id-head' });
+      head.appendChild(row);
+      head.appendChild(payControls(d));
+      box.appendChild(head);
       const bits = [];
       if (mark.total != null && mark.total !== '') bits.push('Tổng ' + vnd(mark.total));
       bits.push(invoice ? 'Hoá đơn đã tạo' : 'Đơn đặt hàng đã tạo');
@@ -2440,10 +2581,6 @@
         const issue = el('button', { type: 'button', class: 'btn btn-primary', text: 'Xuất hóa đơn' });
         issue.addEventListener('click', () => issueInvoice(issue));
         box.appendChild(issue);
-        box.appendChild(el('p', {
-          class: 'kiot-created-note',
-          text: 'Xuất hoá đơn để có mã QR.',
-        }));
       }
       return box;
     }
@@ -2849,6 +2986,8 @@
         lines,
         actor_name: actorName(),
         acknowledge_existing: state.acknowledge === true,
+        payment_status: payState(d).status,
+        payment_method: payState(d).method,
       };
       if (confirm && state.quote && state.quote.total != null) body.expected_total = state.quote.total;
       const matched = state.kiotCustomer;

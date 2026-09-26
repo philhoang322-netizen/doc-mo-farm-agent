@@ -24,6 +24,11 @@
     <label>Từ <input id="from" name="from" type="date"></label>
     <label>Đến <input id="to" name="to" type="date"></label>
   </div>
+  <div class="pay-filters" role="group" aria-label="Thanh toán">
+    <button type="button" class="pay-filter is-on" data-pay="">Tất cả</button>
+    <button type="button" class="pay-filter" data-pay="chua_tt">Chưa TT</button>
+    <button type="button" class="pay-filter" data-pay="da_tt">Đã TT</button>
+  </div>
   <div class="filter-actions">
     <button type="submit" class="btn primary">Lọc</button>
     <a id="csv" class="btn" href="/admin/api/invoices.csv">Tải CSV</a>
@@ -31,6 +36,8 @@
 </form>
 <p id="note" class="note" role="status"></p>
 <div id="list" class="list"></div>
+<div id="undo-toasts" class="undo-toasts" aria-live="polite"></div>
+<script src="/admin/pay-toggle.js"></script>
 <script src="/admin/invoices.js"></script>
 </body>
 </html>

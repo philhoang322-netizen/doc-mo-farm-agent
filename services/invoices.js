@@ -40,6 +40,9 @@ const SCHEMA = [
     amount_paid     INTEGER NOT NULL DEFAULT 0
   )`,
   `ALTER TABLE kiot_invoices ADD COLUMN IF NOT EXISTS delivery_address TEXT`,
+  `ALTER TABLE kiot_invoices ADD COLUMN IF NOT EXISTS paid_by TEXT`,
+  `ALTER TABLE kiot_invoices ADD COLUMN IF NOT EXISTS payment_method TEXT`,
+  `ALTER TABLE kiot_invoices ADD COLUMN IF NOT EXISTS kiot_payment_id TEXT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS kiot_invoices_code_uidx ON kiot_invoices (code)`,
   `CREATE INDEX IF NOT EXISTS kiot_invoices_order_code_idx ON kiot_invoices (order_code)`,
   `CREATE INDEX IF NOT EXISTS kiot_invoices_phone_idx ON kiot_invoices (customer_phone)`,
@@ -115,7 +118,17 @@ function fromRow(row) {
     paid_at: row.paid_at ? new Date(row.paid_at).toISOString() : null,
     amount_paid: Math.round(Number(row.amount_paid) || 0),
     delivery_address: row.delivery_address ? String(row.delivery_address).slice(0, 300) : null,
+    paid_by: row.paid_by ? String(row.paid_by).slice(0, 80) : null,
+    payment_method: row.payment_method === 'cash' || row.payment_method === 'transfer' ? row.payment_method : null,
+    kiot_payment_id: row.kiot_payment_id ? String(row.kiot_payment_id).slice(0, 40) : null,
   };
+}
+
+function cleanMethod(method) {
+  const raw = String(method || '').toLowerCase();
+  if (raw === 'cash' || raw === 'tien mat' || raw === 'tiền mặt') return 'cash';
+  if (raw === 'transfer' || raw === 'chuyen khoan' || raw === 'chuyển khoản' || raw === 'ck') return 'transfer';
+  return null;
 }
 
 const RAILWAY_APP = 'https://doc-mo-farm-agent-production.up.railway.app';
@@ -189,8 +202,14 @@ async function save(row) {
     amount_paid: Math.round(Number(row.amount_paid) || 0),
   };
   next.payment_status = statusOf(next.amount_paid, next.total);
-  if (next.payment_status === 'chua_tt') next.paid_at = null;
-  else if (!next.paid_at) next.paid_at = new Date().toISOString();
+  next.payment_method = cleanMethod(next.payment_method);
+  next.paid_by = next.paid_by ? String(next.paid_by).slice(0, 80) : null;
+  next.kiot_payment_id = next.kiot_payment_id ? String(next.kiot_payment_id).slice(0, 40) : null;
+  if (next.payment_status === 'chua_tt') {
+    next.paid_at = null;
+    next.paid_by = null;
+    next.payment_method = null;
+  } else if (!next.paid_at) next.paid_at = new Date().toISOString();
   if (!db.DB_ENABLED) {
     memory.set(next.id, next);
     images.delete(next.code);
@@ -201,9 +220,10 @@ async function save(row) {
     `INSERT INTO kiot_invoices (
        id, kiot_id, code, order_code, order_kiot_id, draft_id, document_type,
        customer_code, customer_name, customer_phone, channel, items, total,
-       created_at, sent_at, payment_status, paid_at, amount_paid, delivery_address
+       created_at, sent_at, payment_status, paid_at, amount_paid, delivery_address,
+       paid_by, payment_method, kiot_payment_id
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18,$19
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
      )
      ON CONFLICT (id) DO UPDATE SET
        kiot_id = EXCLUDED.kiot_id,
@@ -222,12 +242,16 @@ async function save(row) {
        payment_status = EXCLUDED.payment_status,
        paid_at = EXCLUDED.paid_at,
        amount_paid = EXCLUDED.amount_paid,
-       delivery_address = EXCLUDED.delivery_address`,
+       delivery_address = EXCLUDED.delivery_address,
+       paid_by = EXCLUDED.paid_by,
+       payment_method = EXCLUDED.payment_method,
+       kiot_payment_id = EXCLUDED.kiot_payment_id`,
     [
       next.id, next.kiot_id, next.code, next.order_code, next.order_kiot_id, next.draft_id,
       next.document_type, next.customer_code, next.customer_name, next.customer_phone,
       next.channel, JSON.stringify(next.items), next.total, next.created_at, next.sent_at,
       next.payment_status, next.paid_at, next.amount_paid, next.delivery_address,
+      next.paid_by, next.payment_method, next.kiot_payment_id,
     ]
   );
   images.delete(next.code);
@@ -237,7 +261,7 @@ async function save(row) {
 function blankSale(input) {
   const now = new Date().toISOString();
   const kind = input.documentType === 'order' ? 'order' : 'invoice';
-  return {
+  const row = {
     id: crypto.randomUUID(),
     kiot_id: input.kiotId ? String(input.kiotId).slice(0, 40) : null,
     code: cleanCode(input.code),
@@ -259,7 +283,18 @@ function blankSale(input) {
     paid_at: null,
     amount_paid: 0,
     delivery_address: input.deliveryAddress ? String(input.deliveryAddress).slice(0, 300) : null,
+    paid_by: null,
+    payment_method: null,
+    kiot_payment_id: null,
   };
+  if (input.paymentStatus === 'da_tt') {
+    row.amount_paid = row.total;
+    row.paid_at = input.paidAt || now;
+    row.paid_by = input.paidBy ? String(input.paidBy).slice(0, 80) : null;
+    row.payment_method = cleanMethod(input.paymentMethod) || 'transfer';
+    if (input.kiotPaymentIncluded) row.kiot_payment_id = 'included';
+  }
+  return row;
 }
 
 async function recordSale(input, actor) {
@@ -309,6 +344,12 @@ async function markIssued(orderCode, issued, actor) {
   if (issued.total != null) row.total = Math.round(Number(issued.total) || 0);
   if (issued.items) row.items = itemsOf(issued.items);
   if (issued.customerCode) row.customer_code = String(issued.customerCode).slice(0, 40);
+  if (issued.paid) {
+    row.amount_paid = Math.round(Number(issued.total != null ? issued.total : row.total) || 0);
+    row.payment_method = cleanMethod(issued.paymentMethod) || row.payment_method || 'transfer';
+    if (!row.paid_by && issued.paidBy) row.paid_by = String(issued.paidBy).slice(0, 80);
+    if (!row.kiot_payment_id) row.kiot_payment_id = 'included';
+  }
   const saved = await save(row);
   try {
     await audit.record({
@@ -374,17 +415,85 @@ async function setPayment(code, amountPaid, actor, source) {
   return saved;
 }
 
+/**
+ * Two-state toggle. Đã TT pays the full total. Chưa TT clears it.
+ * An existing Kiot invoice gets POST /payments once. A later Chưa TT
+ * stays in Omni: the public API cannot void that payment alone.
+ */
+async function setPaymentStatus(code, { status, method, actor } = {}) {
+  const row = await getByCode(code);
+  if (!row) return null;
+  const nextStatus = status === 'da_tt' ? 'da_tt' : 'chua_tt';
+  const before = {
+    payment_status: row.payment_status,
+    amount_paid: row.amount_paid,
+    paid_at: row.paid_at,
+    paid_by: row.paid_by || null,
+    payment_method: row.payment_method || null,
+  };
+  let kiot = null;
+  if (nextStatus === 'da_tt') {
+    row.amount_paid = row.total;
+    row.paid_by = actor || row.paid_by || 'manager';
+    row.payment_method = cleanMethod(method) || row.payment_method || 'transfer';
+    row.paid_at = row.paid_at || new Date().toISOString();
+    const canPush = row.document_type === 'invoice' && row.kiot_id && !row.kiot_payment_id;
+    if (canPush) {
+      kiot = await kiotviet.addInvoicePayment({
+        invoiceId: row.kiot_id,
+        amount: row.total,
+        method: row.payment_method,
+      });
+      if (kiot && kiot.ok) row.kiot_payment_id = kiot.paymentId || kiot.paymentCode || 'posted';
+    }
+  } else {
+    row.amount_paid = 0;
+    row.paid_at = null;
+    row.paid_by = null;
+    row.payment_method = null;
+  }
+  const saved = await save(row);
+  if (before.payment_status !== saved.payment_status || before.payment_method !== saved.payment_method) {
+    try {
+      await audit.record({
+        actor: actor || 'manager',
+        action: 'invoice.payment',
+        entity_type: 'invoice',
+        entity_id: saved.code,
+        before,
+        after: {
+          payment_status: saved.payment_status,
+          amount_paid: saved.amount_paid,
+          paid_at: saved.paid_at,
+          paid_by: saved.paid_by,
+          payment_method: saved.payment_method,
+        },
+        meta: {
+          code: saved.code,
+          source: 'toggle',
+          draft_id: saved.draft_id,
+          kiot: kiot && kiot.ok ? 'posted' : (kiot && kiot.skipped ? 'skipped' : (kiot && kiot.error ? 'error' : null)),
+        },
+      });
+    } catch (err) {
+      console.error('Invoice payment audit failed:', err.message);
+    }
+  }
+  return { invoice: saved, kiot };
+}
+
 function dayKey(iso) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' }).format(d);
 }
 
-async function search({ q, from, to } = {}) {
+async function search({ q, from, to, payment } = {}) {
   await ensure();
   const query = String(q || '').trim().toLowerCase().slice(0, 80);
   const start = /^\d{4}-\d{2}-\d{2}$/.test(String(from || '')) ? String(from) : '';
   const end = /^\d{4}-\d{2}-\d{2}$/.test(String(to || '')) ? String(to) : '';
+  const want = payment === 'da_tt' || payment === 'chua_tt' ? payment : '';
   let rows;
   if (!db.DB_ENABLED) {
     rows = [...memory.values()].map(row => ({ ...row, items: itemsOf(row.items) }));
@@ -403,6 +512,8 @@ async function search({ q, from, to } = {}) {
       const day = dayKey(row.created_at);
       if (start && day < start) return false;
       if (end && day > end) return false;
+      if (want === 'da_tt' && row.payment_status !== 'da_tt') return false;
+      if (want === 'chua_tt' && row.payment_status === 'da_tt') return false;
       return true;
     })
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
@@ -416,7 +527,7 @@ function csvCell(value) {
 }
 
 function toCsv(rows) {
-  const header = ['code', 'loai', 'ma_kh', 'khach', 'sdt', 'kenh', 'tong', 'da_thu', 'trang_thai', 'tao_luc', 'gui_luc'];
+  const header = ['code', 'loai', 'ma_kh', 'khach', 'sdt', 'kenh', 'tong', 'da_thu', 'trang_thai', 'paid_at', 'paid_by', 'method', 'tao_luc', 'gui_luc'];
   const lines = [header.join(',')];
   for (const row of rows) {
     lines.push([
@@ -429,6 +540,9 @@ function toCsv(rows) {
       row.total,
       row.amount_paid,
       row.payment_status,
+      row.paid_at,
+      row.paid_by,
+      row.payment_method === 'cash' ? 'Tiền mặt' : (row.payment_method === 'transfer' ? 'Chuyển khoản' : ''),
       row.created_at,
       row.sent_at,
     ].map(csvCell).join(','));
@@ -464,7 +578,7 @@ async function pngFor(code) {
   if (!row || row.document_type !== 'invoice') return null;
   row = await backfillCustomerCode(row);
   const cached = images.get(row.code);
-  const stamp = `${row.amount_paid}|${row.total}|${row.customer_name}|${row.customer_code || ''}|${row.delivery_address || ''}|${JSON.stringify(row.items || [])}`;
+  const stamp = `${row.payment_status}|${row.amount_paid}|${row.total}|${row.customer_name}|${row.customer_code || ''}|${row.delivery_address || ''}|${JSON.stringify(row.items || [])}`;
   if (cached && cached.stamp === stamp) return cached.buffer;
   const buffer = await invoiceImage.render({
     ...row,
@@ -500,6 +614,8 @@ module.exports = {
   markIssued,
   markSent,
   setPayment,
+  setPaymentStatus,
+  cleanMethod,
   search,
   toCsv,
   backfillCustomerCode,

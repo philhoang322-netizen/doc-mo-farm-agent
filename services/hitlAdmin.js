@@ -745,6 +745,7 @@ async function invoicesList(req, res) {
     q: req.query.q,
     from: req.query.from,
     to: req.query.to,
+    payment: req.query.payment,
   }));
   res.json({ invoices: rows.map(row => invoices.present(row)) });
 }
@@ -755,6 +756,7 @@ async function invoicesCsv(req, res) {
     q: req.query.q,
     from: req.query.from,
     to: req.query.to,
+    payment: req.query.payment,
   }));
   res.set('Content-Type', 'text/csv; charset=utf-8');
   res.set('Content-Disposition', 'attachment; filename="hoa-don.csv"');
@@ -763,14 +765,68 @@ async function invoicesCsv(req, res) {
 
 async function invoicesPaid(req, res) {
   if (!access.canKiot(await who(req))) return deny(res);
-  const amount = req.body && req.body.amount;
-  const n = Number(amount);
-  if (amount == null || amount === '' || !Number.isFinite(n) || n < 0 || n > 1e12) {
-    return res.status(400).json({ error: 'Cần số tiền đã thu' });
+  const body = req.body || {};
+  if (body.status !== 'da_tt' && body.status !== 'chua_tt') {
+    return res.status(400).json({ error: 'Cần trạng thái Chưa TT hoặc Đã TT' });
   }
-  const saved = await invoices.setPayment(req.params.code, n, await auditActor(req), 'manual');
-  if (!saved) return res.status(404).json({ error: 'Không thấy hoá đơn' });
-  res.json({ invoice: invoices.present(saved) });
+  const result = await invoices.setPaymentStatus(req.params.code, {
+    status: body.status,
+    method: body.method,
+    actor: await auditActor(req),
+  });
+  if (!result) return res.status(404).json({ error: 'Không thấy hoá đơn' });
+  res.json({ invoice: invoices.present(result.invoice), kiot: result.kiot || null });
+}
+
+async function draftPayment(req, res) {
+  if (!access.canKiot(await who(req))) return deny(res);
+  const body = req.body || {};
+  if (body.status !== 'da_tt' && body.status !== 'chua_tt') {
+    return res.status(400).json({ error: 'Cần trạng thái Chưa TT hoặc Đã TT' });
+  }
+  const draft = await drafts.getDraft(req.params.id);
+  if (!draft) return res.status(404).json({ error: 'Không thấy bản nháp' });
+  const actor = await auditActor(req);
+  const method = body.method === 'cash' ? 'cash' : 'transfer';
+  const previous = draft.review_form || {};
+  const form = {
+    ...previous,
+    payment_status: body.status,
+    payment_method: method,
+    paid_at: body.status === 'da_tt' ? (previous.paid_at || new Date().toISOString()) : null,
+    paid_by: body.status === 'da_tt' ? actor : null,
+  };
+  let updated = null;
+  try {
+    updated = await drafts.updateDraft(draft.id, { review_form: form }, { actor: actor });
+  } catch (e) {
+    const status = e.status || 400;
+    return res.status(status).json({ error: e.message || 'Không lưu được' });
+  }
+  const code = (form.kiot_code || draft.invoice_code || '').trim();
+  let invoice = null;
+  let kiot = null;
+  if (code) {
+    const result = await invoices.setPaymentStatus(code, { status: body.status, method, actor });
+    if (result) {
+      invoice = invoices.present(result.invoice);
+      kiot = result.kiot || null;
+    }
+  }
+  try {
+    await audit.record({
+      actor,
+      action: 'draft.payment',
+      entity_type: 'draft',
+      entity_id: draft.id,
+      before: { payment_status: previous.payment_status || 'chua_tt', payment_method: previous.payment_method || null },
+      after: { payment_status: form.payment_status, payment_method: form.payment_method, paid_by: form.paid_by },
+      meta: { code: code || null },
+    });
+  } catch (err) {
+    console.error('Draft payment audit failed:', err.message);
+  }
+  res.json({ ok: true, draft: updated && updated.draft, invoice, kiot });
 }
 
 async function invoicesSync(req, res) {
@@ -1089,6 +1145,7 @@ function mount(app) {
   app.get('/admin/kiot-lines.js', requirePageAsset, sendAsset('kiot-lines.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/card-time.js', requirePageAsset, sendAsset('card-time.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/undo-delete.js', requirePageAsset, sendAsset('undo-delete.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/pay-toggle.js', requirePageAsset, sendAsset('pay-toggle.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/send-once.js', requirePageAsset, sendAsset('send-once.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/vtp-address.js', requirePageAsset, sendAsset('vtp-address.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/vtp-units.json', requirePageAsset, sendAsset('vtp-units.json', 'application/json; charset=utf-8'));
@@ -1132,6 +1189,7 @@ function mount(app) {
   app.post('/admin/api/drafts', requireApi, create);
   app.patch('/admin/api/drafts/:id', requireApi, patch);
   app.post('/admin/api/drafts/:id/biz-line', requireApi, moveLine);
+  app.post('/admin/api/drafts/:id/payment', requireApi, draftPayment);
   app.post('/admin/api/drafts/:id/delete', requireApi, removeDraft);
   app.post('/admin/api/drafts/:id/restore', requireApi, restoreOne);
   app.post('/admin/api/inbox/sync', requireApi, syncInbox);

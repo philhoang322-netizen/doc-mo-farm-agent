@@ -42,14 +42,11 @@ function formatVnd(n) {
   return `${Math.round(value).toLocaleString('vi-VN')}đ`;
 }
 
-function paymentDraft({ code, total, link }) {
-  const lines = [
-    `Dạ em đã tạo hoá đơn ${code} cho mình, tổng ${formatVnd(total)} ạ.`,
-    '',
-    'Mình chuyển khoản giúp em:',
-    BANK_BLOCK,
-    `nội dung CK: ${code}`,
-  ];
+function paymentDraft({ code, total, link, paid }) {
+  const lines = [`Dạ em đã tạo hoá đơn ${code} cho mình, tổng ${formatVnd(total)} ạ.`];
+  if (!paid) {
+    lines.push('', 'Mình chuyển khoản giúp em:', BANK_BLOCK, `nội dung CK: ${code}`);
+  }
   if (link) lines.push('', `Hoá đơn: ${link}`);
   return lines.join('\n');
 }
@@ -530,6 +527,10 @@ async function prepareOrCreate(id, body, actorName) {
       address ? `Giao: ${address}` : null,
       note || null,
     ].filter(Boolean).join(' | ').slice(0, 500);
+    const formPay = draft.review_form || {};
+    const paid = body.payment_status === 'da_tt'
+      || (body.payment_status == null && formPay.payment_status === 'da_tt');
+    const paymentMethod = body.payment_method || formPay.payment_method || 'transfer';
 
     let customerComment = '';
     try {
@@ -552,6 +553,8 @@ async function prepareOrCreate(id, body, actorName) {
       description,
       customerId: body.kiot_customer_id,
       customerCode: body.kiot_customer_code,
+      paid: paid && kind === 'invoice',
+      paymentMethod,
     });
     if (!created || !created.ok) {
       return {
@@ -587,6 +590,11 @@ async function prepareOrCreate(id, body, actorName) {
         items: saleItems,
         total: created.total,
         deliveryAddress: address,
+        paymentStatus: paid ? 'da_tt' : 'chua_tt',
+        paymentMethod,
+        paidAt: paid ? (formPay.paid_at || new Date().toISOString()) : null,
+        paidBy: paid ? (formPay.paid_by || audit.managerActor(actorName)) : null,
+        kiotPaymentIncluded: paid && (created.documentType || kind) === 'invoice',
       }, audit.managerActor(actorName));
     } catch (err) {
       console.error('Invoice record failed:', err.message);
@@ -595,7 +603,7 @@ async function prepareOrCreate(id, body, actorName) {
     const isInvoice = (created.documentType || kind) === 'invoice';
     const link = isInvoice ? invoices.pageUrl(created.code) : '';
     const reply = isInvoice
-      ? paymentDraft({ code: created.code, total: created.total, link })
+      ? paymentDraft({ code: created.code, total: created.total, link, paid })
       : orderAck({ code: created.code, total: created.total });
     const summary = `${created.code} · ${formatVnd(created.total)}`;
     const nextForm = {
@@ -603,6 +611,10 @@ async function prepareOrCreate(id, body, actorName) {
       kiot_code: created.code,
       kiot_total: String(created.total),
       kiot_kind: created.documentType || kind,
+      payment_status: paid ? 'da_tt' : (formPay.payment_status || 'chua_tt'),
+      payment_method: paid ? (paymentMethod === 'cash' ? 'cash' : 'transfer') : (formPay.payment_method || null),
+      paid_at: paid ? (formPay.paid_at || new Date().toISOString()) : null,
+      paid_by: paid ? (formPay.paid_by || audit.managerActor(actorName)) : null,
     };
     const patch = {
       invoice_code: created.code,
@@ -726,9 +738,14 @@ async function issueInvoice(id, actorName) {
       return { status: 409, body: { error: 'Chứng từ này đã là hoá đơn', code: existing.code } };
     }
     const row = await invoices.getByCode(existing.code);
+    const formPay = draft.review_form || {};
+    const paid = (row && row.payment_status === 'da_tt') || formPay.payment_status === 'da_tt';
+    const paymentMethod = (row && row.payment_method) || formPay.payment_method || 'transfer';
     const issued = await kiotviet.issueInvoiceFromOrder({
       orderId: (row && (row.order_kiot_id || row.kiot_id)) || null,
       orderCode: existing.code,
+      paid,
+      paymentMethod,
     });
     if (!issued || !issued.ok) {
       return { status: 502, body: { error: (issued && issued.error) || 'Không xuất được hoá đơn' } };
@@ -745,6 +762,9 @@ async function issueInvoice(id, actorName) {
         customerCode: issued.customerCode || (row && row.customer_code) || draft.customer_code,
         channel: draft.channel,
         items: row && row.items,
+        paid: issued.paid === true,
+        paymentMethod: issued.paymentMethod,
+        paidBy: (row && row.paid_by) || formPay.paid_by || audit.managerActor(actorName),
       }, audit.managerActor(actorName));
     } catch (err) {
       return {
@@ -759,7 +779,7 @@ async function issueInvoice(id, actorName) {
       };
     }
     const link = invoices.pageUrl(issued.code);
-    const reply = paymentDraft({ code: issued.code, total: savedRow.total, link });
+    const reply = paymentDraft({ code: issued.code, total: savedRow.total, link, paid: savedRow.payment_status === 'da_tt' });
     const nextForm = {
       ...(draft.review_form || {}),
       kiot_code: issued.code,
