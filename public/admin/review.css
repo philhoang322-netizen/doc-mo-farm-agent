@@ -1190,6 +1190,73 @@ body.inbox .detail-quick button.btn {
   font-weight: 650;
 }
 body.inbox .detail-quick button.btn { color: var(--green-deep); }
+body.inbox .card-order {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 0 12px 6px;
+}
+body.inbox .card-order-code {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--green);
+  margin-right: 4px;
+}
+body.hitl .id-head,
+body.inbox .id-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+body.hitl .pay-controls,
+body.inbox .pay-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+body.hitl .pay-chip,
+body.inbox .pay-chip,
+body.hitl .pay-method,
+body.inbox .pay-method {
+  min-height: 44px;
+  height: 44px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid #e7c4c0;
+  background: #fff;
+  color: #8f1810;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+body.hitl .pay-chip.is-paid,
+body.inbox .pay-chip.is-paid {
+  border-color: var(--green);
+  background: #e8f3ec;
+  color: var(--green);
+}
+body.hitl .pay-method,
+body.inbox .pay-method {
+  border-color: var(--line);
+  color: var(--ink);
+  background: #fff;
+}
+body.hitl .pay-method.is-on,
+body.inbox .pay-method.is-on {
+  border-color: var(--green);
+  color: var(--green);
+}
+body.hitl .pay-method.is-clear,
+body.inbox .pay-method.is-clear {
+  border-color: #e7c4c0;
+  color: #8f1810;
+}
+body.hitl .pay-chip,
+body.inbox .pay-chip { white-space: nowrap; }
 body.inbox .card-chips {
   display: flex;
   flex-wrap: wrap;
@@ -1517,7 +1584,9 @@ body.hitl .kiot-created {
   padding: var(--space-3);
   margin: 0 0 var(--space-3);
 }
-body.hitl .kiot-created .id-row { width: 100%; }
+body.hitl .kiot-created .id-row { width: auto; max-width: 100%; }
+body.hitl .id-head > .pay-controls,
+body.inbox .card-order > .pay-controls { display: contents; }
 body.hitl .kiot-created-note { margin: 4px 0 0; color: var(--muted); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 body.hitl .kiot-invoice-img { width: 100%; height: auto; margin-top: 8px; border-radius: 8px; background: #fff; }
 body.hitl .kiot-lead { margin: 0 0 var(--space-3); color: var(--muted); font-size: 15px; }

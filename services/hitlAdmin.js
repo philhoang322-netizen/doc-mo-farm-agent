@@ -741,21 +741,23 @@ async function invoicesPage(req, res) {
 
 async function invoicesList(req, res) {
   if (!access.canKiot(await who(req))) return deny(res);
-  const rows = await invoices.hydrateCustomerCodes(await invoices.search({
+  const rows = await invoices.refreshFromKiot(await invoices.hydrateCustomerCodes(await invoices.search({
     q: req.query.q,
     from: req.query.from,
     to: req.query.to,
-  }));
+    payment: req.query.payment,
+  })));
   res.json({ invoices: rows.map(row => invoices.present(row)) });
 }
 
 async function invoicesCsv(req, res) {
   if (!access.canKiot(await who(req))) return deny(res);
-  const rows = await invoices.hydrateCustomerCodes(await invoices.search({
+  const rows = await invoices.refreshFromKiot(await invoices.hydrateCustomerCodes(await invoices.search({
     q: req.query.q,
     from: req.query.from,
     to: req.query.to,
-  }));
+    payment: req.query.payment,
+  })));
   res.set('Content-Type', 'text/csv; charset=utf-8');
   res.set('Content-Disposition', 'attachment; filename="hoa-don.csv"');
   res.send(invoices.toCsv(rows));
@@ -763,14 +765,61 @@ async function invoicesCsv(req, res) {
 
 async function invoicesPaid(req, res) {
   if (!access.canKiot(await who(req))) return deny(res);
-  const amount = req.body && req.body.amount;
-  const n = Number(amount);
-  if (amount == null || amount === '' || !Number.isFinite(n) || n < 0 || n > 1e12) {
-    return res.status(400).json({ error: 'Cần số tiền đã thu' });
+  const body = req.body || {};
+  if (body.status !== 'da_tt') {
+    return res.status(400).json({ error: 'KiotViet không có API xoá một phiếu thu' });
   }
-  const saved = await invoices.setPayment(req.params.code, n, await auditActor(req), 'manual');
-  if (!saved) return res.status(404).json({ error: 'Không thấy hoá đơn' });
-  res.json({ invoice: invoices.present(saved) });
+  const result = await invoices.setPaymentStatus(req.params.code, {
+    status: body.status,
+    method: body.method,
+    actor: await auditActor(req),
+  });
+  if (!result) return res.status(404).json({ error: 'Không thấy hoá đơn' });
+  if (result.error) {
+    const http = result.kiot && result.kiot.error ? 502 : 400;
+    return res.status(http).json({ error: result.error, invoice: invoices.present(result.invoice) });
+  }
+  res.json({ invoice: invoices.present(result.invoice), kiot: result.kiot || null });
+}
+
+async function draftPayment(req, res) {
+  if (!access.canKiot(await who(req))) return deny(res);
+  const body = req.body || {};
+  if (body.status !== 'da_tt' && body.status !== 'chua_tt') {
+    return res.status(400).json({ error: 'Cần trạng thái Chưa TT hoặc Đã TT' });
+  }
+  const draft = await drafts.getDraft(req.params.id);
+  if (!draft) return res.status(404).json({ error: 'Không thấy bản nháp' });
+  const actor = await auditActor(req);
+  const previous = draft.review_form || {};
+  const code = (previous.kiot_code || draft.invoice_code || '').trim();
+  if (!code || previous.kiot_kind === 'order') {
+    return res.status(400).json({ error: 'Chưa có hoá đơn KiotViet' });
+  }
+  const result = await invoices.setPaymentStatus(code, { status: body.status, method: body.method, actor });
+  if (!result) return res.status(404).json({ error: 'Không thấy hoá đơn' });
+  if (result.error) {
+    const http = result.kiot && result.kiot.error ? 502 : 400;
+    return res.status(http).json({ error: result.error, invoice: invoices.present(result.invoice) });
+  }
+  const invoice = invoices.present(result.invoice);
+  const form = {
+    ...previous,
+    payment_status: invoice.payment_status === 'da_tt' || invoice.payment_status === 'mot_phan'
+      ? invoice.payment_status
+      : 'chua_tt',
+    payment_method: invoice.payment_method,
+    amount_paid: invoice.amount_paid,
+    paid_at: invoice.paid_at,
+    paid_by: invoice.paid_by,
+  };
+  let updated = null;
+  try {
+    updated = await drafts.updateDraft(draft.id, { review_form: form }, { actor });
+  } catch (err) {
+    console.error('Draft payment mirror failed:', err.message);
+  }
+  res.json({ ok: true, draft: updated && updated.draft, invoice, kiot: result.kiot || null });
 }
 
 async function invoicesSync(req, res) {
@@ -785,7 +834,7 @@ async function invoicesSync(req, res) {
   if (!remote || !remote.ok) {
     return res.status(502).json({ error: (remote && remote.error) || 'Không đọc được KiotViet' });
   }
-  const saved = await invoices.setPayment(row.code, remote.amount_paid, await auditActor(req), 'kiotviet');
+  const saved = await invoices.applyRemote(row.code, remote, null, null);
   res.json({ invoice: invoices.present(saved), kiot_status: remote.kiot_status });
 }
 
@@ -808,7 +857,7 @@ async function kiotIssue(req, res) {
     if (!access.canKiot(p)) return deny(res);
     const existing = await drafts.getDraft(req.params.id);
     if (!existing || !access.canSee(p, existing)) return res.status(404).json({ error: 'Không thấy bản nháp' });
-    const result = await kiotInbox.issueInvoice(req.params.id, p && p.source === 'user' ? access.actor(p) : actorNameFrom(req));
+    const result = await kiotInbox.issueInvoice(req.params.id, p && p.source === 'user' ? access.actor(p) : actorNameFrom(req), req.body || {});
     res.status(result.status).json(result.body);
   } catch (e) {
     console.error('Kiot issue failed:', e.message);
@@ -1089,6 +1138,7 @@ function mount(app) {
   app.get('/admin/kiot-lines.js', requirePageAsset, sendAsset('kiot-lines.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/card-time.js', requirePageAsset, sendAsset('card-time.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/undo-delete.js', requirePageAsset, sendAsset('undo-delete.js', 'text/javascript; charset=utf-8'));
+  app.get('/admin/pay-toggle.js', requirePageAsset, sendAsset('pay-toggle.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/send-once.js', requirePageAsset, sendAsset('send-once.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/vtp-address.js', requirePageAsset, sendAsset('vtp-address.js', 'text/javascript; charset=utf-8'));
   app.get('/admin/vtp-units.json', requirePageAsset, sendAsset('vtp-units.json', 'application/json; charset=utf-8'));
@@ -1132,6 +1182,7 @@ function mount(app) {
   app.post('/admin/api/drafts', requireApi, create);
   app.patch('/admin/api/drafts/:id', requireApi, patch);
   app.post('/admin/api/drafts/:id/biz-line', requireApi, moveLine);
+  app.post('/admin/api/drafts/:id/payment', requireApi, draftPayment);
   app.post('/admin/api/drafts/:id/delete', requireApi, removeDraft);
   app.post('/admin/api/drafts/:id/restore', requireApi, restoreOne);
   app.post('/admin/api/inbox/sync', requireApi, syncInbox);

@@ -40,6 +40,9 @@ const SCHEMA = [
     amount_paid     INTEGER NOT NULL DEFAULT 0
   )`,
   `ALTER TABLE kiot_invoices ADD COLUMN IF NOT EXISTS delivery_address TEXT`,
+  `ALTER TABLE kiot_invoices ADD COLUMN IF NOT EXISTS paid_by TEXT`,
+  `ALTER TABLE kiot_invoices ADD COLUMN IF NOT EXISTS payment_method TEXT`,
+  `ALTER TABLE kiot_invoices ADD COLUMN IF NOT EXISTS kiot_payment_id TEXT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS kiot_invoices_code_uidx ON kiot_invoices (code)`,
   `CREATE INDEX IF NOT EXISTS kiot_invoices_order_code_idx ON kiot_invoices (order_code)`,
   `CREATE INDEX IF NOT EXISTS kiot_invoices_phone_idx ON kiot_invoices (customer_phone)`,
@@ -115,7 +118,19 @@ function fromRow(row) {
     paid_at: row.paid_at ? new Date(row.paid_at).toISOString() : null,
     amount_paid: Math.round(Number(row.amount_paid) || 0),
     delivery_address: row.delivery_address ? String(row.delivery_address).slice(0, 300) : null,
+    paid_by: row.paid_by ? String(row.paid_by).slice(0, 80) : null,
+    payment_method: cleanMethod(row.payment_method),
+    kiot_payment_id: row.kiot_payment_id ? String(row.kiot_payment_id).slice(0, 40) : null,
   };
+}
+
+function cleanMethod(method) {
+  const raw = String(method || '').toLowerCase();
+  if (raw === 'cash' || raw === 'tien mat' || raw === 'tiền mặt') return 'cash';
+  if (raw === 'transfer' || raw === 'chuyen khoan' || raw === 'chuyển khoản' || raw === 'ck') return 'transfer';
+  if (raw === 'card' || raw === 'the' || raw === 'thẻ') return 'card';
+  if (raw === 'mixed') return 'mixed';
+  return null;
 }
 
 const RAILWAY_APP = 'https://doc-mo-farm-agent-production.up.railway.app';
@@ -189,8 +204,14 @@ async function save(row) {
     amount_paid: Math.round(Number(row.amount_paid) || 0),
   };
   next.payment_status = statusOf(next.amount_paid, next.total);
-  if (next.payment_status === 'chua_tt') next.paid_at = null;
-  else if (!next.paid_at) next.paid_at = new Date().toISOString();
+  next.payment_method = cleanMethod(next.payment_method);
+  next.paid_by = next.paid_by ? String(next.paid_by).slice(0, 80) : null;
+  next.kiot_payment_id = next.kiot_payment_id ? String(next.kiot_payment_id).slice(0, 40) : null;
+  if (next.payment_status === 'chua_tt') {
+    next.paid_at = null;
+    next.paid_by = null;
+    next.payment_method = null;
+  } else if (!next.paid_at) next.paid_at = new Date().toISOString();
   if (!db.DB_ENABLED) {
     memory.set(next.id, next);
     images.delete(next.code);
@@ -201,9 +222,10 @@ async function save(row) {
     `INSERT INTO kiot_invoices (
        id, kiot_id, code, order_code, order_kiot_id, draft_id, document_type,
        customer_code, customer_name, customer_phone, channel, items, total,
-       created_at, sent_at, payment_status, paid_at, amount_paid, delivery_address
+       created_at, sent_at, payment_status, paid_at, amount_paid, delivery_address,
+       paid_by, payment_method, kiot_payment_id
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18,$19
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
      )
      ON CONFLICT (id) DO UPDATE SET
        kiot_id = EXCLUDED.kiot_id,
@@ -222,12 +244,16 @@ async function save(row) {
        payment_status = EXCLUDED.payment_status,
        paid_at = EXCLUDED.paid_at,
        amount_paid = EXCLUDED.amount_paid,
-       delivery_address = EXCLUDED.delivery_address`,
+       delivery_address = EXCLUDED.delivery_address,
+       paid_by = EXCLUDED.paid_by,
+       payment_method = EXCLUDED.payment_method,
+       kiot_payment_id = EXCLUDED.kiot_payment_id`,
     [
       next.id, next.kiot_id, next.code, next.order_code, next.order_kiot_id, next.draft_id,
       next.document_type, next.customer_code, next.customer_name, next.customer_phone,
       next.channel, JSON.stringify(next.items), next.total, next.created_at, next.sent_at,
       next.payment_status, next.paid_at, next.amount_paid, next.delivery_address,
+      next.paid_by, next.payment_method, next.kiot_payment_id,
     ]
   );
   images.delete(next.code);
@@ -237,7 +263,7 @@ async function save(row) {
 function blankSale(input) {
   const now = new Date().toISOString();
   const kind = input.documentType === 'order' ? 'order' : 'invoice';
-  return {
+  const row = {
     id: crypto.randomUUID(),
     kiot_id: input.kiotId ? String(input.kiotId).slice(0, 40) : null,
     code: cleanCode(input.code),
@@ -259,7 +285,11 @@ function blankSale(input) {
     paid_at: null,
     amount_paid: 0,
     delivery_address: input.deliveryAddress ? String(input.deliveryAddress).slice(0, 300) : null,
+    paid_by: null,
+    payment_method: null,
+    kiot_payment_id: null,
   };
+  return row;
 }
 
 async function recordSale(input, actor) {
@@ -347,16 +377,32 @@ async function markSent(code, actor) {
   return saved;
 }
 
-async function setPayment(code, amountPaid, actor, source) {
+/**
+ * Mirror a KiotViet read onto the local cache. The read wins.
+ * Audit only when meta.audit is set (a write, not a list refresh).
+ */
+async function applyRemote(code, remote, actor, meta) {
   const row = await getByCode(code);
-  if (!row) return null;
-  const paid = Math.max(0, Math.round(Number(amountPaid) || 0));
-  const before = { payment_status: row.payment_status, amount_paid: row.amount_paid, paid_at: row.paid_at };
-  row.amount_paid = paid;
-  row.payment_status = statusOf(paid, row.total);
-  row.paid_at = row.payment_status === 'chua_tt' ? null : (row.paid_at || new Date().toISOString());
+  if (!row || !remote) return row;
+  const before = {
+    payment_status: row.payment_status,
+    amount_paid: row.amount_paid,
+    paid_at: row.paid_at,
+    paid_by: row.paid_by || null,
+    payment_method: row.payment_method || null,
+  };
+  row.amount_paid = Math.max(0, Math.round(Number(remote.amount_paid) || 0));
+  row.payment_method = row.amount_paid > 0 ? cleanMethod(remote.payment_method) : null;
+  if (row.amount_paid <= 0) {
+    row.paid_at = null;
+    row.paid_by = null;
+  } else {
+    row.paid_at = row.paid_at || new Date().toISOString();
+    if (actor) row.paid_by = actor;
+  }
+  if (remote.id && row.document_type === 'invoice') row.kiot_id = String(remote.id).slice(0, 40);
   const saved = await save(row);
-  if (before.payment_status !== saved.payment_status || before.amount_paid !== saved.amount_paid) {
+  if (meta && meta.audit && (before.payment_status !== saved.payment_status || before.amount_paid !== saved.amount_paid || before.payment_method !== saved.payment_method)) {
     try {
       await audit.record({
         actor: actor || 'manager',
@@ -364,8 +410,19 @@ async function setPayment(code, amountPaid, actor, source) {
         entity_type: 'invoice',
         entity_id: saved.code,
         before,
-        after: { payment_status: saved.payment_status, amount_paid: saved.amount_paid, paid_at: saved.paid_at },
-        meta: { code: saved.code, source: source || 'manual', draft_id: saved.draft_id },
+        after: {
+          payment_status: saved.payment_status,
+          amount_paid: saved.amount_paid,
+          paid_at: saved.paid_at,
+          paid_by: saved.paid_by,
+          payment_method: saved.payment_method,
+        },
+        meta: {
+          code: saved.code,
+          source: meta.source || 'kiotviet',
+          draft_id: saved.draft_id,
+          kiot: meta.kiot || null,
+        },
       });
     } catch (err) {
       console.error('Invoice payment audit failed:', err.message);
@@ -374,17 +431,130 @@ async function setPayment(code, amountPaid, actor, source) {
   return saved;
 }
 
+/**
+ * Pay the remaining balance on an invoice that already exists in KiotViet.
+ * POST /payments, then GET the invoice and store that read.
+ * There is no public call to void one payment or to change its method.
+ */
+async function setPaymentStatus(code, { status, method, actor } = {}) {
+  const row = await getByCode(code);
+  if (!row) return null;
+  if (status !== 'da_tt') {
+    return { invoice: row, kiot: null, error: 'KiotViet không có API xoá một phiếu thu' };
+  }
+  if (row.document_type !== 'invoice' || !row.kiot_id) {
+    return { invoice: row, kiot: null, error: 'Chưa có hoá đơn KiotViet' };
+  }
+  if (row.payment_status === 'da_tt') return { invoice: row, kiot: null };
+  if (row.kiot_payment_id) {
+    const again = await kiotviet.readInvoicePayment({ id: row.kiot_id, code: row.code });
+    if (!again || !again.ok) {
+      return { invoice: row, kiot: again || null, error: (again && again.error) || 'Chưa đọc lại được hoá đơn trên KiotViet' };
+    }
+    const refreshed = await applyRemote(code, again, null, null);
+    if (!refreshed || refreshed.payment_status === 'da_tt') return { invoice: refreshed || row, kiot: null };
+    row = refreshed;
+  }
+  const methodName = cleanMethod(method);
+  if (methodName !== 'cash' && methodName !== 'transfer') {
+    return { invoice: row, kiot: null, error: 'Chọn Tiền mặt hoặc CK' };
+  }
+  const due = Math.max(0, row.total - row.amount_paid);
+  if (due <= 0) return { invoice: row, kiot: null };
+  const kiot = await kiotviet.addInvoicePayment({
+    invoiceId: row.kiot_id,
+    amount: due,
+    method: methodName,
+  });
+  if (!kiot || !kiot.ok) {
+    return { invoice: row, kiot: kiot || null, error: (kiot && kiot.error) || 'Không thu được trên KiotViet' };
+  }
+  if (kiot.paymentId || kiot.paymentCode) {
+    row.kiot_payment_id = String(kiot.paymentId || kiot.paymentCode).slice(0, 40);
+    await save(row);
+  }
+  const remote = await kiotviet.readInvoicePayment({ id: row.kiot_id, code: row.code });
+  if (!remote || !remote.ok) {
+    return {
+      invoice: await getByCode(code),
+      kiot,
+      error: (remote && remote.error) || 'Chưa đọc lại được hoá đơn trên KiotViet',
+    };
+  }
+  const saved = await applyRemote(code, remote, actor, {
+    audit: true,
+    source: 'toggle',
+    kiot: { paymentId: kiot.paymentId || null, paymentCode: kiot.paymentCode || null, method: kiot.method || null, amount: kiot.amount },
+  });
+  return { invoice: saved, kiot };
+}
+
+/** GET /invoices/{id} and overwrite the cache. The read wins over what we just sent. */
+async function replaceWithKiotRead(code) {
+  const row = await getByCode(code);
+  if (!row || row.document_type !== 'invoice' || !kiotviet.enabled()) return row;
+  if (!(row.kiot_id || row.code)) return row;
+  try {
+    const remote = await kiotviet.readInvoicePayment({ id: row.kiot_id, code: row.code });
+    if (remote && remote.ok) return await applyRemote(code, remote, null, null) || row;
+  } catch (err) {
+    console.warn('Invoice payment read skipped:', err.message);
+  }
+  return row;
+}
+
+/**
+ * Refresh the invoices on screen. The public list has no ids filter, so each
+ * open invoice is GET /invoices/{id}. No polling loop.
+ */
+async function refreshFromKiot(rows) {
+  if (!kiotviet.enabled()) return rows;
+  const list = rows || [];
+  const out = new Array(list.length);
+  const jobs = [];
+  list.forEach((row, index) => {
+    if (!row || row.document_type !== 'invoice' || !(row.kiot_id || row.code)) {
+      out[index] = row;
+      return;
+    }
+    jobs.push({ row, index });
+  });
+  let cursor = 0;
+  async function worker() {
+    while (cursor < jobs.length) {
+      const job = jobs[cursor];
+      cursor += 1;
+      try {
+        const remote = await kiotviet.readInvoicePayment({ id: job.row.kiot_id, code: job.row.code });
+        if (remote && remote.ok) {
+          out[job.index] = await applyRemote(job.row.code, remote, null, null) || job.row;
+          continue;
+        }
+      } catch (err) {
+        console.warn('Invoice payment refresh skipped:', err.message);
+      }
+      out[job.index] = job.row;
+    }
+  }
+  const workers = Math.min(8, jobs.length);
+  if (workers > 0) await Promise.all(Array.from({ length: workers }, () => worker()));
+  return out;
+}
+
 function dayKey(iso) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' }).format(d);
 }
 
-async function search({ q, from, to } = {}) {
+async function search({ q, from, to, payment } = {}) {
   await ensure();
   const query = String(q || '').trim().toLowerCase().slice(0, 80);
   const start = /^\d{4}-\d{2}-\d{2}$/.test(String(from || '')) ? String(from) : '';
   const end = /^\d{4}-\d{2}-\d{2}$/.test(String(to || '')) ? String(to) : '';
+  const want = payment === 'da_tt' || payment === 'chua_tt' || payment === 'cash' || payment === 'transfer'
+    ? payment
+    : '';
   let rows;
   if (!db.DB_ENABLED) {
     rows = [...memory.values()].map(row => ({ ...row, items: itemsOf(row.items) }));
@@ -403,6 +573,10 @@ async function search({ q, from, to } = {}) {
       const day = dayKey(row.created_at);
       if (start && day < start) return false;
       if (end && day > end) return false;
+      if (want === 'da_tt' && row.payment_status !== 'da_tt') return false;
+      if (want === 'chua_tt' && row.payment_status === 'da_tt') return false;
+      if (want === 'cash' && !(row.payment_status === 'da_tt' && row.payment_method === 'cash')) return false;
+      if (want === 'transfer' && !(row.payment_status === 'da_tt' && row.payment_method === 'transfer')) return false;
       return true;
     })
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
@@ -416,7 +590,7 @@ function csvCell(value) {
 }
 
 function toCsv(rows) {
-  const header = ['code', 'loai', 'ma_kh', 'khach', 'sdt', 'kenh', 'tong', 'da_thu', 'trang_thai', 'tao_luc', 'gui_luc'];
+  const header = ['code', 'loai', 'ma_kh', 'khach', 'sdt', 'kenh', 'tong', 'da_thu', 'trang_thai', 'paid_at', 'paid_by', 'method', 'tao_luc', 'gui_luc'];
   const lines = [header.join(',')];
   for (const row of rows) {
     lines.push([
@@ -429,6 +603,9 @@ function toCsv(rows) {
       row.total,
       row.amount_paid,
       row.payment_status,
+      row.paid_at,
+      row.paid_by,
+      row.payment_method === 'cash' ? 'Tiền mặt' : (row.payment_method === 'transfer' ? 'Chuyển khoản' : (row.payment_method === 'card' ? 'Thẻ' : (row.payment_method === 'mixed' ? 'Nhiều cách' : ''))),
       row.created_at,
       row.sent_at,
     ].map(csvCell).join(','));
@@ -464,7 +641,7 @@ async function pngFor(code) {
   if (!row || row.document_type !== 'invoice') return null;
   row = await backfillCustomerCode(row);
   const cached = images.get(row.code);
-  const stamp = `${row.amount_paid}|${row.total}|${row.customer_name}|${row.customer_code || ''}|${row.delivery_address || ''}|${JSON.stringify(row.items || [])}`;
+  const stamp = `${row.payment_status}|${row.payment_method || ''}|${row.amount_paid}|${row.total}|${row.customer_name}|${row.customer_code || ''}|${row.delivery_address || ''}|${JSON.stringify(row.items || [])}`;
   if (cached && cached.stamp === stamp) return cached.buffer;
   const buffer = await invoiceImage.render({
     ...row,
@@ -499,7 +676,11 @@ module.exports = {
   recordSale,
   markIssued,
   markSent,
-  setPayment,
+  setPaymentStatus,
+  applyRemote,
+  replaceWithKiotRead,
+  refreshFromKiot,
+  cleanMethod,
   search,
   toCsv,
   backfillCustomerCode,

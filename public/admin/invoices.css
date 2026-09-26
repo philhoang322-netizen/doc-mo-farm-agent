@@ -69,13 +69,43 @@ input {
 .btn.primary { background: var(--green); color: #fff; border-color: var(--green); }
 .note { min-height: 1.2em; color: var(--soft); }
 .card { cursor: pointer; }
+.id-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 .id-row {
   display: flex;
+  flex: 1 1 auto;
   flex-wrap: nowrap;
   align-items: baseline;
   gap: 8px;
   min-width: 0;
+  width: auto;
+  max-width: 100%;
 }
+.id-head > .pay-controls { display: contents; }
+.pay-controls { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.pay-chip, .pay-method, .pay-filter {
+  min-height: 44px;
+  height: 44px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid #e7c4c0;
+  background: #fff;
+  color: #8f1810;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+}
+.pay-chip.is-paid { border-color: var(--green); background: #e8f3ec; color: var(--green); }
+.pay-method, .pay-filter { border-color: var(--line); color: var(--ink); font-size: 13px; }
+.pay-method.is-clear { border-color: #e7c4c0; color: #8f1810; }
+.pay-chip { white-space: nowrap; }
+.pay-method.is-on, .pay-filter.is-on { border-color: var(--green); color: var(--green); }
+.pay-filters { display: flex; flex-wrap: wrap; gap: 4px; }
 .id-name {
   flex: 1 1 auto;
   min-width: 0;
@@ -141,6 +171,37 @@ input {
 .pay { margin-top: 10px; }
 .shot { width: 100%; height: auto; margin-top: 10px; border-radius: 10px; background: #fff; }
 .empty { color: var(--soft); padding: 24px 8px; }
+.undo-toasts {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  z-index: 46;
+  width: min(92vw, 520px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.undo-toasts .toast {
+  background: #1c1712;
+  color: #fff;
+  border-radius: 12px;
+  padding: 10px 12px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.undo-toasts .linkish {
+  min-height: 44px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+}
 @media (min-width: 900px) {
   body { max-width: 1100px; margin: 0 auto; padding: 28px; }
   .filters { flex-wrap: nowrap; align-items: flex-end; }

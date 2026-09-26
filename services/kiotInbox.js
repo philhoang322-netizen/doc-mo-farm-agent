@@ -42,14 +42,11 @@ function formatVnd(n) {
   return `${Math.round(value).toLocaleString('vi-VN')}đ`;
 }
 
-function paymentDraft({ code, total, link }) {
-  const lines = [
-    `Dạ em đã tạo hoá đơn ${code} cho mình, tổng ${formatVnd(total)} ạ.`,
-    '',
-    'Mình chuyển khoản giúp em:',
-    BANK_BLOCK,
-    `nội dung CK: ${code}`,
-  ];
+function paymentDraft({ code, total, link, paid }) {
+  const lines = [`Dạ em đã tạo hoá đơn ${code} cho mình, tổng ${formatVnd(total)} ạ.`];
+  if (!paid) {
+    lines.push('', 'Mình chuyển khoản giúp em:', BANK_BLOCK, `nội dung CK: ${code}`);
+  }
   if (link) lines.push('', `Hoá đơn: ${link}`);
   return lines.join('\n');
 }
@@ -530,6 +527,9 @@ async function prepareOrCreate(id, body, actorName) {
       address ? `Giao: ${address}` : null,
       note || null,
     ].filter(Boolean).join(' | ').slice(0, 500);
+    const invoiceKind = kind === 'invoice';
+    const paid = invoiceKind && body.payment_status === 'da_tt';
+    const paymentMethod = body.payment_method === 'cash' ? 'cash' : 'transfer';
 
     let customerComment = '';
     try {
@@ -552,6 +552,8 @@ async function prepareOrCreate(id, body, actorName) {
       description,
       customerId: body.kiot_customer_id,
       customerCode: body.kiot_customer_code,
+      paid: paid && kind === 'invoice',
+      paymentMethod,
     });
     if (!created || !created.ok) {
       return {
@@ -588,21 +590,57 @@ async function prepareOrCreate(id, body, actorName) {
         total: created.total,
         deliveryAddress: address,
       }, audit.managerActor(actorName));
+      if (recorded && (created.documentType || kind) === 'invoice') {
+        recorded = await invoices.replaceWithKiotRead(recorded.code) || recorded;
+      }
     } catch (err) {
       console.error('Invoice record failed:', err.message);
     }
 
     const isInvoice = (created.documentType || kind) === 'invoice';
+    if (paid && isInvoice) {
+      try {
+        await audit.record({
+          actor: audit.managerActor(actorName),
+          action: 'invoice.payment',
+          entity_type: 'invoice',
+          entity_id: created.code,
+          after: {
+            method: paymentMethod === 'cash' ? 'Cash' : 'Transfer',
+            totalPayment: created.total,
+          },
+          meta: {
+            source: 'create',
+            code: created.code,
+            kiot: {
+              method: paymentMethod === 'cash' ? 'Cash' : 'Transfer',
+              totalPayment: created.total,
+            },
+          },
+        });
+      } catch (err) {
+        console.error('Invoice create payment audit failed:', err.message);
+      }
+    }
+
+    const payStatus = recorded && (recorded.payment_status === 'da_tt' || recorded.payment_status === 'mot_phan')
+      ? recorded.payment_status
+      : 'chua_tt';
     const link = isInvoice ? invoices.pageUrl(created.code) : '';
     const reply = isInvoice
-      ? paymentDraft({ code: created.code, total: created.total, link })
+      ? paymentDraft({ code: created.code, total: created.total, link, paid: payStatus === 'da_tt' })
       : orderAck({ code: created.code, total: created.total });
     const summary = `${created.code} · ${formatVnd(created.total)}`;
     const nextForm = {
       ...(draft.review_form || {}),
       kiot_code: created.code,
-      kiot_total: String(created.total),
+      kiot_total: String((recorded && recorded.total) || created.total),
       kiot_kind: created.documentType || kind,
+      payment_status: payStatus,
+      payment_method: payStatus === 'chua_tt' ? null : (recorded && recorded.payment_method) || null,
+      amount_paid: recorded ? recorded.amount_paid : 0,
+      paid_at: payStatus === 'chua_tt' ? null : (recorded && recorded.paid_at) || null,
+      paid_by: payStatus === 'chua_tt' ? null : (recorded && recorded.paid_by) || null,
     };
     const patch = {
       invoice_code: created.code,
@@ -715,7 +753,7 @@ async function prepareOrCreate(id, body, actorName) {
   });
 }
 
-async function issueInvoice(id, actorName) {
+async function issueInvoice(id, actorName, body) {
   return queue(id, async () => {
     const draft = await drafts.getDraft(id);
     if (!draft) return { status: 404, body: { error: 'Không thấy bản nháp' } };
@@ -726,9 +764,14 @@ async function issueInvoice(id, actorName) {
       return { status: 409, body: { error: 'Chứng từ này đã là hoá đơn', code: existing.code } };
     }
     const row = await invoices.getByCode(existing.code);
+    const request = body || {};
+    const paid = request.payment_status === 'da_tt';
+    const paymentMethod = request.payment_method === 'cash' ? 'cash' : 'transfer';
     const issued = await kiotviet.issueInvoiceFromOrder({
       orderId: (row && (row.order_kiot_id || row.kiot_id)) || null,
       orderCode: existing.code,
+      paid,
+      paymentMethod,
     });
     if (!issued || !issued.ok) {
       return { status: 502, body: { error: (issued && issued.error) || 'Không xuất được hoá đơn' } };
@@ -745,8 +788,13 @@ async function issueInvoice(id, actorName) {
         customerCode: issued.customerCode || (row && row.customer_code) || draft.customer_code,
         channel: draft.channel,
         items: row && row.items,
+        paid: issued.paid === true,
+        paymentMethod: issued.paymentMethod,
+        paidBy: (row && row.paid_by) || audit.managerActor(actorName),
       }, audit.managerActor(actorName));
+      if (savedRow) savedRow = await invoices.replaceWithKiotRead(savedRow.code) || savedRow;
     } catch (err) {
+      console.error('markIssued failed:', err.message);
       return {
         status: 200,
         body: {
@@ -759,12 +807,19 @@ async function issueInvoice(id, actorName) {
       };
     }
     const link = invoices.pageUrl(issued.code);
-    const reply = paymentDraft({ code: issued.code, total: savedRow.total, link });
+    const reply = paymentDraft({ code: issued.code, total: savedRow.total, link, paid: savedRow.payment_status === 'da_tt' });
     const nextForm = {
       ...(draft.review_form || {}),
       kiot_code: issued.code,
       kiot_total: String(savedRow.total),
       kiot_kind: 'invoice',
+      payment_status: savedRow.payment_status === 'da_tt' || savedRow.payment_status === 'mot_phan'
+        ? savedRow.payment_status
+        : 'chua_tt',
+      payment_method: savedRow.payment_status === 'chua_tt' ? null : (savedRow.payment_method || null),
+      amount_paid: savedRow.amount_paid,
+      paid_at: savedRow.paid_at || null,
+      paid_by: savedRow.paid_by || null,
     };
     const patch = {
       invoice_code: issued.code,

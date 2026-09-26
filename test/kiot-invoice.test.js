@@ -47,6 +47,7 @@ const real = {
   findOrCreateCustomer: kiotviet.findOrCreateCustomer,
   getCustomer: kiotviet.getCustomer,
   call: kiotviet.call,
+  addInvoicePayment: kiotviet.addInvoicePayment,
   listInvoicesByCustomer: kiotviet.listInvoicesByCustomer,
   sendText: messenger.sendText,
   sendImage: messenger.sendImage,
@@ -62,6 +63,7 @@ const sent = { texts: [], images: [], zaloTexts: [], zaloImages: [] };
 let createdDocs = [];
 let issued = null;
 let payment = null;
+let paymentPosts = [];
 
 function installMocks() {
   sent.texts = [];
@@ -70,7 +72,26 @@ function installMocks() {
   sent.zaloImages = [];
   createdDocs = [];
   issued = null;
+  paymentPosts = [];
   payment = { ok: true, amount_paid: 0, payment_status: 'chua_tt', kiot_status: 1 };
+  kiotviet.addInvoicePayment = async (input) => {
+    paymentPosts.push(input);
+    payment = {
+      ok: true,
+      amount_paid: input.amount,
+      payment_status: 'da_tt',
+      payment_method: input.method === 'cash' ? 'cash' : 'transfer',
+      total: 85000,
+      kiot_status: 1,
+    };
+    return {
+      ok: true,
+      paymentId: '9001',
+      paymentCode: 'PT0001',
+      amount: input.amount,
+      method: input.method === 'cash' ? 'Cash' : 'Transfer',
+    };
+  };
   kiotviet.enabled = () => true;
   kiotviet.findProduct = async ({ sku }) => {
     const hit = CATALOG.find(p => p.code === sku);
@@ -87,6 +108,18 @@ function installMocks() {
     const qty = Number(input.lines[0] && input.lines[0].quantity) || 1;
     const total = product ? product.price * qty : 0;
     const order = input.documentType === 'order';
+    if (!order) {
+      payment = input.paid
+        ? {
+          ok: true,
+          amount_paid: total,
+          payment_status: 'da_tt',
+          payment_method: input.paymentMethod === 'cash' ? 'cash' : 'transfer',
+          total,
+          kiot_status: 1,
+        }
+        : { ok: true, amount_paid: 0, payment_status: 'chua_tt', payment_method: null, total, kiot_status: 1 };
+    }
     return {
       ok: true,
       id: order ? '55' : '77',
@@ -177,6 +210,7 @@ after(() => {
     findOrCreateCustomer: real.findOrCreateCustomer,
     getCustomer: real.getCustomer,
     call: real.call,
+    addInvoicePayment: real.addInvoicePayment,
     listInvoicesByCustomer: real.listInvoicesByCustomer,
   });
   messenger.sendText = real.sendText;
@@ -520,17 +554,33 @@ test('Hóa đơn list, manual payment, Kiot sync, and CSV', async () => {
     assert.equal(listBody.invoices[0].code, 'HD011637');
     assert.equal(listBody.invoices[0].payment_status, 'chua_tt');
 
-    const partial = await fetch(`${base}/admin/api/invoices/HD011637/paid`, {
+    const marked = await fetch(`${base}/admin/api/invoices/HD011637/paid`, {
       method: 'POST',
       headers: authHeaders(),
-      body: JSON.stringify({ amount: 20000 }),
+      body: JSON.stringify({ status: 'da_tt', method: 'transfer' }),
     });
-    assert.equal(partial.status, 200);
-    const partialBody = await partial.json();
+    assert.equal(marked.status, 200);
+    const markedBody = await marked.json();
+    assert.equal(markedBody.invoice.payment_status, 'da_tt');
+    assert.equal(markedBody.invoice.amount_paid, 85000);
+    assert.equal(markedBody.invoice.payment_method, 'transfer');
+    assert.equal(markedBody.invoice.paid_by, 'manager');
+    assert.equal(markedBody.invoice.kiot_payment_id, '9001');
+    assert.equal(paymentPosts.length, 1);
+    assert.equal(paymentPosts[0].invoiceId, '77');
+    assert.equal(paymentPosts[0].amount, 85000);
+
+    payment = { ok: true, amount_paid: 20000, payment_status: 'mot_phan', kiot_status: 1, total: 85000 };
+    const partialSync = await fetch(`${base}/admin/api/invoices/HD011637/sync`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    assert.equal(partialSync.status, 200);
+    const partialBody = await partialSync.json();
     assert.equal(partialBody.invoice.payment_status, 'mot_phan');
     assert.equal(partialBody.invoice.amount_paid, 20000);
 
-    payment = { ok: true, amount_paid: 85000, payment_status: 'da_tt', kiot_status: 1, total: 85000 };
+    payment = { ok: true, amount_paid: 85000, payment_status: 'da_tt', payment_method: 'transfer', kiot_status: 1, total: 85000 };
     const synced = await fetch(`${base}/admin/api/invoices/HD011637/sync`, {
       method: 'POST',
       headers: authHeaders(),
@@ -540,7 +590,8 @@ test('Hóa đơn list, manual payment, Kiot sync, and CSV', async () => {
     assert.equal(syncedBody.invoice.payment_status, 'da_tt');
     assert.equal(syncedBody.invoice.amount_paid, 85000);
     const payLogs = await audit.list({ action: 'invoice.payment', entity_id: 'HD011637' });
-    assert.ok(payLogs.logs.length >= 2);
+    assert.ok(payLogs.logs.length >= 1);
+    assert.equal(payLogs.logs.some(row => row.meta && row.meta.source === 'toggle'), true);
 
     const csv = await fetch(`${base}/admin/api/invoices.csv?q=HD011637`, { headers: authHeaders() });
     assert.equal(csv.status, 200);
@@ -549,6 +600,8 @@ test('Hóa đơn list, manual payment, Kiot sync, and CSV', async () => {
     assert.match(text, /HD011637/);
     assert.match(text, /KH0009/);
     assert.match(text, /da_tt/);
+    assert.match(text, /Chuyển khoản/);
+    assert.match(text, /paid_by/);
     const byCode = await fetch(`${base}/admin/api/invoices?q=KH0009`, { headers: authHeaders() });
     assert.equal(byCode.status, 200);
     const byCodeBody = await byCode.json();

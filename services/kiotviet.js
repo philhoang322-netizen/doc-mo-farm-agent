@@ -308,8 +308,8 @@ async function pushOrder(order) {
       branchId: branch,
       purchaseDate: new Date().toISOString(),
       discount: 0,
-      totalPayment: total,
-      makeInvoice: false,          // order only, no invoice / no stock movement
+      totalPayment: 0,
+      makeInvoice: false,          // order only, no invoice / no stock movement, no deposit
       description: [
         `Đơn từ Zalo AI — ${order.order_number}`,
         order.address ? `Giao: ${order.address}` : null,
@@ -654,14 +654,45 @@ function documentTotal(created, fallback) {
   return fallback;
 }
 
+/** Cash or Transfer. KiotViet create uses these exact method strings. */
+function kiotMethod(method) {
+  const raw = String(method || '').toLowerCase();
+  if (raw === 'cash' || raw === 'tien mat' || raw === 'tiền mặt') return 'Cash';
+  return 'Transfer';
+}
+
+/** Kiot bank-account id. Official create/payment docs mark accountId optional and say to send it for Transfer or Card. */
+function bankAccountId() {
+  const account = String(process.env.KIOTVIET_ACCOUNT_ID || '').trim();
+  return /^\d+$/.test(account) ? Number(account) : null;
+}
+
+/**
+ * Payment fields for POST /invoices (public API 2.12.3).
+ * totalPayment is what the customer has already paid. method is Cash or Transfer.
+ * accountId is attached for Transfer only when KIOTVIET_ACCOUNT_ID is set.
+ */
+function invoicePaymentFields(paid, paymentMethod, total) {
+  const amount = paid ? Math.max(0, Math.round(Number(total) || 0)) : 0;
+  const method = amount > 0 ? kiotMethod(paymentMethod) : 'Transfer';
+  const fields = { totalPayment: amount, method };
+  if (amount > 0 && method === 'Transfer') {
+    const accountId = bankAccountId();
+    if (accountId) fields.accountId = accountId;
+  }
+  return fields;
+}
+
 /**
  * Build the Public API body for an invoice (HĐ) or an order (Đặt hàng).
- * Invoice totalPayment stays 0 so KiotViet does not mark it paid; the
- * customer transfers after the manager sends the draft.
+ * Orders always send totalPayment 0: no deposit.
+ * A paid invoice sends totalPayment = total and method Cash or Transfer
+ * (POST /invoices, public API 2.12.3). Prices are already VAT-inclusive;
+ * this payload does not add a tax line.
  */
 function salePayload({
   kind, branchId, customerId, customerName, phone, address,
-  discount, shippingFee, description, details,
+  discount, shippingFee, description, details, paid, paymentMethod, total,
 }) {
   const ship = moneyAmount(shippingFee);
   const off = moneyAmount(discount);
@@ -688,12 +719,12 @@ function salePayload({
     if (delivery) payload.orderDelivery = delivery;
     return payload;
   }
+  const pay = invoicePaymentFields(paid, paymentMethod, total);
   const payload = {
     branchId,
     purchaseDate: new Date().toISOString(),
     discount: off,
-    totalPayment: 0,
-    method: 'Transfer',
+    ...pay,
     usingCod: false,
     description: description || '',
     invoiceDetails: details,
@@ -723,6 +754,8 @@ async function createSaleDocument({
   customerComment,
   customerId,
   customerCode,
+  paid = false,
+  paymentMethod,
 } = {}) {
   if (!enabled()) return { ok: false, error: 'KiotViet chưa cấu hình' };
   const kind = documentType === 'order' ? 'order' : 'invoice';
@@ -794,6 +827,9 @@ async function createSaleDocument({
       shippingFee: ship,
       description: desc,
       details,
+      paid: paid === true,
+      paymentMethod,
+      total,
     });
     const path = kind === 'order' ? '/orders' : '/invoices';
     const created = await module.exports.call('post', path, { data: payload });
@@ -813,6 +849,8 @@ async function createSaleDocument({
       customerId: customer.id,
       customerCode: saleCustomerCode,
       customerName: customer.name || customerName || null,
+      paid: kind === 'invoice' && paid === true,
+      paymentMethod: paid === true ? kiotMethod(paymentMethod) : null,
     };
   } catch (e) {
     console.error('KiotViet createSaleDocument failed:', e.message);
@@ -839,6 +877,15 @@ async function fetchSaleDoc(collection, { id, code } = {}) {
   }
 }
 
+function localMethod(method) {
+  const raw = String(method || '').toLowerCase();
+  if (raw === 'cash' || raw === 'tien mat' || raw === 'tiền mặt') return 'cash';
+  if (raw === 'transfer' || raw === 'ck' || raw === 'chuyen khoan' || raw === 'chuyển khoản') return 'transfer';
+  if (raw === 'card' || raw === 'the' || raw === 'thẻ') return 'card';
+  if (raw === 'mixed') return 'mixed';
+  return null;
+}
+
 function paymentFromInvoice(doc) {
   const total = Math.round(Number(doc && doc.total) || 0);
   const paidRaw = doc && (doc.totalPayment != null ? doc.totalPayment : doc.totalPaid);
@@ -846,14 +893,61 @@ function paymentFromInvoice(doc) {
   let payment_status = 'chua_tt';
   if (paid > 0 && total > 0 && paid < total) payment_status = 'mot_phan';
   else if (paid > 0 && (total === 0 || paid >= total)) payment_status = 'da_tt';
+  const seen = [];
+  const rows = Array.isArray(doc && doc.payments) ? doc.payments : [];
+  for (const payment of rows) {
+    const method = localMethod(payment && payment.method);
+    if (method && !seen.includes(method)) seen.push(method);
+  }
+  let payment_method = null;
+  if (paid > 0) {
+    if (seen.length > 1) payment_method = 'mixed';
+    else if (seen.length === 1) payment_method = seen[0];
+    else payment_method = localMethod(doc && doc.method);
+  }
   return {
     payment_status,
     amount_paid: paid,
+    payment_method,
     total,
     kiot_status: doc && doc.status != null ? doc.status : null,
     id: doc && doc.id != null ? String(doc.id) : null,
     code: doc && doc.code ? String(doc.code) : null,
   };
+}
+
+/**
+ * Collect the balance on an invoice that already exists.
+ * Public API 2.14.2: POST https://public.kiotapi.com/payments
+ * { amount, method: Cash|Card|Transfer, accountId?, invoiceId }.
+ * There is no public call to remove that payment without voiding the invoice.
+ */
+async function addInvoicePayment({ invoiceId, amount, method } = {}) {
+  if (!module.exports.enabled()) return { ok: false, skipped: true, error: 'KiotViet chưa cấu hình' };
+  const id = Number(invoiceId);
+  if (!Number.isFinite(id) || id <= 0) return { ok: false, error: 'Thiếu mã hoá đơn KiotViet' };
+  const body = {
+    invoiceId: id,
+    amount: Math.max(0, Math.round(Number(amount) || 0)),
+    method: kiotMethod(method),
+  };
+  if (body.method === 'Transfer') {
+    const accountId = bankAccountId();
+    if (accountId) body.accountId = accountId;
+  }
+  try {
+    const created = await module.exports.call('post', '/payments', { data: body });
+    const paymentId = created && (created.paymentId || created.id);
+    return {
+      ok: true,
+      paymentId: paymentId != null ? String(paymentId) : null,
+      paymentCode: created && created.paymentCode ? String(created.paymentCode) : null,
+      amount: body.amount,
+      method: body.method,
+    };
+  } catch (e) {
+    return { ok: false, error: explainKiotError(e) };
+  }
 }
 
 /** Read one Kiot invoice and map totalPayment onto our payment status. */
@@ -870,9 +964,10 @@ async function readInvoicePayment({ id, code } = {}) {
 
 /**
  * Turn a confirmed order (ĐH) into an invoice (HĐ). Separate from create:
- * the manager presses Xuất hóa đơn. totalPayment stays 0.
+ * the manager presses Xuất hóa đơn. A paid order includes totalPayment on
+ * that invoice. The order itself never carries a deposit.
  */
-async function issueInvoiceFromOrder({ orderId, orderCode } = {}) {
+async function issueInvoiceFromOrder({ orderId, orderCode, paid = false, paymentMethod } = {}) {
   if (!enabled()) return { ok: false, error: 'KiotViet chưa cấu hình' };
   try {
     const order = await fetchSaleDoc('orders', { id: orderId, code: orderCode });
@@ -909,8 +1004,7 @@ async function issueInvoiceFromOrder({ orderId, orderCode } = {}) {
       purchaseDate: new Date().toISOString(),
       customerId: order.customerId,
       discount: moneyAmount(order.discount),
-      totalPayment: 0,
-      method: 'Transfer',
+      ...invoicePaymentFields(paid, paymentMethod, order.total),
       description: order.description || '',
       invoiceDetails: details,
     };
@@ -930,6 +1024,8 @@ async function issueInvoiceFromOrder({ orderId, orderCode } = {}) {
       customerId: order.customerId || null,
       customerCode,
       customerName: order.customerName || null,
+      paid: paid === true,
+      paymentMethod: paid ? kiotMethod(paymentMethod) : null,
     };
   } catch (e) {
     console.error('KiotViet issueInvoiceFromOrder failed:', e.message);
@@ -963,6 +1059,7 @@ module.exports = {
   listProductsForMatch, findCustomerByPhone, findOrCreateCustomer, getCustomer,
   ensureSaleCustomerCode, listInvoicesByCustomer,
   explainKiotError, paymentFromInvoice, readInvoicePayment, issueInvoiceFromOrder,
+  addInvoicePayment, kiotMethod, bankAccountId, invoicePaymentFields,
   cleanCustomerCode, MISSING_CUSTOMER_CODE, call,
   DEFAULT_SALE_BRANCH_ID,
 };
