@@ -751,7 +751,7 @@ test('quick entry suggests a product from the cache and the 1024 header stays in
     const suggestion = await phone.locator('.kiot-suggest .kiot-hit').first().innerText();
     assert.match(suggestion, /Nước nghệ thử/);
     assert.match(suggestion, /NN-DEMO/);
-    assert.match(suggestion, /Tồn 8/);
+    assert.match(suggestion, /Còn Kho 8/);
     assert.equal(calls.search, 0);
     assert.ok(calls.catalog >= 1);
     await phone.locator('.kiot-suggest').scrollIntoViewIfNeeded();

@@ -2712,9 +2712,9 @@
     if (!stock || stock.level == null || stock.level === 'unknown') return 'Chưa rõ tồn';
     if (stock.level === 'blocked') {
       if (Number(stock.available) === 0) return 'Hết hàng';
-      return 'Không đủ (còn ' + stock.available + ')';
+      return 'Không đủ (Còn Kho ' + stock.available + ')';
     }
-    if (stock.level === 'low') return 'Sắp hết (còn ' + stock.available + ')';
+    if (stock.level === 'low') return 'Sắp hết (Còn Kho ' + stock.available + ')';
     return 'Còn Kho ' + stock.available;
   }
 
@@ -3535,7 +3535,7 @@
       if (product.name) bits.push(product.name);
       if (product.code) bits.push(product.code);
       if (product.price != null) bits.push(vnd(product.price));
-      if (product.available != null) bits.push('Tồn ' + product.available);
+      if (product.available != null) bits.push('Còn Kho ' + product.available);
       return bits.join(' · ') || 'Sản phẩm';
     }
 

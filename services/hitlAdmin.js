@@ -26,7 +26,7 @@ const faqAdmin = require('./faqAdmin');
 const faqBody = require('./faqBody');
 
 const PUBLIC = path.join(__dirname, '..', 'public', 'admin');
-const ASSET_REV = '44';
+const ASSET_REV = '45';
 
 const fails = new Map();
 
