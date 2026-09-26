@@ -825,6 +825,57 @@ body.hitl .list-scroll {
   flex-direction: column;
   gap: 0;
 }
+body.inbox .inbox-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 48px;
+  margin: 0;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  background: #efeae0;
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+}
+body.inbox .inbox-section-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+body.inbox .inbox-section-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: var(--green-soft);
+  color: var(--green-deep);
+  font-size: 14px;
+  font-weight: 700;
+}
+body.inbox .inbox-section-chevron {
+  display: block;
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  margin-right: 2px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+}
+body.inbox .inbox-section.is-open .inbox-section-chevron {
+  transform: rotate(45deg);
+  margin-top: -3px;
+}
 body.hitl .msg-card {
   background: transparent;
   border: 0;
