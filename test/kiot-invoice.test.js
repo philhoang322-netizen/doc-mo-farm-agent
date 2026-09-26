@@ -108,6 +108,18 @@ function installMocks() {
     const qty = Number(input.lines[0] && input.lines[0].quantity) || 1;
     const total = product ? product.price * qty : 0;
     const order = input.documentType === 'order';
+    if (!order) {
+      payment = input.paid
+        ? {
+          ok: true,
+          amount_paid: total,
+          payment_status: 'da_tt',
+          payment_method: input.paymentMethod === 'cash' ? 'cash' : 'transfer',
+          total,
+          kiot_status: 1,
+        }
+        : { ok: true, amount_paid: 0, payment_status: 'chua_tt', payment_method: null, total, kiot_status: 1 };
+    }
     return {
       ok: true,
       id: order ? '55' : '77',
@@ -568,7 +580,7 @@ test('Hóa đơn list, manual payment, Kiot sync, and CSV', async () => {
     assert.equal(partialBody.invoice.payment_status, 'mot_phan');
     assert.equal(partialBody.invoice.amount_paid, 20000);
 
-    payment = { ok: true, amount_paid: 85000, payment_status: 'da_tt', kiot_status: 1, total: 85000 };
+    payment = { ok: true, amount_paid: 85000, payment_status: 'da_tt', payment_method: 'transfer', kiot_status: 1, total: 85000 };
     const synced = await fetch(`${base}/admin/api/invoices/HD011637/sync`, {
       method: 'POST',
       headers: authHeaders(),
@@ -578,7 +590,7 @@ test('Hóa đơn list, manual payment, Kiot sync, and CSV', async () => {
     assert.equal(syncedBody.invoice.payment_status, 'da_tt');
     assert.equal(syncedBody.invoice.amount_paid, 85000);
     const payLogs = await audit.list({ action: 'invoice.payment', entity_id: 'HD011637' });
-    assert.ok(payLogs.logs.length >= 2);
+    assert.ok(payLogs.logs.length >= 1);
     assert.equal(payLogs.logs.some(row => row.meta && row.meta.source === 'toggle'), true);
 
     const csv = await fetch(`${base}/admin/api/invoices.csv?q=HD011637`, { headers: authHeaders() });

@@ -577,8 +577,6 @@ function cleanReviewForm(value) {
     out.paid_by = null;
     out.payment_method = null;
     out.amount_paid = out.payment_status === 'chua_tt' ? 0 : null;
-  } else if (out.payment_status === 'da_tt' && !out.payment_method) {
-    out.payment_method = 'transfer';
   }
   return out;
 }

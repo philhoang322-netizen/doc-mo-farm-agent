@@ -834,7 +834,7 @@ async function invoicesSync(req, res) {
   if (!remote || !remote.ok) {
     return res.status(502).json({ error: (remote && remote.error) || 'Không đọc được KiotViet' });
   }
-  const saved = await invoices.applyRemote(row.code, remote, await auditActor(req), { audit: true, source: 'kiotviet' });
+  const saved = await invoices.applyRemote(row.code, remote, null, null);
   res.json({ invoice: invoices.present(saved), kiot_status: remote.kiot_status });
 }
 

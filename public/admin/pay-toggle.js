@@ -25,9 +25,10 @@
     if (status !== 'da_tt') return 'Chưa TT';
     if (method === 'cash') return 'Đã TT · Tiền mặt';
     if (method === 'card') return 'Đã TT · Thẻ';
-    if (method === 'mixed') return 'Đã TT · Nhiều cách';
-    return 'Đã TT · CK';
-  }
+  if (method === 'mixed') return 'Đã TT · Nhiều cách';
+  if (method === 'transfer') return 'Đã TT · CK';
+  return 'Đã TT';
+}
 
   function choices(status) {
     if (status === 'da_tt') return [];

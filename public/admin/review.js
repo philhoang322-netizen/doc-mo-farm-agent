@@ -1188,13 +1188,17 @@
     };
   }
 
+  function invoiceCodeOf(d) {
+    const f = formOf(d);
+    const code = String((f && f.kiot_code) || (d && d.invoice_code) || '').trim();
+    if (!/^HD/i.test(code)) return '';
+    if (f && f.kiot_kind === 'order') return '';
+    return code;
+  }
+
   function showOrderChip(d) {
     if (!d || d.deleted_at || !me.canKiot) return false;
-    const f = formOf(d);
-    if (f.kiot_code || f.payment_status || f.kiot_kind) return true;
-    if (d.triage_level === 'hot') return true;
-    if (/sales/i.test(d.assigned_department || '')) return true;
-    return false;
+    return !!invoiceCodeOf(d);
   }
 
   function commitPay(d, status, method) {
@@ -1202,7 +1206,7 @@
     d.review_form = Object.assign({}, f, {
       payment_status: status === 'mot_phan' ? 'mot_phan' : (status === 'da_tt' ? 'da_tt' : 'chua_tt'),
       payment_method: status === 'da_tt' || status === 'mot_phan'
-        ? (method === 'cash' || method === 'card' || method === 'mixed' ? method : (method ? 'transfer' : null))
+        ? (method === 'cash' || method === 'transfer' || method === 'card' || method === 'mixed' ? method : null)
         : null,
       paid_at: status === 'da_tt' || status === 'mot_phan' ? (f.paid_at || new Date().toISOString()) : null,
       paid_by: status === 'da_tt' || status === 'mot_phan' ? (actorName() || 'manager') : null,
@@ -1276,7 +1280,7 @@
 
   function schedulePay(d, status, method) {
     const policy = window.payToggle;
-    if (!policy || !d) return;
+    if (!policy || !d || !invoiceCodeOf(d)) return;
     const now = payState(d);
     const methodName = status === 'da_tt' ? (method === 'cash' ? 'cash' : 'transfer') : null;
     if (now.status === status && now.method === methodName && !pendingPay.get(d.id)) {
@@ -1294,12 +1298,6 @@
     if (status !== previous.status || methodName !== previous.method) pushPayToast(d.id, status);
     renderList();
     if (selectedId === d.id) renderDetail();
-  }
-
-  function committedPay(d) {
-    const pending = pendingPay.get(d && d.id);
-    if (pending) return { status: pending.previous.status, method: pending.previous.method };
-    return payState(d);
   }
 
   function togglePayMenu(d) {
@@ -2621,7 +2619,6 @@
 
     const totals = el('p', { class: 'kiot-total', text: '' });
     panel.appendChild(totals);
-    if (!state.existing) panel.appendChild(payControls(d));
     const summary = el('div', { class: 'kiot-summary hidden' });
     panel.appendChild(summary);
     const err = el('p', { class: 'banner bad hidden' });
@@ -2646,7 +2643,7 @@
       row.appendChild(el('span', { class: 'id-code', title: 'Mã HĐ', text: mark.code }));
       const head = el('div', { class: 'id-head' });
       head.appendChild(row);
-      head.appendChild(payControls(d));
+      if (invoice) head.appendChild(payControls(d));
       box.appendChild(head);
       const bits = [];
       if (mark.total != null && mark.total !== '') bits.push('Tổng ' + vnd(mark.total));
@@ -2667,14 +2664,9 @@
       showError('');
       button.disabled = true;
       try {
-        const pay = committedPay(d);
         const data = await api('/admin/api/drafts/' + d.id + '/kiotviet/invoice', {
           method: 'POST',
-          body: JSON.stringify({
-            actor_name: actorName(),
-            payment_status: pay.status,
-            payment_method: pay.method,
-          }),
+          body: JSON.stringify({ actor_name: actorName() }),
         });
         const reply = detailEl.querySelector('#draft-reply');
         if (reply && data.draft && data.draft.draft_reply && d.approval_status !== 'SENT') {
@@ -3069,8 +3061,6 @@
         lines,
         actor_name: actorName(),
         acknowledge_existing: state.acknowledge === true,
-        payment_status: committedPay(d).status,
-        payment_method: committedPay(d).method,
       };
       if (confirm && state.quote && state.quote.total != null) body.expected_total = state.quote.total;
       const matched = state.kiotCustomer;

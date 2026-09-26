@@ -589,11 +589,6 @@ async function prepareOrCreate(id, body, actorName) {
         items: saleItems,
         total: created.total,
         deliveryAddress: address,
-        paymentStatus: paid ? 'da_tt' : 'chua_tt',
-        paymentMethod: paid ? paymentMethod : null,
-        paidAt: paid ? new Date().toISOString() : null,
-        paidBy: paid ? audit.managerActor(actorName) : null,
-        kiotPaymentIncluded: paid,
       }, audit.managerActor(actorName));
       if (recorded && (created.documentType || kind) === 'invoice') {
         recorded = await invoices.replaceWithKiotRead(recorded.code) || recorded;
@@ -603,6 +598,31 @@ async function prepareOrCreate(id, body, actorName) {
     }
 
     const isInvoice = (created.documentType || kind) === 'invoice';
+    if (paid && isInvoice) {
+      try {
+        await audit.record({
+          actor: audit.managerActor(actorName),
+          action: 'invoice.payment',
+          entity_type: 'invoice',
+          entity_id: created.code,
+          after: {
+            method: paymentMethod === 'cash' ? 'Cash' : 'Transfer',
+            totalPayment: created.total,
+          },
+          meta: {
+            source: 'create',
+            code: created.code,
+            kiot: {
+              method: paymentMethod === 'cash' ? 'Cash' : 'Transfer',
+              totalPayment: created.total,
+            },
+          },
+        });
+      } catch (err) {
+        console.error('Invoice create payment audit failed:', err.message);
+      }
+    }
+
     const payStatus = recorded && (recorded.payment_status === 'da_tt' || recorded.payment_status === 'mot_phan')
       ? recorded.payment_status
       : 'chua_tt';

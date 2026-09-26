@@ -215,11 +215,9 @@ test('toggle stores payment, audits, and posts to Kiot once', async () => {
       documentType: 'invoice',
       customerName: 'Anh Minh',
       total: 180000,
-      paymentStatus: 'da_tt',
-      paymentMethod: 'cash',
-      paidBy: 'manager',
       items: [{ name: 'Trứng', quantity: 1, price: 180000, amount: 180000 }],
     });
+    await invoices.applyRemote('HD101', { amount_paid: 180000, payment_method: 'cash', total: 180000 }, null, null);
 
     const paidOnly = await invoices.search({ payment: 'da_tt' });
     assert.ok(paidOnly.some(row => row.code === 'HD100'));
@@ -287,8 +285,6 @@ test('a KiotViet read replaces the status stored when the invoice was created', 
       documentType: 'invoice',
       customerName: 'Chị Lan',
       total: 50000,
-      paymentStatus: 'da_tt',
-      paymentMethod: 'transfer',
       items: [{ name: 'Xúc xích', quantity: 1, price: 50000, amount: 50000 }],
     });
     const mirrored = await invoices.replaceWithKiotRead('HD300');
@@ -369,6 +365,7 @@ test('header chip shares the row when it fits and drops to the next row when it 
     ...sample,
     customer_code: 'KH000123456789',
     payment_status: 'da_tt',
+    payment_method: 'transfer',
   }, 360);
   assert.equal(tight.name.y, tight.kh.y);
   assert.equal(tight.kh.y, tight.hd.y);
@@ -402,7 +399,8 @@ test('chip is one tap, 3 seconds, no confirm, and the list filter is wired', () 
   assert.match(reviewJs, /Đã TT/);
   assert.match(reviewJs, /Hoàn tác/);
   assert.match(reviewJs, /payToggle/);
-  assert.match(reviewJs, /committedPay\(d\)\.status/);
+  assert.match(reviewJs, /function invoiceCodeOf/);
+  assert.doesNotMatch(reviewJs, /committedPay/);
   assert.doesNotMatch(reviewJs, /Xuất hoá đơn để có mã QR/);
   const payFn = reviewJs.slice(reviewJs.indexOf('function schedulePay'), reviewJs.indexOf('function payControls'));
   assert.doesNotMatch(payFn, /confirm\(/);

@@ -117,7 +117,8 @@ function payLabel(invoice) {
   if (invoice.payment_method === 'cash') return 'Đã TT · Tiền mặt';
   if (invoice.payment_method === 'card') return 'Đã TT · Thẻ';
   if (invoice.payment_method === 'mixed') return 'Đã TT · Nhiều cách';
-  return 'Đã TT · CK';
+  if (invoice.payment_method === 'transfer') return 'Đã TT · CK';
+  return 'Đã TT';
 }
 
 function payMethodCaption(invoice) {
@@ -125,7 +126,8 @@ function payMethodCaption(invoice) {
   if (invoice.payment_method === 'cash') return 'Tiền mặt';
   if (invoice.payment_method === 'card') return 'Thẻ';
   if (invoice.payment_method === 'mixed') return 'Nhiều cách';
-  return 'Chuyển khoản';
+  if (invoice.payment_method === 'transfer') return 'Chuyển khoản';
+  return '';
 }
 
 /**
