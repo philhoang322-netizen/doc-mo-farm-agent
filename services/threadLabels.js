@@ -10,7 +10,9 @@
  *
  * DV keywords are learned only from threads labeled DV by a service topic,
  * never from a sign-off. Catalog product names and generic sales words are
- * not learned. Backfill and relabel stay local: they do not call Claude.
+ * not learned. A manual move also stores a training row and shifts n-gram
+ * weights; relabel recomputes those weights and does not overwrite the
+ * manual label. Backfill and relabel stay local: they do not call Claude.
  * Live classification may, and that call gets at most eight short sanitized
  * examples plus the thread label and learned keywords. Message bodies
  * are not logged.
@@ -20,6 +22,7 @@ const pii = require('./pii');
 const bizLine = require('./bizLine');
 const lanhMark = require('./lanhMark');
 const fbDvRule = require('./fbDvRule');
+const labelMoves = require('./labelMoves');
 const store = require('./conversationStore');
 
 const SOURCES = ['staff_lanh', 'signature', 'keyword', 'manual', 'model'];
@@ -64,6 +67,7 @@ function resetForTests() {
   keywordCache = null;
   shotCache = null;
   fbDvRule.resetForTests();
+  labelMoves.resetForTests();
 }
 
 function extraPhrases() {
@@ -117,7 +121,8 @@ function lanhAttribution(messages) {
 }
 
 function ruleFromMessages(messages) {
-  return fbDvRule.decide(messages);
+  const base = fbDvRule.decide(messages);
+  return labelMoves.combine(base, labelMoves.scoreMessages(messages));
 }
 
 /**
@@ -187,6 +192,7 @@ async function ensureLearned() {
   if (keywordCache) return keywordCache;
   keywordCache = (async () => {
     const labels = await store.allLabels('fb');
+    await labelMoves.recompute();
     await refreshKeywords(labels);
     shotCache = await fewShotFromStore(labels);
   })().catch((err) => {
@@ -537,6 +543,7 @@ async function fewShotFromStore(labels) {
 
 async function relabel() {
   await fbDvRule.loadProductPhrases();
+  await labelMoves.recompute();
   const rows = await store.all('fb');
   const byThread = new Map();
   for (const row of rows) {
@@ -581,14 +588,17 @@ async function relabel() {
     counts: countLabels(labels),
     drafts_updated: draftsUpdated,
     keywords,
+    ...labelMoves.summary(),
   };
 }
 
 async function stats() {
   const labels = await store.allLabels('fb');
+  await labelMoves.recompute();
   return {
     counts: countLabels(labels),
     keywords: await refreshKeywords(labels),
+    ...labelMoves.summary(),
   };
 }
 

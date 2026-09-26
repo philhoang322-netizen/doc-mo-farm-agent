@@ -15,6 +15,7 @@ const catalog = require('./catalog');
 const store = require('./conversationStore');
 const threadLabels = require('./threadLabels');
 const fbDvRule = require('./fbDvRule');
+const labelMoves = require('./labelMoves');
 
 const REASONS = ['staff_lanh', 'signature', 'keyword', 'manual', 'model'];
 const LABELS = ['sale', 'dv', 'unknown'];
@@ -315,6 +316,7 @@ async function build(input) {
     store.allLabels('fb'),
     catalogEntries(),
     fbDvRule.loadProductPhrases(),
+    labelMoves.recompute(),
   ]);
   const byThread = groupMessages(rows);
   const existing = new Map(labels.map((row) => [row.thread_id, row]));
@@ -346,6 +348,7 @@ async function build(input) {
     signature_histogram: histogram(selected),
     signature_dv: splitCounts(signatureDv),
     rule_counts: countProjected(projected),
+    ...labelMoves.summary(),
     catalog_sources: ['products', 'faq'],
     matcher: {
       topic: 'The customer\'s latest message with a topic hit wins. Page text is used only when the customer has no topic. Inside one message the later hit wins, so "xin giá phòng" is DV and a later product is Sale. Catalog and FAQ product names, price, ship, and order are Sale. Service words and FAQ service entries are DV.',
