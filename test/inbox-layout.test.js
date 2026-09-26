@@ -183,7 +183,8 @@ test('390px inbox fits, keeps 44px targets, and starts the first card high', {
       };
     });
     assert.equal(metrics.overflow, false, 'horizontal overflow ' + metrics.scrollWidth);
-    assert.ok(metrics.cardTop != null && metrics.cardTop <= 200, 'first card Y ' + metrics.cardTop);
+    // Hôm nay is a 48px row above the first card.
+    assert.ok(metrics.cardTop != null && metrics.cardTop <= 248, 'first card Y ' + metrics.cardTop);
     assert.equal(metrics.tabs.length, 3);
     metrics.tabs.forEach(tab => {
       assert.ok(tab.left >= -1 && tab.right <= metrics.view + 1, tab.text + ' right=' + tab.right);
@@ -225,7 +226,7 @@ test('390px inbox fits, keeps 44px targets, and starts the first card high', {
     assert.equal(phone.inHeader, true);
     assert.notEqual(phone.tabPosition, 'fixed');
     assert.ok(phone.tabBottom < 160, 'channel row bottom ' + phone.tabBottom);
-    assert.ok(phone.cardTop != null && phone.cardTop <= 172, 'first card Y ' + phone.cardTop);
+    assert.ok(phone.cardTop != null && phone.cardTop <= 220, 'first card Y ' + phone.cardTop);
     // Each card carries a two-line 44px action chip row under the tags,
     // so fewer full cards fit under the header than the compact list did.
     assert.ok(phone.rows >= 3, 'visible rows ' + phone.rows + ' first Y ' + phone.cardTop);
