@@ -939,9 +939,12 @@ body.inbox .msg-card .msg-names {
 }
 body.inbox .msg-card .msg-name,
 body.inbox .msg-card .msg-channel-name {
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
   overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: break-word;
   font-size: 16px;
   line-height: 1.25;
 }
@@ -1004,7 +1007,7 @@ body.hitl .msg-names { display: flex; flex: 1 1 auto; flex-direction: column; fl
 body.hitl .id-row {
   display: flex;
   flex-wrap: nowrap;
-  align-items: baseline;
+  align-items: first baseline;
   gap: 8px;
   min-width: 0;
   max-width: 100%;
@@ -1013,10 +1016,13 @@ body.hitl .id-row {
 }
 body.hitl .id-name {
   flex: 1 1 auto;
-  min-width: 0;
+  min-width: 6.5em;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: break-word;
   font-size: 18px;
   font-weight: 750;
   line-height: 1.2;
@@ -1844,6 +1850,152 @@ body.hitl .qr { max-width: 220px; }
   }
 }
 
+body.inbox .pane-side-toggle { display: none; }
+
+@media (min-width: 768px) {
+  body.inbox {
+    height: 100dvh;
+    min-height: 100dvh;
+    overflow: hidden;
+    padding-bottom: 0;
+  }
+  body.inbox .wrap {
+    height: 100%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  body.inbox .queue-shell { flex: 1; min-height: 0; display: flex; }
+  body.inbox .workspace {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    height: 100%;
+    display: grid;
+    grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
+    overflow: hidden;
+  }
+  body.inbox.show-detail #queue,
+  body.inbox #queue {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    flex-direction: column;
+  }
+  body.inbox:not(.show-detail) #detail,
+  body.inbox #detail {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--card);
+  }
+  body.inbox.show-detail #group-tabs { display: flex; }
+  body.inbox.show-detail button#detail-back { display: none; }
+  body.inbox .list-scroll { flex: 1; min-height: 0; overflow: auto; }
+  body.inbox .list-scroll .inbox-section-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+  body.inbox .queue-head { position: static; flex: 0 0 auto; }
+  body.inbox .draft-form {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  body.inbox .detail-body {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    max-width: none;
+    padding: 0;
+  }
+  body.inbox .detail-split {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: block;
+    position: relative;
+    overflow: hidden;
+  }
+  body.inbox .pane-mid { height: 100%; }
+  body.inbox .pane-side-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: calc(var(--app-bar-h, 56px) + 8px);
+    right: 8px;
+    z-index: 7;
+    height: 32px;
+    min-height: 32px;
+    padding: 0 10px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: #fff;
+    font-size: 13px;
+    font-weight: 700;
+  }
+  body.inbox .detail-side {
+    position: fixed;
+    top: var(--app-bar-h, 56px);
+    right: 0;
+    bottom: 0;
+    width: min(340px, 92vw);
+    transform: translateX(105%);
+    box-shadow: -8px 0 24px rgba(40, 32, 16, 0.12);
+    z-index: 6;
+  }
+  body.inbox.side-open .detail-side { transform: none; }
+  body.inbox .detail-main,
+  body.inbox .detail-side {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--card);
+  }
+  body.inbox .detail-side {
+    overflow: auto;
+    border-left: 1px solid var(--line-soft);
+  }
+  body.inbox.side-open .pane-side-toggle { z-index: 7; }
+  body.inbox .pane-mid-head,
+  body.inbox .pane-mid-foot { flex: 0 0 auto; min-width: 0; }
+  body.inbox .pane-mid-head { padding: 8px 12px 0; }
+  body.inbox .pane-mid-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+    overflow: auto;
+    padding: 0 12px;
+  }
+  body.inbox .pane-mid-foot {
+    border-top: 1px solid var(--line-soft);
+    padding: 8px 12px 12px;
+    background: var(--card);
+  }
+  body.inbox .pane-side { padding: 0 12px 16px; }
+  body.inbox .sent-state { margin: 8px 0 0; font-weight: 750; color: var(--green-deep); }
+  body.inbox .sticky-actions {
+    position: static;
+    left: auto;
+    right: auto;
+    bottom: auto;
+    margin: 0;
+    width: 100%;
+  }
+  body.inbox { --bottom-chrome: 0px; }
+}
+
 @media (min-width: 1024px) {
   body.inbox {
     height: 100dvh;
@@ -1883,7 +2035,7 @@ body.hitl .qr { max-width: 220px; }
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(320px, 400px) minmax(0, 1fr);
+    grid-template-columns: 300px minmax(0, 1fr);
   }
   body.inbox .list {
     min-height: 0;
@@ -1904,24 +2056,60 @@ body.hitl .qr { max-width: 220px; }
   body.inbox { --bottom-chrome: 0px; }
   body.inbox.show-detail #group-tabs { display: flex; }
   body.inbox .list-scroll { flex: 1; min-height: 0; overflow: auto; }
-  body.inbox .detail { min-height: 0; overflow: auto; background: var(--card); }
-  body.inbox .draft-form { min-height: 100%; }
+  body.inbox .detail { min-height: 0; overflow: hidden; background: var(--card); }
+  body.inbox .draft-form { min-height: 0; }
   body.inbox .detail-body { max-width: none; }
   body.inbox .detail-split {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
-    gap: 8px 28px;
-    align-items: start;
+    grid-template-columns: minmax(360px, 1fr) 340px;
+    gap: 0;
+    align-items: stretch;
+    overflow: hidden;
+  }
+  body.inbox .pane-side-toggle { display: none; }
+  body.inbox .detail-side {
+    position: relative;
+    top: auto;
+    right: auto;
+    bottom: auto;
+    width: auto;
+    transform: none;
+    box-shadow: none;
+  }
+  body.inbox .pane-mid .detail-quick.card-chips {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 4px;
+  }
+  body.inbox .pane-mid .detail-quick.card-chips > button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    min-height: 32px;
+    max-height: none;
+    padding: 4px 4px;
+    font-size: 12px;
+    line-height: 1.15;
+    letter-spacing: 0;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    text-align: center;
+    overflow-wrap: anywhere;
   }
   /* button.btn is more specific than .back, so the class chain is required. */
   body.inbox button.btn.back { display: none; }
   body.inbox .sticky-actions {
-    position: sticky;
-    bottom: 0;
+    position: static;
     flex-direction: row;
     flex-wrap: wrap;
     align-items: center;
-    margin-top: auto;
+    margin-top: 8px;
   }
   body.inbox .sticky-actions .btn-primary { width: auto; min-width: 180px; }
   body.inbox .sticky-note { flex: 1 1 160px; }

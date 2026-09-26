@@ -1,7 +1,6 @@
 /**
- * Auto-refresh is a background fetch. An open KiotViet form, a focused
- * input, or a dirty reply must keep every card in place. The check below
- * types into the order form and lets several poll cycles run.
+ * Auto-refresh is a background fetch. New cards land in the list.
+ * An open order form keeps its DOM node, typed values, and scroll anchor.
  */
 const path = require('path');
 const os = require('os');
@@ -45,7 +44,7 @@ function loadPuppeteer() {
 }
 
 function chromePath() {
-  return ['/usr/bin/google-chrome-stable', '/usr/bin/google-chrome', '/usr/bin/chromium']
+  return ['/usr/bin/google-chrome-stable', '/usr/bin/google-chrome', '/usr/local/bin/google-chrome', '/usr/bin/chromium']
     .find(candidate => fs.existsSync(candidate)) || '';
 }
 
@@ -178,11 +177,8 @@ test('typing in the order form survives several refresh cycles', { skip: !puppet
 
     await seed('Mốc F');
     await seed('Mốc G');
-    await page.waitForFunction(() => {
-      const banner = document.getElementById('new-indicator');
-      return banner && !banner.hidden && banner.textContent === 'Có 2 tin mới — bấm để hiện';
-    }, { timeout: 8000 });
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await page.waitForFunction(() => document.querySelectorAll('.msg-card').length === 7, { timeout: 8000 });
+    await new Promise(resolve => setTimeout(resolve, 400));
     const held = await page.evaluate(() => {
       const card = document.getElementById('anchor-card');
       const name = document.querySelector('details.kiot-fold[open] [id^="kiot-name-"]');
@@ -199,6 +195,8 @@ test('typing in the order form survives several refresh cycles', { skip: !puppet
         count: document.querySelectorAll('.msg-card').length,
         nav: performance.getEntriesByType('navigation')[0].type,
         open: !!document.querySelector('#detail details.kiot-fold[open]'),
+        hasF: [...document.querySelectorAll('.msg-card')].some(node => node.innerText.includes('Mốc F')),
+        hasG: [...document.querySelectorAll('.msg-card')].some(node => node.innerText.includes('Mốc G')),
       };
     });
     assert.equal(held.name, typed.name);
@@ -208,14 +206,14 @@ test('typing in the order form survives several refresh cycles', { skip: !puppet
     assert.equal(held.quick, typed.quick);
     assert.equal(held.reply, typed.reply);
     assert.equal(held.sameNode, true);
-    assert.equal(held.count, typed.count);
+    assert.equal(held.count, 7);
+    assert.equal(held.hasF, true);
+    assert.equal(held.hasG, true);
     assert.equal(held.open, true);
     assert.equal(held.nav, 'navigate');
     assert.ok(Math.abs(held.scrollY - typed.scrollY) < 2, 'scroll jumped while the order form was open');
     assert.ok(Math.abs(held.top - typed.top) < 3, 'the card on screen moved while the order form was open');
 
-    await page.click('#new-indicator');
-    await page.waitForFunction(() => document.querySelectorAll('.msg-card').length === 7, { timeout: 8000 });
     const applied = await page.evaluate(() => {
       const card = document.getElementById('anchor-card');
       const name = document.querySelector('#detail [id^="kiot-name-"]');
