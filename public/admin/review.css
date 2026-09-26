@@ -1403,12 +1403,16 @@ body.hitl .addr-block {
   margin-bottom: var(--space-4);
 }
 body.hitl .addr-grid3 { display: grid; grid-template-columns: 1fr; gap: var(--space-3); margin-bottom: var(--space-3); }
-body.hitl .addr-ids { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: var(--space-2); font-size: 13px; font-weight: 600; color: #3f4841; }
 body.hitl .addr-head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; margin-bottom: 8px; }
 body.hitl .addr-head h4 { margin: 0; font-size: 16px; }
 body.hitl .addr-hint, body.hitl .addr-prefill { color: var(--muted); font-size: 13px; margin: 0 0 6px; }
 body.hitl .addr-req { color: var(--red); font-size: 12px; font-weight: 650; }
-body.hitl .addr-error { color: var(--red); font-weight: 700; margin: 0 0 6px; }
+body.hitl .addr-error,
+body.hitl .addr-warn { color: var(--red); font-weight: 650; font-size: 13px; margin: 0 0 6px; }
+body.hitl .addr-bad input {
+  box-shadow: inset 0 0 0 2px var(--red);
+  background: #fff7f7;
+}
 body.hitl .addr-line { margin: 2px 0 8px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 body.hitl .addr-combo { position: relative; }
 body.hitl .addr-hits {
@@ -1579,6 +1583,32 @@ body.hitl .kiot-summary p { margin: 4px 0; }
 body.hitl .kiot-grand { font-weight: 750; }
 body.hitl .kiot-warn { color: var(--orange); font-weight: 650; margin: 6px 0 0; font-size: 15px; }
 body.hitl .kiot-actions { display: flex; flex-direction: column; gap: var(--space-2); }
+body.hitl .kiot-submit {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+}
+body.hitl .kiot-submit .btn {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+  min-height: var(--tap);
+  padding: 8px 6px;
+  font-size: 15px;
+  line-height: 1.15;
+  white-space: normal;
+  background: #fff;
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+body.hitl .kiot-submit .btn.btn-primary {
+  background: var(--green);
+  color: #fff;
+  border: 0;
+  width: auto;
+}
 body.hitl .kiot-ack {
   position: relative;
   display: flex;
@@ -1686,7 +1716,9 @@ body.hitl .qr { max-width: 220px; }
   body.inbox .back { display: inline-flex; }
   body.inbox.show-detail button#detail-back { display: inline-flex; }
   body.inbox.show-detail #search-toggle { display: none; }
-  body.inbox .kiot-actions .btn { width: 100%; }
+  body.inbox .kiot-actions > .btn { width: 100%; }
+  body.inbox .kiot-actions .kiot-submit { flex-direction: row; width: 100%; }
+  body.inbox .kiot-actions .kiot-submit .btn { width: auto; flex: 1 1 0; }
   body.inbox .app-bar {
     flex-wrap: wrap;
     align-items: center;
@@ -1841,7 +1873,8 @@ body.hitl .qr { max-width: 220px; }
   body.inbox .kiot-grid,
   body.inbox .kiot-money { grid-template-columns: 1fr 1fr; }
   body.inbox .addr-grid3 { grid-template-columns: 1fr 1fr 1fr; }
-  body.inbox .kiot-actions { flex-direction: row; flex-wrap: wrap; }
+  body.inbox .kiot-actions { flex-direction: column; }
+  body.inbox .kiot-submit { width: 100%; }
   body.inbox .filter-text {
     position: static;
     width: auto;

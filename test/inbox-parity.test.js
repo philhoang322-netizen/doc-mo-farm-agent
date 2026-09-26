@@ -121,8 +121,7 @@ const jsBits = [
   '/delete',
   '/restore',
   "text: 'Tạo đơn KiotViet'",
-  'Xác nhận tạo hoá đơn',
-  'Xác nhận tạo đơn đặt hàng',
+  "text: 'Tạo đơn VTP'",
   "text: 'Kiểm kho và xem lại'",
   "text: 'Điền vào đơn'",
   "text: 'Thêm dòng'",
@@ -561,7 +560,7 @@ test('quick-row hit boxes, brand, and search chip fit the phone', {
         kiotPhoneName: kiotPhone ? kiotPhone.getAttribute('name') : '',
         searchY: search ? Math.round(search.getBoundingClientRect().top) : 0,
         qtyY: qty ? Math.round(qty.getBoundingClientRect().top) : 0,
-        confirm: [...document.querySelectorAll('#detail button')].some(btn => /Xác nhận tạo/.test(btn.textContent)),
+        confirm: [...document.querySelectorAll('#detail button')].some(btn => /Tạo đơn KiotViet/.test(btn.textContent)),
       };
     });
 

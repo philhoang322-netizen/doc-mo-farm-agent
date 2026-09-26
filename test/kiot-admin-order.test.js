@@ -354,3 +354,79 @@ test('order toggle posts an order and out-of-stock blocks creation', async () =>
     await stop(server);
   }
 });
+
+test('a partial or empty address still creates, and preview does not', async () => {
+  installMocks();
+  const server = await appServer();
+  try {
+    const port = server.address().port;
+    const base = `http://127.0.0.1:${port}`;
+    const draft = await seedDraft({
+      customer_user_id: 'fb_partial_addr',
+      customer_phone: '0900000001',
+      customer_name: 'Khách Thử',
+      review_form: {
+        address_detail: '12 Đường Thử',
+        province_name: 'Hồ Chí Minh',
+        address_line: '12 Đường Thử, Hồ Chí Minh',
+      },
+    });
+    const preview = await fetch(`${base}/admin/api/drafts/${draft.id}/kiotviet`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({
+        confirm: false,
+        phone: '0900000001',
+        address: '12 Đường Thử, Hồ Chí Minh',
+        lines: [{ sku: 'SP-XX', product_name: 'Xúc xích', quantity: 1 }],
+      }),
+    });
+    assert.equal(preview.status, 200);
+    const quoted = await preview.json();
+    assert.equal(quoted.created, false);
+    assert.equal(quoted.can_confirm, true);
+    assert.equal(calls.length, 0);
+
+    const created = await fetch(`${base}/admin/api/drafts/${draft.id}/kiotviet`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({
+        confirm: true,
+        phone: '0900000001',
+        customer_name: 'Khách Thử',
+        address: '12 Đường Thử, Hồ Chí Minh',
+        lines: [{ sku: 'SP-XX', product_name: 'Xúc xích', quantity: 1 }],
+        expected_total: quoted.total,
+      }),
+    });
+    assert.equal(created.status, 200);
+    const body = await created.json();
+    assert.equal(body.created, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].address, '12 Đường Thử, Hồ Chí Minh');
+
+    const bare = await seedDraft({
+      customer_user_id: 'fb_no_addr',
+      customer_phone: '0900000002',
+      customer_name: 'Khách Thử',
+      review_form: {},
+    });
+    const noAddress = await fetch(`${base}/admin/api/drafts/${bare.id}/kiotviet`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({
+        confirm: true,
+        phone: '0900000002',
+        customer_name: 'Khách Thử',
+        address: '',
+        lines: [{ sku: 'SP-XX', product_name: 'Xúc xích', quantity: 1 }],
+        expected_total: 85000,
+      }),
+    });
+    assert.equal(noAddress.status, 200);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].address, '');
+  } finally {
+    await stop(server);
+  }
+});
