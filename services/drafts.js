@@ -1068,29 +1068,90 @@ async function moveBizLine(id, line, ctx = {}) {
   if (!existing) return null;
   if (line !== 'sale' && line !== 'dv') throw new DraftError(400, 'Nhóm không hợp lệ');
   if (existing.deleted_at) throw new DraftError(400, 'Tin đã xoá');
-  const next = {
-    ...existing,
-    biz_line: line,
-    biz_sticky: true,
-    updated_at: new Date().toISOString(),
-  };
-  const saved = await saveDraft(next);
-  if (!saved) return null;
+  const now = new Date().toISOString();
+  const mates = existing.customer_user_id
+    ? await listThread(existing.channel, existing.customer_user_id)
+    : [];
+  const targets = mates.length ? mates : [existing];
+  let savedClicked = null;
+  let updated = 0;
+  for (const row of targets) {
+    if (!row || row.deleted_at) continue;
+    if (row.biz_line === line && row.biz_sticky === true) {
+      if (row.id === existing.id) savedClicked = row;
+      continue;
+    }
+    const saved = await saveDraft({
+      ...row,
+      biz_line: line,
+      biz_sticky: true,
+      updated_at: now,
+    });
+    updated += 1;
+    if (saved && saved.id === existing.id) savedClicked = saved;
+  }
+  if (!savedClicked) savedClicked = await getDraft(existing.id);
+  if (!savedClicked) return null;
   await audit.record({
     actor: ctx.actor || 'manager',
     action: 'draft.biz_line',
     entity_type: 'draft',
-    entity_id: saved.id,
+    entity_id: savedClicked.id,
     before: { biz_line: existing.biz_line || null, biz_sticky: existing.biz_sticky === true },
     after: { biz_line: line, biz_sticky: true },
-    meta: { ...audit.draftMeta(saved), from: existing.biz_line || null, to: line },
+    meta: {
+      ...audit.draftMeta(savedClicked),
+      from: existing.biz_line || null,
+      to: line,
+      scope: 'thread',
+      updated,
+    },
   });
+  const changed = existing.biz_line !== line || existing.biz_sticky !== true;
   try {
-    await require('./threadLabels').setManual(saved.channel, saved.customer_user_id, line);
+    await require('./threadLabels').setManual(savedClicked.channel, savedClicked.customer_user_id, line);
   } catch (err) {
     console.error('thread label skipped:', err.message);
   }
-  return decorate(saved);
+  const learnedChannel = savedClicked.channel === 'messenger'
+    ? 'fb'
+    : (savedClicked.channel === 'zalo' ? 'zalo' : null);
+  if (changed && learnedChannel && savedClicked.customer_user_id) {
+    try {
+      await require('./labelMoves').record({
+        channel: learnedChannel,
+        threadId: savedClicked.customer_user_id,
+        fromLabel: existing.biz_line,
+        toLabel: line,
+        actor: ctx.actor || 'manager',
+        inboundText: await inboundForMove(savedClicked),
+      });
+    } catch (err) {
+      console.error('label move skipped:', err.message);
+    }
+  }
+  return decorate(savedClicked);
+}
+
+async function inboundForMove(draft) {
+  const channel = draft.channel === 'zalo' ? 'zalo' : 'fb';
+  const threadId = draft.customer_user_id ? String(draft.customer_user_id) : '';
+  const parts = [];
+  if (threadId) {
+    try {
+      const rows = await require('./conversationStore').recent(channel, threadId, 12);
+      for (const row of rows || []) {
+        if (!row || row.direction === 'out') continue;
+        const text = String(row.message_text || '').trim();
+        if (text) parts.push(text);
+      }
+    } catch (err) {
+      console.error('label move context skipped:', err.message);
+    }
+  }
+  const query = String(draft.customer_query || draft.customer_intent || '').trim();
+  if (query) parts.push(query);
+  return parts.slice(-6).join(' ');
 }
 
 function deletedSummary(existing, deletedAt, scope) {

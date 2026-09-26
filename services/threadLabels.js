@@ -1,21 +1,28 @@
 /**
  * FB-Sale vs FB-DV labels.
  *
- * A thread is DV when any page reply is attributed to staff member Lành:
- * sender metadata (from.name) when Graph actually names Lành, otherwise a
- * signature in the page text. A thread already labeled DV stays DV unless
- * the newest message is strong Sale evidence and the rest of the thread
- * has no service wording.
+ * Topic decides. The customer's latest message that hits a topic wins;
+ * page text is used only when the customer has no topic. Product, price,
+ * ship, and order are Sale, even when Lành signed. Service words and FAQ
+ * service entries are DV. A Lành sign-off is only a tiebreaker when no
+ * topic is detected; from.name never selects the label. A manual Sale or
+ * DV label always wins.
  *
- * Keyword lists are learned from those labels. Backfill and relabel stay
- * local: they do not call Claude. Live classification may, and that call
- * gets at most eight short sanitized examples plus the thread label and
- * learned keywords. Message bodies are not logged.
+ * DV keywords are learned only from threads labeled DV by a service topic,
+ * never from a sign-off. Catalog product names and generic sales words are
+ * not learned. A manual move also stores a training row and shifts n-gram
+ * weights; relabel recomputes those weights and does not overwrite the
+ * manual label. Backfill and relabel stay local: they do not call Claude.
+ * Live classification may, and that call gets at most eight short sanitized
+ * examples plus the thread label and learned keywords. Message bodies
+ * are not logged.
  */
 const ops = require('./ops');
 const pii = require('./pii');
 const bizLine = require('./bizLine');
 const lanhMark = require('./lanhMark');
+const fbDvRule = require('./fbDvRule');
+const labelMoves = require('./labelMoves');
 const store = require('./conversationStore');
 
 const SOURCES = ['staff_lanh', 'signature', 'keyword', 'manual', 'model'];
@@ -50,13 +57,17 @@ const SEED_DISPLAY = [
 ];
 
 let learned = [];
+let keywordDisplay = [];
 let keywordCache = null;
 let shotCache = null;
 
 function resetForTests() {
   learned = [];
+  keywordDisplay = [];
   keywordCache = null;
   shotCache = null;
+  fbDvRule.resetForTests();
+  labelMoves.resetForTests();
 }
 
 function extraPhrases() {
@@ -83,15 +94,14 @@ function nameIsLanh(name) {
 }
 
 function textHasLanh(text) {
-  return lanhMark.textHasLanh(text);
+  return lanhMark.isSignoff(text);
 }
 
 /**
  * @returns {'staff_lanh'|'signature'|null}
- * Metadata wins when a page message's from.name is Lành.
- * A Page-level from.name (from.id === page id) is not a staff name, so the
- * signature in the text is used instead. A different human name blocks the
- * signature on that one message.
+ * Detector only. ruleFromMessages does not use this: from.name never
+ * selects a label, and a sign-off counts only when fbDvRule finds no topic.
+ * A different human name blocks the signature on that one message.
  */
 function lanhAttribution(messages) {
   let signature = false;
@@ -110,6 +120,11 @@ function lanhAttribution(messages) {
   return signature ? 'signature' : null;
 }
 
+function ruleFromMessages(messages) {
+  const base = fbDvRule.decide(messages);
+  return labelMoves.combine(base, labelMoves.scoreMessages(messages));
+}
+
 /**
  * @returns {{biz_line:string, biz_sticky:boolean, source:string, confidence:number}|null}
  */
@@ -122,16 +137,17 @@ function classifyContext({ channel, text, messages, label, prior }) {
   }
   if (channel !== 'messenger') return null;
 
-  const attr = lanhAttribution(messages);
-  if (attr) {
+  const ruled = ruleFromMessages(withNewest(messages, text));
+  if (ruled) {
     return {
-      biz_line: 'dv',
+      biz_line: ruled.label,
       biz_sticky: false,
-      source: attr,
-      confidence: attr === 'staff_lanh' ? 0.95 : 0.9,
+      source: ruled.source,
+      confidence: ruled.confidence,
     };
   }
-  if (label && (label.source === 'staff_lanh' || label.source === 'signature') && label.label === 'dv') {
+  const sawPage = (messages || []).some((row) => row && row.direction === 'out');
+  if (!sawPage && label && (label.source === 'staff_lanh' || label.source === 'signature') && label.label === 'dv') {
     return {
       biz_line: 'dv',
       biz_sticky: false,
@@ -176,16 +192,24 @@ async function ensureLearned() {
   if (keywordCache) return keywordCache;
   keywordCache = (async () => {
     const labels = await store.allLabels('fb');
-    const ground = labels.filter((row) => (
-      row.source === 'staff_lanh' || row.source === 'signature' || row.source === 'manual'
-    ));
-    await refreshKeywords(ground.length ? ground : labels);
+    await labelMoves.recompute();
+    await refreshKeywords(labels);
     shotCache = await fewShotFromStore(labels);
   })().catch((err) => {
     keywordCache = null;
     throw err;
   });
   return keywordCache;
+}
+
+function withNewest(messages, text) {
+  const rows = messages || [];
+  const newest = String(text || '').trim();
+  if (!newest) return rows;
+  const last = rows[rows.length - 1];
+  const lastText = last ? String(last.message_text || last.text || '').trim() : '';
+  if (lastText === newest) return rows;
+  return rows.concat([{ direction: 'in', message_text: newest }]);
 }
 
 function threadWindow(messages, text) {
@@ -213,7 +237,7 @@ async function liveModel(messages, label, text) {
   }
   return modelClassify(rows, shots, {
     label: label && label.label,
-    keywords: learned.slice(0, 30),
+    keywords: keywordDisplay.slice(0, 30),
   });
 }
 
@@ -298,15 +322,9 @@ function decideThread(messages, existing) {
       confidence: existing.confidence == null ? 1 : existing.confidence,
     };
   }
-  const attr = lanhAttribution(messages);
-  if (attr) {
-    return {
-      label: 'dv',
-      source: attr,
-      confidence: attr === 'staff_lanh' ? 0.95 : 0.9,
-    };
-  }
-  const lastIn = [...(messages || [])].reverse().find((row) => row.direction === 'in');
+  const ruled = ruleFromMessages(messages);
+  if (ruled) return ruled;
+  const lastIn = [...(messages || [])].reverse().find((row) => row && row.direction === 'in');
   const window = (messages || []).slice(-10);
   const decided = classifyContext({
     channel: 'messenger',
@@ -379,6 +397,7 @@ function topKeywords(ranked) {
 }
 
 async function refreshKeywords(labels) {
+  await fbDvRule.loadProductPhrases();
   const rows = await store.all('fb');
   const byThread = new Map();
   for (const row of rows) {
@@ -390,17 +409,25 @@ async function refreshKeywords(labels) {
   const saleDocs = [];
   for (const label of labels || []) {
     if (label.label !== 'dv' && label.label !== 'sale') continue;
-    const texts = (byThread.get(label.thread_id) || [])
+    const messages = byThread.get(label.thread_id) || [];
+    const inbound = messages
       .filter((row) => row.direction === 'in')
-      .map((row) => row.message_text || '');
-    const doc = texts.join('\n');
-    if (!doc.trim()) continue;
-    if (label.label === 'dv') dvDocs.push(doc);
-    else saleDocs.push(doc);
+      .map((row) => row.message_text || '')
+      .join('\n');
+    if (label.label === 'sale') {
+      if (inbound.trim()) saleDocs.push(inbound);
+      continue;
+    }
+    if (label.source !== 'keyword') continue;
+    const topic = fbDvRule.decide(messages);
+    if (!topic || topic.label !== 'dv' || topic.source !== 'keyword') continue;
+    if (inbound.trim()) dvDocs.push(inbound);
   }
-  const ranked = extractKeywords(dvDocs, saleDocs);
+  const ranked = extractKeywords(dvDocs, saleDocs)
+    .filter((item) => !fbDvRule.blockedKeyword(item.phrase));
   learned = ranked.map((item) => item.phrase);
-  return topKeywords(ranked);
+  keywordDisplay = topKeywords(ranked);
+  return keywordDisplay;
 }
 
 function buildFewShot(threads) {
@@ -515,6 +542,8 @@ async function fewShotFromStore(labels) {
 }
 
 async function relabel() {
+  await fbDvRule.loadProductPhrases();
+  await labelMoves.recompute();
   const rows = await store.all('fb');
   const byThread = new Map();
   for (const row of rows) {
@@ -534,21 +563,16 @@ async function relabel() {
       draftsUpdated += await drafts.applyThreadLabel('messenger', threadId, prior);
       continue;
     }
-    const attr = lanhAttribution(messages);
-    if (attr) {
-      const stored = await store.setLabel('fb', threadId, {
-        label: 'dv',
-        source: attr,
-        confidence: attr === 'staff_lanh' ? 0.95 : 0.9,
-      });
+    const ruled = ruleFromMessages(messages);
+    if (ruled) {
+      const stored = await store.setLabel('fb', threadId, ruled);
       saved.push(stored);
       draftsUpdated += await drafts.applyThreadLabel('messenger', threadId, stored);
       continue;
     }
     rest.push(threadId);
   }
-  const ground = saved.filter((row) => row.source === 'staff_lanh' || row.source === 'signature' || row.source === 'manual');
-  const keywords = await refreshKeywords(ground);
+  const keywords = await refreshKeywords(saved);
   for (const threadId of rest) {
     const row = decideThread(byThread.get(threadId) || [], null);
     const stored = await store.setLabel('fb', threadId, row);
@@ -564,17 +588,17 @@ async function relabel() {
     counts: countLabels(labels),
     drafts_updated: draftsUpdated,
     keywords,
+    ...labelMoves.summary(),
   };
 }
 
 async function stats() {
   const labels = await store.allLabels('fb');
-  const ground = labels.filter((row) => (
-    row.source === 'staff_lanh' || row.source === 'signature' || row.source === 'manual'
-  ));
+  await labelMoves.recompute();
   return {
     counts: countLabels(labels),
-    keywords: await refreshKeywords(ground.length ? ground : labels),
+    keywords: await refreshKeywords(labels),
+    ...labelMoves.summary(),
   };
 }
 

@@ -13,6 +13,9 @@ const bizLine = require('./bizLine');
 const lanhMark = require('./lanhMark');
 const catalog = require('./catalog');
 const store = require('./conversationStore');
+const threadLabels = require('./threadLabels');
+const fbDvRule = require('./fbDvRule');
+const labelMoves = require('./labelMoves');
 
 const REASONS = ['staff_lanh', 'signature', 'keyword', 'manual', 'model'];
 const LABELS = ['sale', 'dv', 'unknown'];
@@ -277,6 +280,21 @@ function splitCounts(described) {
   return out;
 }
 
+function emptyBucket() {
+  return { staff_lanh: 0, signature: 0, keyword: 0, manual: 0, model: 0, total: 0 };
+}
+
+function countProjected(rows) {
+  const counts = { dv: emptyBucket(), sale: emptyBucket(), unknown: emptyBucket() };
+  for (const row of rows || []) {
+    const bucket = counts[row.label];
+    if (!bucket) continue;
+    bucket.total += 1;
+    if (Object.prototype.hasOwnProperty.call(bucket, row.source)) bucket[row.source] += 1;
+  }
+  return counts;
+}
+
 function publicThread(thread) {
   return {
     thread_id: thread.thread_id,
@@ -297,8 +315,22 @@ async function build(input) {
     store.all('fb'),
     store.allLabels('fb'),
     catalogEntries(),
+    fbDvRule.loadProductPhrases(),
+    labelMoves.recompute(),
   ]);
   const byThread = groupMessages(rows);
+  const existing = new Map(labels.map((row) => [row.thread_id, row]));
+  const projected = [];
+  const seen = new Set();
+  for (const [threadId, messages] of byThread) {
+    seen.add(threadId);
+    projected.push(threadLabels.decideThread(messages, existing.get(threadId) || null));
+  }
+  for (const label of labels) {
+    if (label.channel && label.channel !== 'fb') continue;
+    if (seen.has(label.thread_id)) continue;
+    projected.push(threadLabels.decideThread([], label));
+  }
   const described = [];
   for (const label of labels) {
     if (label.channel && label.channel !== 'fb') continue;
@@ -315,10 +347,14 @@ async function build(input) {
     threads: selected.slice(0, filter.limit).map(publicThread),
     signature_histogram: histogram(selected),
     signature_dv: splitCounts(signatureDv),
+    rule_counts: countProjected(projected),
+    ...labelMoves.summary(),
     catalog_sources: ['products', 'faq'],
     matcher: {
-      counts_as_signature: 'A whole word in a page outbound message whose letters fold to lanh, anywhere in the text. Lành, lành, Lanh, and LANH match. lạnh and trời lạnh do not. The token does not have to be a sign-off.',
-      staff_name: 'staff_lanh only when from.name itself is that word. A page name such as Doc Mo Farm is not a staff name.',
+      topic: 'The customer\'s latest message with a topic hit wins. Page text is used only when the customer has no topic. Inside one message the later hit wins, so "xin giá phòng" is DV and a later product is Sale. Catalog and FAQ product names, price, ship, and order are Sale. Service words and FAQ service entries are DV.',
+      counts_as_signature: 'A Lành sign-off is only a tiebreaker when no topic is detected: the name as the last word, ignoring punctuation, emoji, and a trailing ạ/nha/nhé/ạa, or a line that is only the name plus those particles. Inline mentions do not count. Lowercase lành counts only on a name-only line, so lành tính and hiền lành do not. lạnh and trời lạnh do not. from.name does not select the label.',
+      product_only: 'A product, price, ship, or order topic is Sale even when Lành signed. Stored signature_dv.product_only still describes the saved labels, not this projection.',
+      staff_name: 'from.name Lành does not select the label. staff_lanh is not written by the topic rule. A page name such as Doc Mo Farm is not a staff name.',
     },
   };
 }
