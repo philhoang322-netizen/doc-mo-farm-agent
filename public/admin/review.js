@@ -86,6 +86,7 @@
   let triageCounts = { hot: 0, urgent: 0, normal: 0 };
   let groupCounts = { zalo: 0, fbSale: 0, fbDv: 0 };
   let selectedId = location.hash ? location.hash.slice(1) : null;
+  let heldDraft = null;
   let dirty = false;
   let busy = false;
   let loadedOnce = false;
@@ -101,9 +102,10 @@
   let advanceTo = null;
   let scrollDetailToTop = false;
   const REPLY_KEY = 'dmf_reply_drafts';
+  const ORDER_KEY = 'dmf_order_pane';
 
   function isDesktop() {
-    return window.matchMedia('(min-width: 1024px)').matches;
+    return window.matchMedia('(min-width: 768px)').matches;
   }
 
   function savedReplyMap() {
@@ -127,6 +129,45 @@
       };
     });
     try { sessionStorage.setItem(REPLY_KEY, JSON.stringify(obj)); } catch (_) {}
+  }
+
+  function readOrderStore() {
+    try {
+      const raw = sessionStorage.getItem(ORDER_KEY) || localStorage.getItem(ORDER_KEY);
+      const obj = raw ? JSON.parse(raw) : {};
+      return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function writeOrderStore(obj) {
+    const text = JSON.stringify(obj);
+    try { sessionStorage.setItem(ORDER_KEY, text); } catch (_) {}
+    try { localStorage.setItem(ORDER_KEY, text); } catch (_) {}
+  }
+
+  function persistOrder(id, snap) {
+    if (!id) return;
+    const all = readOrderStore();
+    if (!snap) delete all[id];
+    else all[id] = snap;
+    writeOrderStore(all);
+  }
+
+  function storedOrder(id) {
+    if (!id) return null;
+    const snap = readOrderStore()[id];
+    return snap && typeof snap === 'object' ? snap : null;
+  }
+
+  function clearOrder(id) {
+    const s = id && cardState.get(id);
+    if (s) {
+      s.kiot = null;
+      s.kiotDirty = false;
+    }
+    persistOrder(id, null);
   }
 
   function escHtml(value) {
@@ -737,10 +778,11 @@
 
   function topCardAnchor() {
     const cards = listEl.querySelectorAll('.msg-card');
+    const bounds = isDesktop() && listEl ? listEl.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
     for (const card of cards) {
       const rect = card.getBoundingClientRect();
-      if (rect.bottom <= 1) continue;
-      if (rect.top >= window.innerHeight) break;
+      if (rect.bottom <= bounds.top + 1) continue;
+      if (rect.top >= bounds.bottom) break;
       return { id: card.getAttribute('data-draft-id'), top: rect.top };
     }
     return null;
@@ -748,12 +790,34 @@
 
   function restoreAnchor(anchor) {
     if (!anchor || !anchor.id || !window.inboxRefresh) return;
-    const safe = window.CSS && CSS.escape ? CSS.escape(anchor.id) : anchor.id;
-    const card = listEl.querySelector('.msg-card[data-draft-id="' + safe + '"]');
+    const card = findCard(anchor.id);
     if (!card) return;
     const delta = window.inboxRefresh.anchorDelta(anchor.top, card.getBoundingClientRect().top);
     if (Math.abs(delta) < 1) return;
-    window.scrollBy(0, delta);
+    if (isDesktop() && listEl) listEl.scrollTop += delta;
+    else window.scrollBy(0, delta);
+  }
+
+  function detailIsOpen(id) {
+    const form = detailEl.querySelector('form.draft-form');
+    return !!(id && form && form.getAttribute('data-open-id') === id);
+  }
+
+  function mergeDraft(next) {
+    if (!next || !next.id) return null;
+    const idx = drafts.findIndex(row => row && row.id === next.id);
+    if (idx >= 0) drafts[idx] = Object.assign({}, drafts[idx], next);
+    else drafts.unshift(next);
+    const row = drafts.find(item => item.id === next.id);
+    if (row && row.id === selectedId) heldDraft = row;
+    return row;
+  }
+
+  function replaceCard(id) {
+    const row = drafts.find(item => item && item.id === id);
+    const node = findCard(id);
+    if (!row || !node) return;
+    node.replaceWith(buildCard(row));
   }
 
   function findCard(id) {
@@ -967,7 +1031,7 @@
         syncTabs();
         return load(opts);
       }
-      const hold = editingHold();
+      const hold = mode === 'background' ? false : editingHold();
       const mutation = window.inboxRefresh
         ? window.inboxRefresh.listMutation(mode, hold)
         : (hold && mode !== 'replace' ? 'freeze' : 'replace');
@@ -984,12 +1048,17 @@
         return;
       }
       drafts = incoming;
+      if (selectedId && heldDraft && heldDraft.id === selectedId && !drafts.some(row => row && row.id === selectedId)) {
+        drafts = [heldDraft].concat(drafts);
+      }
       queuedDrafts = null;
       if (mutation === 'insert') {
+        const keepList = listEl.scrollTop;
         renderStats(stats);
         repositionChanged();
         insertMissing();
         paintNew(0);
+        listEl.scrollTop = keepList;
         restoreAnchor(anchor);
         return;
       }
@@ -1022,10 +1091,10 @@
       const open = selectedId && drafts.find(d => d.id === selectedId);
       if (open) {
         const nextStamp = JSON.stringify(open);
-        if (!dirty && nextStamp !== detailStamp) {
-          detailStamp = nextStamp;
-          renderDetail();
-        }
+        detailStamp = nextStamp;
+        if (!detailIsOpen(open.id)) renderDetail();
+      } else if (selectedId && detailIsOpen(selectedId)) {
+        detailStamp = detailStamp || 'held';
       } else if (selectedId && !dirty) {
         selectedId = null;
         detailStamp = '';
@@ -1453,7 +1522,7 @@
   }
 
   function currentDraft() {
-    return drafts.find(d => d.id === selectedId) || null;
+    return drafts.find(d => d.id === selectedId) || (heldDraft && heldDraft.id === selectedId ? heldDraft : null);
   }
 
   function readForm() {
@@ -1536,7 +1605,9 @@
     const f = formOf(d);
 
     const form = el('form', { class: 'draft-form' });
-    form.addEventListener('submit', e => e.preventDefault());
+    form.setAttribute('data-open-id', d.id);
+    form.addEventListener('submit', (e) => e.preventDefault());
+    heldDraft = d;
 
     const body = el('div', { class: 'detail-body' });
     const code = d.customer_code || f.kiot_ref || '';
@@ -1562,41 +1633,46 @@
     const kind = kindTag(d);
     if (kind) meta.appendChild(el('span', { class: 'tag ' + kind.cls, text: kind.text }));
     const split = el('div', { class: 'detail-split' });
-    const main = el('div', { class: 'detail-main' });
-    const side = el('div', { class: 'detail-side' });
+    const main = el('div', { class: 'detail-main pane-mid' });
+    const side = el('div', { class: 'detail-side pane-side' });
+    const midHead = el('div', { class: 'pane-mid-head' });
+    const midScroll = el('div', { class: 'pane-mid-scroll' });
+    const midFoot = el('div', { class: 'pane-mid-foot' });
     const s = ensureCard(d);
-    body.appendChild(meta);
+    midHead.appendChild(meta);
     const quick = el('div', { class: 'detail-quick' });
     quick.classList.add('card-chips');
     fillActionChips(quick, d);
-    if (quick.childNodes.length) body.appendChild(quick);
+    if (quick.childNodes.length) midHead.appendChild(quick);
+    main.appendChild(midHead);
     side.appendChild(customerPanel(d));
     const thread = mountThreadContext(d, false);
-    if (thread) main.appendChild(thread);
+    if (thread) midScroll.appendChild(thread);
     const want = el('div', { class: 'want-box' });
     want.appendChild(el('span', { text: 'Khách đang muốn' }));
     const wantText = el('div', { class: 'msg-customer' });
     wantText.appendChild(richFragment(snippet(d) || '—'));
     want.appendChild(wantText);
-    main.appendChild(want);
+    midScroll.appendChild(want);
 
     if (needsHumanTicket(d) && !refund) {
-      main.appendChild(el('p', {
+      midScroll.appendChild(el('p', {
         class: 'banner warn',
         text: 'Cần người xem trước khi gửi. Bản nháp này chưa được gửi.',
       }));
     }
     if (d.send_error) {
-      main.appendChild(el('p', {
+      midScroll.appendChild(el('p', {
         class: 'banner ' + (d.approval_status === 'SENT' ? 'warn' : 'bad'),
         text: d.send_error,
       }));
     }
-    if (d.pii_note) main.appendChild(el('p', { class: 'hint', text: d.pii_note }));
+    if (d.pii_note) midScroll.appendChild(el('p', { class: 'hint', text: d.pii_note }));
     const reviewNote = faqReviewNode(d);
-    if (reviewNote) main.appendChild(reviewNote);
+    if (reviewNote) midScroll.appendChild(reviewNote);
+    main.appendChild(midScroll);
 
-    main.appendChild(el('div', { class: 'draft-label' }, [
+    midFoot.appendChild(el('div', { class: 'draft-label' }, [
       el('label', { for: 'draft-reply', text: 'Bản nháp trả lời' }),
     ]));
     const reply = el('textarea', { id: 'draft-reply', name: 'draft_reply', rows: '4' });
@@ -1609,9 +1685,9 @@
       persistReplies();
     });
     autoGrow(reply, 4);
-    main.appendChild(el('div', { class: 'field-block' }, [reply]));
-    main.appendChild(el('p', { id: 'reply-error', class: 'reply-error', hidden: 'hidden' }));
-    if (!locked) main.appendChild(learnToggle(s));
+    midFoot.appendChild(el('div', { class: 'field-block' }, [reply]));
+    midFoot.appendChild(el('p', { id: 'reply-error', class: 'reply-error', hidden: 'hidden' }));
+    if (!locked) midFoot.appendChild(learnToggle(s));
 
     const phoneField = blockField('customer_phone', 'SĐT lưu vào tin', d.customer_phone, {
       disabled: locked, placeholder: 'Nếu có', type: 'tel', inputmode: 'tel', autocomplete: 'tel',
@@ -1678,11 +1754,6 @@
       extra.appendChild(el('img', { class: 'qr', alt: 'Mã QR', src: d.qr_image_url }));
     }
     side.appendChild(extra);
-    split.appendChild(main);
-    split.appendChild(side);
-    body.appendChild(split);
-    form.appendChild(body);
-
     const actions = el('div', { class: 'sticky-actions' });
     actions.appendChild(moreMenu(d, locked));
     if (!locked && me.canSend) {
@@ -1690,13 +1761,20 @@
       sendBtn.id = 'btn-approve';
       actions.appendChild(sendBtn);
     }
-    form.appendChild(actions);
+    midFoot.appendChild(actions);
+    main.appendChild(midFoot);
+    split.appendChild(main);
+    split.appendChild(side);
+    body.appendChild(split);
+    form.appendChild(body);
     detailEl.appendChild(form);
     if (fold && fold.open && !fold.querySelector('.kiot-panel')) fold.appendChild(kiotPanel(d));
     document.body.classList.add('show-detail');
-    if (scrollDetailToTop) {
+      if (scrollDetailToTop) {
       scrollDetailToTop = false;
-      if (isDesktop()) detailEl.scrollTop = 0;
+      const scroller = detailEl.querySelector('.pane-mid-scroll');
+      if (isDesktop() && scroller) scroller.scrollTop = 0;
+      else if (isDesktop()) detailEl.scrollTop = 0;
       else window.scrollTo(0, 0);
     }
     syncBarHeight();
@@ -2308,13 +2386,34 @@
     return Object.assign(body, extra || {});
   }
 
+  function paintSent(next) {
+    const row = mergeDraft(next) || next;
+    if (!row) return;
+    selectedId = row.id;
+    heldDraft = row;
+    document.body.classList.add('show-detail');
+    const reply = detailEl.querySelector('#draft-reply');
+    if (reply) reply.disabled = true;
+    const learn = detailEl.querySelector('.learn-check');
+    if (learn) learn.disabled = true;
+    const sendBtn = document.getElementById('btn-approve');
+    if (sendBtn) sendBtn.remove();
+    const sent = detailEl.querySelector('.pane-mid-foot .sent-state');
+    if (!sent) {
+      const note = el('p', { class: 'sent-state', text: 'Đã gửi' });
+      const foot = detailEl.querySelector('.pane-mid-foot');
+      if (foot) foot.appendChild(note);
+    }
+    replaceCard(row.id);
+  }
+
   async function patch(body, okText) {
     if (busy || !selectedId) return;
     const fromId = selectedId;
     busy = true;
     const approve = document.getElementById('btn-approve');
     if (approve && body && body.send) approve.textContent = 'Đang gửi…';
-    detailEl.querySelectorAll('button').forEach(b => { b.disabled = true; });
+    detailEl.querySelectorAll('.pane-mid button, .sticky-actions button').forEach(b => { b.disabled = true; });
     try {
       const res = await api('/admin/api/drafts/' + selectedId, {
         method: 'PATCH',
@@ -2328,11 +2427,7 @@
       else toast(okText);
       const next = res.draft;
       if (next) {
-        if (next.sales_channel && next.sales_channel !== salesChannel) salesChannel = next.sales_channel;
-        if (messageType && next.message_type !== messageType) messageType = '';
-        if (next.ops_status && next.ops_status !== ops) ops = next.ops_status;
         selectedId = next.id;
-        renderChannels();
         syncTabs();
       }
       detailStamp = '';
@@ -2340,12 +2435,17 @@
       const card = cardState.get(fromId);
       if (card) card.dirty = false;
       persistReplies();
-      if (body && body.send) queueAdvance(fromId);
+      if (next) mergeDraft(next);
+      if (body && body.send && next && (next.approval_status === 'SENT' || (sendResult && sendResult.sent))) paintSent(next);
+      else if (next) {
+        replaceCard(next.id);
+        detailEl.querySelectorAll('.pane-mid button, .sticky-actions button').forEach(b => { b.disabled = false; });
+        if (approve && body && body.send && next.approval_status !== 'SENT') approve.textContent = 'Duyệt & Gửi';
+      }
       rememberUrl();
-      await load();
     } catch (e) {
       if (e.message !== 'unauthorized') toast(e.message);
-      detailEl.querySelectorAll('button').forEach(b => { b.disabled = false; });
+      detailEl.querySelectorAll('.pane-mid button, .sticky-actions button').forEach(b => { b.disabled = false; });
       if (approve && body && body.send) approve.textContent = 'Duyệt & Gửi';
     } finally {
       busy = false;
@@ -2373,7 +2473,7 @@
       s.dirty = false;
       toast('Đã lưu.');
       listStamp = '';
-      await load();
+      replaceCard(d.id);
     } catch (e) {
       if (e.message !== 'unauthorized') toast(e.message);
     } finally {
@@ -2400,7 +2500,7 @@
       s.dirty = false;
       toast('Đã từ chối.');
       listStamp = '';
-      await load();
+      replaceCard(d.id);
     } catch (e) {
       if (e.message !== 'unauthorized') toast(e.message);
     } finally {
@@ -2463,6 +2563,8 @@
     dirty = false;
     const opening = !document.body.classList.contains('show-detail');
     if (opening && !opts.fromPop) listScrollY = window.scrollY;
+    const leaving = cardState.get(selectedId);
+    if (leaving && leaving.kiot) persistOrder(selectedId, leaving.kiot);
     selectedId = id;
     const row = drafts.find(item => item.id === id);
     detailStamp = row ? JSON.stringify(row) : '';
@@ -2525,8 +2627,13 @@
 
   function kiotPanel(d, prefix) {
     const pid = prefix ? String(prefix) : 'detail';
-    const savedKiot = (ensureCard(d).kiot && window.kiotLines)
-      ? window.kiotLines.restore(ensureCard(d).kiot)
+    const cardSnap = ensureCard(d);
+    if (!cardSnap.kiot) {
+      const stored = storedOrder(d.id);
+      if (stored) cardSnap.kiot = stored;
+    }
+    const savedKiot = (cardSnap.kiot && window.kiotLines)
+      ? window.kiotLines.restore(cardSnap.kiot)
       : null;
     const state = {
       document: savedKiot ? savedKiot.document : 'invoice',
@@ -2750,7 +2857,10 @@
         dirty = false;
         detailStamp = '';
         listStamp = '';
-        await load();
+        clearOrder(d.id);
+        if (data.draft) mergeDraft(data.draft);
+        renderDetail();
+        replaceCard(d.id);
       } catch (e) {
         if (e.message !== 'unauthorized') showError(e.message);
         button.disabled = false;
@@ -2785,6 +2895,7 @@
       });
       s.kiot.addressParts = addressEditor.value();
       s.kiotDirty = true;
+      persistOrder(d.id, s.kiot);
     }
 
     function showError(text) {
@@ -3250,7 +3361,10 @@
         dirty = false;
         detailStamp = '';
         listStamp = '';
-        await load();
+        clearOrder(d.id);
+        if (data.draft) mergeDraft(data.draft);
+        renderDetail();
+        replaceCard(d.id);
       } catch (e) {
         if (e.message !== 'unauthorized') showError(e.message);
         state.submitting = false;
@@ -3562,12 +3676,13 @@
         body: JSON.stringify({ inbox_status: to, actor_name: actorName() }),
       });
       toast('Đã chuyển thư mục.');
-      queueAdvance(id);
       const s = cardState.get(id);
       if (s) s.dirty = false;
+      const row = drafts.find(item => item && item.id === id);
+      if (row) row.inbox_status = to;
+      if (heldDraft && heldDraft.id === id) heldDraft.inbox_status = to;
       listStamp = '';
-      detailStamp = '';
-      await load();
+      replaceCard(id);
     } catch (e) {
       if (e.message !== 'unauthorized') toast(e.message);
     }
@@ -3613,9 +3728,11 @@
         body: JSON.stringify({ biz_line: line, actor_name: actorName() }),
       });
       toast(line === 'dv' ? 'Đã chuyển qua DV.' : 'Đã chuyển qua Sale.');
-      if (!dirty) detailStamp = '';
+      const row = drafts.find(item => item && item.id === id);
+      if (row) row.biz_line = line;
+      if (heldDraft && heldDraft.id === id) heldDraft.biz_line = line;
       listStamp = '';
-      await load();
+      replaceCard(id);
     } catch (e) {
       if (e.message !== 'unauthorized') toast(e.message);
     }
@@ -3722,7 +3839,6 @@
       });
       if (toastNode) toastNode.remove();
       listStamp = '';
-      await load();
     } catch (e) {
       const policy = window.undoDelete;
       ids.forEach(id => {
