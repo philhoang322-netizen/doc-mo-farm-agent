@@ -1634,7 +1634,20 @@
     if (kind) meta.appendChild(el('span', { class: 'tag ' + kind.cls, text: kind.text }));
     const split = el('div', { class: 'detail-split' });
     const main = el('div', { class: 'detail-main pane-mid' });
-    const side = el('div', { class: 'detail-side pane-side' });
+    const side = el('div', { class: 'detail-side pane-side', id: 'pane-side' });
+    const sideToggle = el('button', {
+      type: 'button',
+      class: 'pane-side-toggle',
+      text: 'Hồ sơ',
+      'aria-controls': 'pane-side',
+    });
+    const sideOpen = document.body.classList.contains('side-open');
+    sideToggle.setAttribute('aria-expanded', sideOpen ? 'true' : 'false');
+    sideToggle.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      const open = document.body.classList.toggle('side-open');
+      sideToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
     const midHead = el('div', { class: 'pane-mid-head' });
     const midScroll = el('div', { class: 'pane-mid-scroll' });
     const midFoot = el('div', { class: 'pane-mid-foot' });
@@ -1765,6 +1778,7 @@
     main.appendChild(midFoot);
     split.appendChild(main);
     split.appendChild(side);
+    split.appendChild(sideToggle);
     body.appendChild(split);
     form.appendChild(body);
     detailEl.appendChild(form);
@@ -2185,6 +2199,10 @@
     });
 
     let announced = false;
+    function drawerClosed() {
+      return window.matchMedia('(min-width: 768px) and (max-width: 1023px)').matches
+        && !document.body.classList.contains('side-open');
+    }
     function paintWarnings(focus) {
       const v = value();
       const check = window.vtpAddress && window.vtpAddress.gaps
@@ -2214,7 +2232,7 @@
         ward: ward.input,
         street,
       }[check.focus];
-      if (focus && target && !announced && !locked) {
+      if (focus && target && !announced && !locked && !drawerClosed()) {
         announced = true;
         target.disabled = false;
         target.scrollIntoView({ block: 'center', inline: 'nearest' });
@@ -2308,6 +2326,11 @@
         street,
       }[focusKey];
       if (target && !locked) {
+        if (drawerClosed()) {
+          document.body.classList.add('side-open');
+          const toggle = document.querySelector('.pane-side-toggle');
+          if (toggle) toggle.setAttribute('aria-expanded', 'true');
+        }
         target.disabled = false;
         target.scrollIntoView({ block: 'center', inline: 'nearest' });
         target.focus();

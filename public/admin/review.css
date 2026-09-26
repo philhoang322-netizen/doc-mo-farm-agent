@@ -1844,6 +1844,8 @@ body.hitl .qr { max-width: 220px; }
   }
 }
 
+body.inbox .pane-side-toggle { display: none; }
+
 @media (min-width: 768px) {
   body.inbox {
     height: 100dvh;
@@ -1864,7 +1866,7 @@ body.hitl .qr { max-width: 220px; }
     min-height: 0;
     height: 100%;
     display: grid;
-    grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+    grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
     overflow: hidden;
   }
   body.inbox.show-detail #queue,
@@ -1908,12 +1910,39 @@ body.hitl .qr { max-width: 220px; }
     flex: 1;
     min-width: 0;
     min-height: 0;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
-    gap: 0;
-    align-items: stretch;
+    display: block;
+    position: relative;
     overflow: hidden;
   }
+  body.inbox .pane-mid { height: 100%; }
+  body.inbox .pane-side-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: calc(var(--app-bar-h, 56px) + 8px);
+    right: 8px;
+    z-index: 7;
+    height: 32px;
+    min-height: 32px;
+    padding: 0 10px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: #fff;
+    font-size: 13px;
+    font-weight: 700;
+  }
+  body.inbox .detail-side {
+    position: fixed;
+    top: var(--app-bar-h, 56px);
+    right: 0;
+    bottom: 0;
+    width: min(340px, 92vw);
+    transform: translateX(105%);
+    box-shadow: -8px 0 24px rgba(40, 32, 16, 0.12);
+    z-index: 6;
+  }
+  body.inbox.side-open .detail-side { transform: none; }
   body.inbox .detail-main,
   body.inbox .detail-side {
     display: flex;
@@ -1921,14 +1950,13 @@ body.hitl .qr { max-width: 220px; }
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    position: relative;
     background: var(--card);
   }
   body.inbox .detail-side {
     overflow: auto;
     border-left: 1px solid var(--line-soft);
-    z-index: 1;
   }
+  body.inbox.side-open .pane-side-toggle { z-index: 7; }
   body.inbox .pane-mid-head,
   body.inbox .pane-mid-foot { flex: 0 0 auto; min-width: 0; }
   body.inbox .pane-mid-head { padding: 8px 12px 0; }
@@ -1996,7 +2024,7 @@ body.hitl .qr { max-width: 220px; }
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(320px, 400px) minmax(0, 1fr);
+    grid-template-columns: 300px minmax(0, 1fr);
   }
   body.inbox .list {
     min-height: 0;
@@ -2022,10 +2050,37 @@ body.hitl .qr { max-width: 220px; }
   body.inbox .detail-body { max-width: none; }
   body.inbox .detail-split {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(280px, 380px);
+    grid-template-columns: minmax(360px, 1fr) 340px;
     gap: 0;
     align-items: stretch;
     overflow: hidden;
+  }
+  body.inbox .pane-side-toggle { display: none; }
+  body.inbox .detail-side {
+    position: relative;
+    top: auto;
+    right: auto;
+    bottom: auto;
+    width: auto;
+    transform: none;
+    box-shadow: none;
+  }
+  body.inbox .pane-mid .detail-quick.card-chips {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+  }
+  body.inbox .pane-mid .detail-quick.card-chips > button {
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+    height: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    padding: 0 4px;
+    font-size: 12px;
+    letter-spacing: -0.03em;
+    justify-content: center;
   }
   /* button.btn is more specific than .back, so the class chain is required. */
   body.inbox button.btn.back { display: none; }

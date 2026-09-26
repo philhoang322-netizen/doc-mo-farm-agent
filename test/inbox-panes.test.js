@@ -54,7 +54,10 @@ test('approve updates the open card in place and order state is stored by draft 
   assert.doesNotMatch(send, /location\.(href|assign|reload)/);
   assert.match(send, /patch\(payload\(\{ approval_status: 'APPROVED', send: true \}\)/);
   assert.match(css, /100dvh/);
-  assert.match(css, /minmax\(0, 1fr\) minmax\(260px, 360px\)/);
+  assert.match(css, /grid-template-columns:\s*300px minmax\(0, 1fr\)/);
+  assert.match(css, /grid-template-columns:\s*minmax\(360px, 1fr\) 340px/);
+  assert.match(css, /pane-side-toggle/);
+  assert.match(js, /class: 'pane-side-toggle'/);
   assert.match(css, /\.pane-mid-scroll[\s\S]*overflow:\s*auto/);
   assert.match(css, /\.detail-side \{[\s\S]*overflow:\s*auto/);
   assert.match(css, /min-width:\s*0/);
@@ -180,6 +183,7 @@ test('three panes scroll apart and Duyệt & Gửi keeps the order form', {
         listOverflow: getComputedStyle(document.querySelector('.list-scroll')).overflowY,
         midTop: midScroll.scrollTop,
         sideTop: side.scrollTop,
+        chipRows: new Set([...document.querySelectorAll('.pane-mid .detail-quick button')].map(btn => Math.round(btn.getBoundingClientRect().top))).size,
       };
     });
     assert.equal(layout.width, 1024);
@@ -188,8 +192,11 @@ test('three panes scroll apart and Duyệt & Gửi keeps the order form', {
     assert.equal(layout.sideOverflow, 'auto');
     assert.equal(layout.midOverflow, 'auto');
     assert.equal(layout.listOverflow, 'auto');
-    assert.ok(layout.boxes[2].w >= 240, 'side width ' + layout.boxes[2].w);
+    assert.ok(layout.boxes[0].w >= 290 && layout.boxes[0].w <= 310, 'list width ' + layout.boxes[0].w);
+    assert.ok(layout.boxes[1].w >= 360, 'middle width ' + layout.boxes[1].w);
+    assert.ok(layout.boxes[2].w >= 330 && layout.boxes[2].w <= 350, 'side width ' + layout.boxes[2].w);
     assert.ok(layout.boxes.every(box => box.h > 200), 'pane heights');
+    assert.ok(layout.chipRows >= 1 && layout.chipRows <= 2, 'chip rows ' + layout.chipRows);
 
     await page.evaluate(() => {
       document.querySelector('.pane-side').scrollTop = 120;
@@ -262,6 +269,73 @@ test('three panes scroll apart and Duyệt & Gửi keeps the order form', {
     const stored = await page.evaluate(() => sessionStorage.getItem('dmf_order_pane') || '');
     assert.match(stored, /ghi chu giu/);
     assert.match(stored, /12 Đường Thử/);
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+test('tablet keeps the order form in a drawer without reloading', {
+  skip: !playwright || !chrome,
+  timeout: 90000,
+}, async () => {
+  await drafts.createDraft({
+    channel: 'zalo',
+    sales_channel: 'farm',
+    biz_line: 'sale',
+    customer_name: 'Khách Máy Tính',
+    customer_phone: '0900000008',
+    customer_code: 'KH-DEMO',
+    customer_user_id: 'zalo_pane_tablet',
+    customer_query: 'Đặt thử trên máy tính bảng.',
+    customer_intent: '[sales] đặt hàng',
+    draft_reply: 'Dạ em ghi nhận.',
+    triage_level: 'hot',
+    approval_status: 'PENDING_REVIEW',
+  });
+  const server = await appServer();
+  const base = 'http://127.0.0.1:' + server.address().port;
+  const browser = await playwright.chromium.launch({
+    executablePath: chrome,
+    headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+  });
+  try {
+    const page = await browser.newPage({ viewport: { width: 800, height: 800 } });
+    page.on('dialog', dialog => dialog.accept());
+    await login(page, base);
+    await page.goto(base + '/admin?pollms=60000&nhom=zalo&hop=pending', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('.msg-card');
+    await page.locator('.msg-card', { hasText: 'Khách Máy Tính' }).locator('.msg').click();
+    await page.waitForSelector('#kiot-note-detail');
+    await page.locator('#kiot-note-detail').fill('ghi chu tablet');
+    const closed = await page.evaluate(() => {
+      const side = document.querySelector('.pane-side').getBoundingClientRect();
+      const list = document.getElementById('queue').getBoundingClientRect();
+      return { sideX: side.x, width: document.documentElement.clientWidth, listW: list.width };
+    });
+    assert.equal(closed.width, 800);
+    assert.ok(closed.sideX >= closed.width - 2, 'drawer left ' + closed.sideX);
+    assert.ok(closed.listW >= 180 && closed.listW <= 280, 'list ' + closed.listW);
+    const url = page.url();
+    await page.locator('.pane-side-toggle').click();
+    const opened = await page.evaluate(() => {
+      const side = document.querySelector('.pane-side').getBoundingClientRect();
+      const list = document.getElementById('queue').getBoundingClientRect();
+      return {
+        sideX: side.x,
+        sideR: side.right,
+        listR: list.right,
+        note: document.getElementById('kiot-note-detail').value,
+        width: document.documentElement.clientWidth,
+      };
+    });
+    assert.ok(opened.sideX > opened.listR, 'drawer left ' + opened.sideX + ' list right ' + opened.listR);
+    assert.ok(opened.sideR <= opened.width + 2, 'drawer right ' + opened.sideR);
+    assert.equal(opened.note, 'ghi chu tablet');
+    assert.equal(page.url(), url);
+    await page.locator('.pane-side-toggle').click();
+    assert.equal(await page.locator('#kiot-note-detail').inputValue(), 'ghi chu tablet');
   } finally {
     await browser.close();
     server.close();
