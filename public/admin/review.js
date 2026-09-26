@@ -1700,7 +1700,7 @@
       text: 'Đã điền từ tin nhắn. Kiểm tra lại trước khi tạo đơn.',
       hidden: 'hidden',
     });
-    const err = el('p', { class: 'addr-error', hidden: 'hidden' });
+    const err = el('p', { class: 'addr-warn', hidden: 'hidden' });
     const street = el('input', {
       id: opts.streetId || 'd-street',
       name: 'address_detail',
@@ -1749,6 +1749,21 @@
         nameInput.value = item ? item.label : '';
         if (codeInput) codeInput.value = item && item.code ? item.code : '';
         input.value = item ? item.label : '';
+        input.disabled = locked;
+        close();
+        if (!silent) {
+          dirty = true;
+          paintLine();
+          if (opts.onInput) opts.onInput();
+        }
+      }
+      function setText(text, silent) {
+        current = null;
+        idInput.value = '';
+        nameInput.value = text || '';
+        if (codeInput) codeInput.value = '';
+        input.value = text || '';
+        input.disabled = locked;
         close();
         if (!silent) {
           dirty = true;
@@ -1759,21 +1774,24 @@
       input.addEventListener('input', () => {
         current = null;
         idInput.value = '';
-        nameInput.value = '';
         if (codeInput) codeInput.value = '';
+        nameInput.value = input.value.trim();
+        input.disabled = locked;
         dirty = true;
         paintHits();
         paintLine();
+        if (opts.onInput) opts.onInput();
       });
       input.addEventListener('focus', () => paintHits());
-      return { wrap, input, setItem, close, item: () => current };
+      return { wrap, input, setItem, setText, close, item: () => current };
     }
 
     const ward = combo('Phường / Xã', opts.wardInputId || 'd-ward', 'ward');
     const district = combo('Quận / Huyện', opts.districtInputId || 'd-district', 'district');
     const province = combo('Tỉnh / Thành', opts.provinceInputId || 'd-province', 'province');
-    ward.wrap.querySelector('label').appendChild(el('span', { class: 'addr-req', text: 'bắt buộc' }));
-    province.wrap.querySelector('label').appendChild(el('span', { class: 'addr-req', text: 'bắt buộc' }));
+    function enableCombo(row) {
+      row.input.disabled = locked;
+    }
 
     const lineEl = el('p', { class: 'addr-line', id: opts.lineId || 'addr-line' });
     const lineInput = el('input', { type: 'hidden', name: 'address_line' });
@@ -1794,13 +1812,13 @@
     if (locked) slot.disabled = true;
     slot.addEventListener('change', () => { dirty = true; });
 
-    box.appendChild(streetWrap);
-    box.appendChild(ward.wrap);
-    box.appendChild(district.wrap);
     box.appendChild(province.wrap);
+    box.appendChild(district.wrap);
+    box.appendChild(ward.wrap);
+    box.appendChild(streetWrap);
+    box.appendChild(err);
     box.appendChild(lineEl);
     box.appendChild(lineInput);
-    box.appendChild(err);
     box.appendChild(hint);
     box.appendChild(ids);
     box.appendChild(el('div', { class: 'field-block' }, [
@@ -1820,7 +1838,7 @@
       else {
         const districtId = district.item() && district.item().id;
         const provinceId = province.item() && province.item().id;
-        if (!districtId && !provinceId && api.fold(q).length < 2) hits = [];
+        if (!districtId && !provinceId && !String(q || '').trim()) hits = [];
         else hits = api.searchWards(q, districtId, provinceId, 8);
       }
       which.wrap.querySelector('.addr-hits').textContent = '';
@@ -1845,46 +1863,80 @@
     district.input.addEventListener('input', () => paintHitsFor(district));
     province.input.addEventListener('input', () => paintHitsFor(province));
 
+    function resetChild(row) {
+      row.setText('', true);
+      enableCombo(row);
+    }
+    province.input.addEventListener('input', () => {
+      resetChild(district);
+      resetChild(ward);
+      paintLine();
+      paintWarnings(false);
+      if (opts.onInput) opts.onInput();
+    });
+    district.input.addEventListener('input', () => {
+      resetChild(ward);
+      paintLine();
+      paintWarnings(false);
+      if (opts.onInput) opts.onInput();
+    });
+    ward.input.addEventListener('input', () => paintWarnings(false));
+
     function choose(which, item) {
       const api = window.vtpAddress;
       hint.hidden = true;
       if (which === province) {
+        const same = province.item() && province.item().id === item.id;
         province.setItem(item);
-        if (district.item() && district.item().provinceId !== item.id) district.setItem(null, true);
-        if (ward.item() && ward.item().provinceId !== item.id) ward.setItem(null, true);
+        if (!same) {
+          resetChild(district);
+          resetChild(ward);
+        }
       } else if (which === district) {
+        const same = district.item() && district.item().id === item.id;
         district.setItem(item);
-        const parent = api.getProvince(item.provinceId);
+        const parent = api && api.getProvince(item.provinceId);
         if (parent) province.setItem(parent, true);
-        if (ward.item() && ward.item().districtId !== item.id) ward.setItem(null, true);
+        if (!same) resetChild(ward);
       } else {
         ward.setItem(item);
-        const parentDistrict = api.getDistrict(item.districtId);
+        const parentDistrict = api && api.getDistrict(item.districtId);
         if (parentDistrict) district.setItem(parentDistrict, true);
-        const parentProvince = api.getProvince(item.provinceId || (parentDistrict && parentDistrict.provinceId));
+        const parentProvince = api && api.getProvince(item.provinceId || (parentDistrict && parentDistrict.provinceId));
         if (parentProvince) province.setItem(parentProvince, true);
       }
       paintLine();
+      paintWarnings(false);
+    }
+
+    function named(row) {
+      const item = row.item();
+      return {
+        item,
+        id: item ? item.id : '',
+        name: item ? item.label : row.input.value.trim(),
+        code: item && item.code ? item.code : '',
+      };
     }
 
     function value() {
-      const p = province.item();
-      const d = district.item();
-      const w = ward.item();
+      const p = named(province);
+      const d = named(district);
+      const w = named(ward);
       const detail = street.value.trim();
       const body = {
         detail,
-        provinceId: p ? p.id : '',
-        provinceName: p ? p.label : '',
-        provinceCode: p && p.code ? p.code : '',
-        districtId: d ? d.id : '',
-        districtName: d ? d.label : '',
-        districtCode: d && d.code ? d.code : '',
-        wardId: w ? w.id : '',
-        wardName: w ? w.label : '',
-        province: p,
-        district: d,
-        ward: w,
+        provinceId: p.id,
+        provinceName: p.name,
+        provinceCode: p.code,
+        districtId: d.id,
+        districtName: d.name,
+        districtCode: d.code,
+        wardId: w.id,
+        wardName: w.name,
+        province: p.item,
+        district: d.item,
+        ward: w.item,
       };
       body.line = window.vtpAddress ? window.vtpAddress.line(body).slice(0, 300) : [detail, body.wardName, body.districtName, body.provinceName].filter(Boolean).join(', ');
       return body;
@@ -1899,16 +1951,23 @@
       wardCode.textContent = v.wardId || '—';
     }
 
+    function putCombo(row, item, text) {
+      if (item) row.setItem(item, true);
+      else row.setText(text || '', true);
+      enableCombo(row);
+    }
+
     function setValue(v) {
       const api = window.vtpAddress;
       const src = v || {};
       street.value = src.detail || '';
-      const p = src.province || (api && api.getProvince(src.provinceId));
-      const d = src.district || (api && api.getDistrict(src.districtId));
-      const w = src.ward || (api && api.getWard(src.wardId));
-      province.setItem(p, true);
-      district.setItem(d, true);
-      ward.setItem(w, true);
+      street.disabled = locked;
+      const p = src.province || (api && src.provinceId && api.getProvince(src.provinceId)) || null;
+      const d = src.district || (api && src.districtId && api.getDistrict(src.districtId)) || null;
+      const w = src.ward || (api && src.wardId && api.getWard(src.wardId)) || null;
+      putCombo(province, p, src.provinceName || src.provinceText || '');
+      putCombo(district, d, src.districtName || src.districtText || '');
+      putCombo(ward, w, src.wardName || src.wardText || '');
       paintLine();
     }
 
@@ -1916,8 +1975,11 @@
       const api = window.vtpAddress;
       if (!api || !api.loaded()) return null;
       const parsed = api.parse(text || '');
-      if (!(parsed.province || parsed.ward || parsed.detail)) return null;
+      const any = parsed.province || parsed.district || parsed.ward || parsed.detail
+        || parsed.provinceText || parsed.districtText || parsed.wardText;
+      if (!any) return null;
       setValue(parsed);
+      paintWarnings(false);
       return parsed;
     }
 
@@ -1925,40 +1987,93 @@
       dirty = true;
       hint.hidden = true;
       paintLine();
+      paintWarnings(false);
       if (opts.onInput) opts.onInput();
     });
 
-    function validateForConfirm() {
+    let announced = false;
+    function paintWarnings(focus) {
       const v = value();
-      const started = !!(v.detail || v.provinceId || v.districtId || v.wardId);
-      if (!started || !window.vtpAddress) {
-        err.hidden = true;
-        return { ok: true, errors: [] };
+      const check = window.vtpAddress && window.vtpAddress.gaps
+        ? window.vtpAddress.gaps(v)
+        : { warnings: [], missing: [], invalid: [], focus: '' };
+      const bad = new Set([].concat(check.missing || [], check.invalid || []));
+      [
+        [province, 'province'],
+        [district, 'district'],
+        [ward, 'ward'],
+      ].forEach(([row, key]) => {
+        const on = bad.has(key);
+        row.wrap.classList.toggle('addr-bad', on);
+        row.input.setAttribute('aria-invalid', on ? 'true' : 'false');
+        row.input.disabled = locked;
+      });
+      const streetBad = bad.has('street');
+      streetWrap.classList.toggle('addr-bad', streetBad);
+      street.setAttribute('aria-invalid', streetBad ? 'true' : 'false');
+      street.disabled = locked;
+      const text = (check.warnings || []).join(' · ');
+      err.hidden = !text;
+      err.textContent = text;
+      const target = {
+        province: province.input,
+        district: district.input,
+        ward: ward.input,
+        street,
+      }[check.focus];
+      if (focus && target && !announced && !locked) {
+        announced = true;
+        target.disabled = false;
+        target.scrollIntoView({ block: 'center', inline: 'nearest' });
+        target.focus();
       }
-      const check = window.vtpAddress.validate(v);
-      err.hidden = check.ok;
-      err.textContent = check.ok ? '' : check.errors.join(' ');
       return check;
+    }
+
+    function validateForConfirm(focus) {
+      const check = paintWarnings(!!focus);
+      return { ok: true, errors: [], warnings: check.warnings || [] };
+    }
+
+    function savedParts(src) {
+      return !!(src && (
+        src.provinceId || src.districtId || src.wardId || src.detail
+        || src.provinceName || src.districtName || src.wardName
+        || src.provinceText || src.districtText || src.wardText
+      ));
     }
 
     function applyInitial() {
       if (!box.isConnected || !window.vtpAddress || !window.vtpAddress.loaded()) return;
-      if (opts.parts && (opts.parts.provinceId || opts.parts.wardId || opts.parts.detail)) {
+      if (savedParts(opts.parts)) {
         setValue(opts.parts);
+        paintWarnings(true);
         return;
       }
-      if (f.province_id || f.ward_id || f.district_id || f.address_detail || f.address_line) {
+      if (f.address_line && !f.ward_id && !f.ward_name) {
+        const parsed = setFromText(f.address_line);
+        if (parsed) {
+          if (parsed.province || parsed.ward || parsed.wardText) hint.hidden = false;
+          paintWarnings(true);
+          return;
+        }
+      }
+      if (f.province_id || f.ward_id || f.district_id || f.address_detail || f.province_name || f.district_name || f.ward_name) {
         setValue({
           detail: f.address_detail || '',
           provinceId: f.province_id,
+          provinceName: f.province_name,
           districtId: f.district_id,
+          districtName: f.district_name,
           wardId: f.ward_id,
+          wardName: f.ward_name,
         });
-        if (!f.province_id && !f.ward_id && f.address_line) setFromText(f.address_line);
+        paintWarnings(true);
         return;
       }
       const parsed = setFromText(opts.seedText || addressSeedText(opts.draft));
-      if (parsed && (parsed.province || parsed.ward)) hint.hidden = false;
+      if (parsed && (parsed.province || parsed.ward || parsed.wardText)) hint.hidden = false;
+      paintWarnings(true);
     }
 
     document.addEventListener('click', function onDoc(ev) {
@@ -2823,13 +2938,7 @@
         showError('Còn dòng chưa chọn mã KiotViet.');
         return;
       }
-      if (confirm) {
-        const addressCheck = addressEditor.validateForConfirm();
-        if (!addressCheck.ok) {
-          showError(addressCheck.errors[0]);
-          return;
-        }
-      }
+      if (confirm) addressEditor.validateForConfirm(true);
       if (confirm && state.existing && !state.acknowledge) {
         showError('Nháp đã có chứng từ. Chỉ tạo thêm khi bạn tick xác nhận.');
         return;
@@ -2862,6 +2971,8 @@
           body: JSON.stringify(body),
         });
         if (!confirm) {
+          state.submitting = false;
+          quoteBtn.disabled = false;
           state.quote = data;
           if (window.kiotLines) state.lines = window.kiotLines.mergeQuote(state.lines, data.lines || []);
           else {
@@ -2973,8 +3084,9 @@
           phone: data.phone || phoneInput.input.value.trim(),
         };
       }
-      if (!state.touched.address && data.address && !addressEditor.value().wardId && !(rawKiot && rawKiot.addressParts)) {
-        addressEditor.setFromText(data.address);
+      if (!state.touched.address && data.address && !(rawKiot && rawKiot.addressParts)) {
+        const place = addressEditor.value();
+        if (!place.wardId && !place.wardName) addressEditor.setFromText(data.address);
       }
       if (!state.touched.quick && data.quick_text && !(savedKiot && savedKiot.quick)) quick.value = data.quick_text;
       if (!state.touched.ship && data.shipping_fee != null && !(savedKiot && savedKiot.touched && savedKiot.touched.ship)) {

@@ -1,0 +1,280 @@
+/**
+ * Partial Viettel Post address on the inbox order form.
+ * Synthetic fixtures only. Confirm stays enabled; every part stays editable.
+ */
+const path = require('path');
+const os = require('os');
+const fs = require('fs');
+
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vtp-form-'));
+process.env.DATABASE_URL = '';
+process.env.DRAFTS_JSON_PATH = path.join(dir, 'drafts.json');
+process.env.NODE_ENV = 'test';
+process.env.ADMIN_PASSWORD = 'secret';
+delete process.env.ADMIN_API_KEY;
+process.env.KIOTVIET_CLIENT_ID = 'test-client';
+process.env.KIOTVIET_CLIENT_SECRET = 'test-secret';
+process.env.KIOTVIET_RETAILER = 'demo-shop';
+
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const express = require('express');
+const drafts = require('../services/drafts');
+const hitlAdmin = require('../services/hitlAdmin');
+const kiotviet = require('../services/kiotviet');
+
+const CATALOG = [
+  { id: 1, code: 'SP-DEMO', name: 'Sản phẩm thử', price: 10000, basePrice: 10000, unit: 'gói', isActive: true, available: 20 },
+];
+
+const calls = [];
+kiotviet.enabled = () => true;
+kiotviet.listProductsForMatch = async () => CATALOG.map(p => ({ ...p }));
+kiotviet.searchProducts = async () => CATALOG.map(p => ({ ...p }));
+kiotviet.findProduct = async () => ({ ...CATALOG[0], fullName: CATALOG[0].name });
+kiotviet.getOnHand = async () => ({
+  ok: true, sku: 'SP-DEMO', name: 'Sản phẩm thử', available: 20, onHand: 20, reserved: 0, branchId: 1,
+});
+kiotviet.createSaleDocument = async (input) => {
+  calls.push(input);
+  return {
+    ok: true,
+    code: 'HD-DEMO',
+    total: 10000,
+    documentType: input.documentType || 'invoice',
+    branchId: 1,
+    customerId: 1,
+    customerCode: 'KH-DEMO',
+    customerName: input.customerName || 'Khách Thử',
+  };
+};
+kiotviet.findCustomerByPhone = async () => null;
+
+function loadPlaywright() {
+  try { return require('playwright-core'); } catch (_) {}
+  try { return require('/tmp/node_modules/playwright-core'); } catch (_) {}
+  return null;
+}
+
+function chromePath() {
+  return [
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
+    '/usr/local/bin/google-chrome',
+    '/usr/bin/chromium',
+  ].find(candidate => fs.existsSync(candidate)) || '';
+}
+
+const playwright = loadPlaywright();
+const chrome = chromePath();
+
+async function appServer() {
+  const app = express();
+  app.use(express.json());
+  app.use(express.urlencoded({ extended: false }));
+  app.get('/admin', (req, res, next) => {
+    Promise.resolve(hitlAdmin.page(req, res)).catch(next);
+  });
+  hitlAdmin.mount(app);
+  return new Promise(resolve => {
+    const server = app.listen(0, '127.0.0.1', () => resolve(server));
+  });
+}
+
+async function openOrder(page, base, who) {
+  await page.goto(base + '/admin', { waitUntil: 'domcontentloaded' });
+  await page.fill('input[name="password"]', 'secret');
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
+    page.click('button[type="submit"]'),
+  ]);
+  await page.goto(base + '/admin?pollms=60000&nhom=fb-sale&hop=pending', { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.msg-card');
+  await page.locator('.msg-card', { hasText: who }).locator('.msg').click();
+  await page.waitForSelector('#kiot-ward-detail');
+  await page.waitForFunction(() => {
+    const ward = document.getElementById('kiot-ward-detail');
+    return ward && ward.value.indexOf('Không Có') !== -1;
+  });
+}
+
+test('partial address stays editable and confirm stays enabled', {
+  skip: !playwright || !chrome,
+  timeout: 90000,
+}, async () => {
+  calls.length = 0;
+  await drafts.createDraft({
+    channel: 'messenger',
+    sales_channel: 'farm',
+    biz_line: 'sale',
+    customer_name: 'Khách Một',
+    customer_phone: '0900000001',
+    customer_code: 'KH-DEMO',
+    customer_user_id: 'fb_demo_partial',
+    customer_query: 'Đặt 1 sản phẩm thử',
+    customer_intent: '[sales] đặt hàng',
+    draft_reply: 'Dạ em ghi nhận đơn thử.',
+    triage_level: 'hot',
+    approval_status: 'PENDING_REVIEW',
+    review_form: {
+      address_line: '12 Đường Thử, Phường Không Có, Hồ Chí Minh',
+    },
+  });
+
+  const server = await appServer();
+  const base = 'http://127.0.0.1:' + server.address().port;
+  const browser = await playwright.chromium.launch({
+    executablePath: chrome,
+    headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+  });
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+    await openOrder(page, base, 'Khách Một');
+    const state = await page.evaluate(() => {
+      const field = (id) => {
+        const node = document.getElementById(id);
+        const box = node.getBoundingClientRect();
+        return {
+          value: node.value,
+          disabled: node.disabled,
+          readOnly: node.readOnly,
+          invalid: node.getAttribute('aria-invalid'),
+          h: Math.round(box.height),
+          w: Math.round(box.width),
+        };
+      };
+      const warn = document.querySelector('.addr-warn');
+      return {
+        width: document.documentElement.clientWidth,
+        overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+        province: field('kiot-province-detail'),
+        district: field('kiot-district-detail'),
+        ward: field('kiot-ward-detail'),
+        street: field('kiot-address-detail'),
+        warn: warn && !warn.hidden ? warn.textContent : '',
+      };
+    });
+    assert.equal(state.width, 390);
+    assert.equal(state.overflow, false);
+    for (const key of ['province', 'district', 'ward', 'street']) {
+      assert.equal(state[key].disabled, false, key);
+      assert.equal(state[key].readOnly, false, key);
+      assert.ok(state[key].h >= 40, key + ' height');
+      assert.ok(state[key].w >= 40, key + ' width');
+    }
+    assert.equal(state.province.value, 'Hồ Chí Minh');
+    assert.equal(state.district.value, '');
+    assert.equal(state.district.invalid, 'true');
+    assert.equal(state.ward.value, 'Phường Không Có');
+    assert.equal(state.ward.invalid, 'true');
+    assert.equal(state.street.value, '12 Đường Thử');
+    assert.match(state.warn, /Thiếu quận/);
+    assert.match(state.warn, /Chưa khớp phường/);
+
+    await page.locator('#kiot-ward-detail').fill('Phường Khác');
+    assert.equal(await page.locator('input[name="ward_name"]').inputValue(), 'Phường Khác');
+    assert.equal(await page.locator('#kiot-ward-detail').isDisabled(), false);
+
+    await page.locator('.kiot-line input[type="search"]').fill('thử');
+    await page.waitForSelector('.kiot-hit');
+    await page.locator('.kiot-hit').first().click();
+    assert.equal(calls.length, 0);
+    await page.locator('button', { hasText: 'Kiểm kho' }).click();
+    await page.waitForFunction(() => {
+      const btn = [...document.querySelectorAll('button')].find(node => /Xác nhận tạo/.test(node.textContent));
+      return btn && !btn.disabled;
+    });
+    assert.equal(calls.length, 0, 'stock check must not create a KiotViet document');
+
+    const pending = page.waitForResponse(res => {
+      if (!res.url().includes('/kiotviet') || res.request().method() !== 'POST') return false;
+      return (res.request().postData() || '').includes('"confirm":true');
+    });
+    await page.locator('button', { hasText: 'Xác nhận tạo' }).click();
+    const created = await pending;
+    assert.equal(created.status(), 200);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].address, /12 Đường Thử/);
+    assert.match(calls[0].address, /Phường Khác/);
+    assert.match(calls[0].address, /Hồ Chí Minh/);
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
+
+test('changing a parent resets and re-enables the child fields', {
+  skip: !playwright || !chrome,
+  timeout: 90000,
+}, async () => {
+  await drafts.createDraft({
+    channel: 'messenger',
+    sales_channel: 'farm',
+    biz_line: 'sale',
+    customer_name: 'Khách Hai',
+    customer_phone: '0900000003',
+    customer_code: 'KH-DEMO',
+    customer_user_id: 'fb_demo_parent',
+    customer_query: 'Đặt 1 sản phẩm thử',
+    customer_intent: '[sales] đặt hàng',
+    draft_reply: 'Dạ em ghi nhận đơn thử.',
+    triage_level: 'hot',
+    approval_status: 'PENDING_REVIEW',
+    review_form: {
+      address_line: '12 Đường Thử, Phường Không Có, Hồ Chí Minh',
+    },
+  });
+
+  const server = await appServer();
+  const base = 'http://127.0.0.1:' + server.address().port;
+  const browser = await playwright.chromium.launch({
+    executablePath: chrome,
+    headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+  });
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+    await openOrder(page, base, 'Khách Hai');
+    await page.locator('#kiot-district-detail').fill('Quận Thử');
+    const afterDistrict = await page.evaluate(() => ({
+      district: document.getElementById('kiot-district-detail').value,
+      districtDisabled: document.getElementById('kiot-district-detail').disabled,
+      ward: document.getElementById('kiot-ward-detail').value,
+      wardDisabled: document.getElementById('kiot-ward-detail').disabled,
+      districtName: document.querySelector('input[name="district_name"]').value,
+    }));
+    assert.equal(afterDistrict.district, 'Quận Thử');
+    assert.equal(afterDistrict.districtDisabled, false);
+    assert.equal(afterDistrict.districtName, 'Quận Thử');
+    assert.equal(afterDistrict.ward, '');
+    assert.equal(afterDistrict.wardDisabled, false);
+
+    await page.locator('#kiot-province-detail').click();
+    await page.locator('#kiot-province-detail').fill('Ha Noi');
+    const hit = page.locator('#kiot-province-detail ~ .addr-hits .addr-hit', { hasText: 'Hà Nội' }).first();
+    await hit.waitFor({ state: 'visible' });
+    await hit.click();
+    const afterProvince = await page.evaluate(() => ({
+      province: document.getElementById('kiot-province-detail').value,
+      district: document.getElementById('kiot-district-detail').value,
+      districtDisabled: document.getElementById('kiot-district-detail').disabled,
+      ward: document.getElementById('kiot-ward-detail').value,
+      wardDisabled: document.getElementById('kiot-ward-detail').disabled,
+      streetDisabled: document.getElementById('kiot-address-detail').disabled,
+    }));
+    assert.match(afterProvince.province, /Hà Nội/);
+    assert.equal(afterProvince.district, '');
+    assert.equal(afterProvince.ward, '');
+    assert.equal(afterProvince.districtDisabled, false);
+    assert.equal(afterProvince.wardDisabled, false);
+    assert.equal(afterProvince.streetDisabled, false);
+
+    await page.locator('#kiot-district-detail').fill('Quận Mới');
+    assert.equal(await page.locator('#kiot-district-detail').isDisabled(), false);
+    assert.equal(await page.locator('input[name="district_name"]').inputValue(), 'Quận Mới');
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});
