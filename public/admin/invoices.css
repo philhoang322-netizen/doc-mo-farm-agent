@@ -101,7 +101,9 @@ input {
   font-weight: 700;
 }
 .pay-chip.is-paid { border-color: var(--green); background: #e8f3ec; color: var(--green); }
-.pay-method, .pay-filter { border-color: var(--line); color: var(--ink); }
+.pay-method, .pay-filter { border-color: var(--line); color: var(--ink); font-size: 13px; }
+.pay-method.is-clear { border-color: #e7c4c0; color: #8f1810; }
+.pay-chip { white-space: nowrap; }
 .pay-method.is-on, .pay-filter.is-on { border-color: var(--green); color: var(--green); }
 .pay-filters { display: flex; flex-wrap: wrap; gap: 4px; }
 .id-name {

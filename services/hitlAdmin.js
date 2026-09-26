@@ -741,23 +741,23 @@ async function invoicesPage(req, res) {
 
 async function invoicesList(req, res) {
   if (!access.canKiot(await who(req))) return deny(res);
-  const rows = await invoices.hydrateCustomerCodes(await invoices.search({
+  const rows = await invoices.refreshFromKiot(await invoices.hydrateCustomerCodes(await invoices.search({
     q: req.query.q,
     from: req.query.from,
     to: req.query.to,
     payment: req.query.payment,
-  }));
+  })));
   res.json({ invoices: rows.map(row => invoices.present(row)) });
 }
 
 async function invoicesCsv(req, res) {
   if (!access.canKiot(await who(req))) return deny(res);
-  const rows = await invoices.hydrateCustomerCodes(await invoices.search({
+  const rows = await invoices.refreshFromKiot(await invoices.hydrateCustomerCodes(await invoices.search({
     q: req.query.q,
     from: req.query.from,
     to: req.query.to,
     payment: req.query.payment,
-  }));
+  })));
   res.set('Content-Type', 'text/csv; charset=utf-8');
   res.set('Content-Disposition', 'attachment; filename="hoa-don.csv"');
   res.send(invoices.toCsv(rows));
@@ -766,8 +766,8 @@ async function invoicesCsv(req, res) {
 async function invoicesPaid(req, res) {
   if (!access.canKiot(await who(req))) return deny(res);
   const body = req.body || {};
-  if (body.status !== 'da_tt' && body.status !== 'chua_tt') {
-    return res.status(400).json({ error: 'Cần trạng thái Chưa TT hoặc Đã TT' });
+  if (body.status !== 'da_tt') {
+    return res.status(400).json({ error: 'KiotViet không có API xoá một phiếu thu' });
   }
   const result = await invoices.setPaymentStatus(req.params.code, {
     status: body.status,
@@ -775,6 +775,10 @@ async function invoicesPaid(req, res) {
     actor: await auditActor(req),
   });
   if (!result) return res.status(404).json({ error: 'Không thấy hoá đơn' });
+  if (result.error) {
+    const http = result.kiot && result.kiot.error ? 502 : 400;
+    return res.status(http).json({ error: result.error, invoice: invoices.present(result.invoice) });
+  }
   res.json({ invoice: invoices.present(result.invoice), kiot: result.kiot || null });
 }
 
@@ -787,46 +791,32 @@ async function draftPayment(req, res) {
   const draft = await drafts.getDraft(req.params.id);
   if (!draft) return res.status(404).json({ error: 'Không thấy bản nháp' });
   const actor = await auditActor(req);
-  const method = body.method === 'cash' ? 'cash' : 'transfer';
   const previous = draft.review_form || {};
+  const code = (previous.kiot_code || draft.invoice_code || '').trim();
+  if (!code || previous.kiot_kind === 'order') {
+    return res.status(400).json({ error: 'Chưa có hoá đơn KiotViet' });
+  }
+  const result = await invoices.setPaymentStatus(code, { status: body.status, method: body.method, actor });
+  if (!result) return res.status(404).json({ error: 'Không thấy hoá đơn' });
+  if (result.error) {
+    const http = result.kiot && result.kiot.error ? 502 : 400;
+    return res.status(http).json({ error: result.error, invoice: invoices.present(result.invoice) });
+  }
+  const invoice = invoices.present(result.invoice);
   const form = {
     ...previous,
-    payment_status: body.status,
-    payment_method: method,
-    paid_at: body.status === 'da_tt' ? (previous.paid_at || new Date().toISOString()) : null,
-    paid_by: body.status === 'da_tt' ? actor : null,
+    payment_status: invoice.payment_status === 'da_tt' ? 'da_tt' : 'chua_tt',
+    payment_method: invoice.payment_method,
+    paid_at: invoice.paid_at,
+    paid_by: invoice.paid_by,
   };
   let updated = null;
   try {
-    updated = await drafts.updateDraft(draft.id, { review_form: form }, { actor: actor });
-  } catch (e) {
-    const status = e.status || 400;
-    return res.status(status).json({ error: e.message || 'Không lưu được' });
-  }
-  const code = (form.kiot_code || draft.invoice_code || '').trim();
-  let invoice = null;
-  let kiot = null;
-  if (code) {
-    const result = await invoices.setPaymentStatus(code, { status: body.status, method, actor });
-    if (result) {
-      invoice = invoices.present(result.invoice);
-      kiot = result.kiot || null;
-    }
-  }
-  try {
-    await audit.record({
-      actor,
-      action: 'draft.payment',
-      entity_type: 'draft',
-      entity_id: draft.id,
-      before: { payment_status: previous.payment_status || 'chua_tt', payment_method: previous.payment_method || null },
-      after: { payment_status: form.payment_status, payment_method: form.payment_method, paid_by: form.paid_by },
-      meta: { code: code || null },
-    });
+    updated = await drafts.updateDraft(draft.id, { review_form: form }, { actor });
   } catch (err) {
-    console.error('Draft payment audit failed:', err.message);
+    console.error('Draft payment mirror failed:', err.message);
   }
-  res.json({ ok: true, draft: updated && updated.draft, invoice, kiot });
+  res.json({ ok: true, draft: updated && updated.draft, invoice, kiot: result.kiot || null });
 }
 
 async function invoicesSync(req, res) {
@@ -841,7 +831,7 @@ async function invoicesSync(req, res) {
   if (!remote || !remote.ok) {
     return res.status(502).json({ error: (remote && remote.error) || 'Không đọc được KiotViet' });
   }
-  const saved = await invoices.setPayment(row.code, remote.amount_paid, await auditActor(req), 'kiotviet');
+  const saved = await invoices.applyRemote(row.code, remote, await auditActor(req), { audit: true, source: 'kiotviet' });
   res.json({ invoice: invoices.present(saved), kiot_status: remote.kiot_status });
 }
 
@@ -864,7 +854,7 @@ async function kiotIssue(req, res) {
     if (!access.canKiot(p)) return deny(res);
     const existing = await drafts.getDraft(req.params.id);
     if (!existing || !access.canSee(p, existing)) return res.status(404).json({ error: 'Không thấy bản nháp' });
-    const result = await kiotInbox.issueInvoice(req.params.id, p && p.source === 'user' ? access.actor(p) : actorNameFrom(req));
+    const result = await kiotInbox.issueInvoice(req.params.id, p && p.source === 'user' ? access.actor(p) : actorNameFrom(req), req.body || {});
     res.status(result.status).json(result.body);
   } catch (e) {
     console.error('Kiot issue failed:', e.message);

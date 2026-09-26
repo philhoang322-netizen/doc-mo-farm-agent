@@ -564,12 +564,15 @@ function cleanReviewForm(value) {
   out.paid_by = cleanShort('paid_by', src.paid_by, 80);
   if (src.payment_method != null && String(src.payment_method).trim() !== '') {
     const method = String(src.payment_method).trim();
-    if (method !== 'transfer' && method !== 'cash') throw new DraftError(400, 'Phương thức thanh toán không hợp lệ');
+    if (method !== 'transfer' && method !== 'cash' && method !== 'card' && method !== 'mixed') throw new DraftError(400, 'Phương thức thanh toán không hợp lệ');
     out.payment_method = method;
   }
   if (out.payment_status !== 'da_tt') {
     out.paid_at = null;
     out.paid_by = null;
+    out.payment_method = null;
+  } else if (!out.payment_method) {
+    out.payment_method = 'transfer';
   }
   return out;
 }

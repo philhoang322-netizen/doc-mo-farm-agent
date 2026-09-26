@@ -113,7 +113,19 @@ function isPaid(invoice) {
 }
 
 function payLabel(invoice) {
-  return isPaid(invoice) ? 'Đã TT' : 'Chưa TT';
+  if (!isPaid(invoice)) return 'Chưa TT';
+  if (invoice.payment_method === 'cash') return 'Đã TT · Tiền mặt';
+  if (invoice.payment_method === 'card') return 'Đã TT · Thẻ';
+  if (invoice.payment_method === 'mixed') return 'Đã TT · Nhiều cách';
+  return 'Đã TT · CK';
+}
+
+function payMethodCaption(invoice) {
+  if (!isPaid(invoice)) return '';
+  if (invoice.payment_method === 'cash') return 'Tiền mặt';
+  if (invoice.payment_method === 'card') return 'Thẻ';
+  if (invoice.payment_method === 'mixed') return 'Nhiều cách';
+  return 'Chuyển khoản';
 }
 
 /**
@@ -244,6 +256,7 @@ function pageHtml(row, imgSrc) {
   .pay-chip { flex: 0 0 auto; min-height: 32px; padding: 4px 10px; border-radius: 999px; border: 1px solid #e7c4c0; color: #8f1810; font-size: 13px; font-weight: 700; }
   .pay-chip.is-paid { border-color: #0f5a35; background: #e8f3ec; color: #0f5a35; }
   .paid-stamp { margin: 8px 0; padding: 10px 12px; border: 3px solid #0f5a35; color: #0f5a35; text-align: center; font-size: 22px; font-weight: 800; letter-spacing: 0.04em; }
+  .paid-stamp .paid-method { display: block; margin-top: 4px; font-size: 16px; font-weight: 650; letter-spacing: 0; }
   .meta { margin: 6px 0 10px; color: #5c564e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .addr-line { margin: 0 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .inv-lines { list-style: none; margin: 0 0 8px; padding: 0; }
@@ -253,7 +266,7 @@ function pageHtml(row, imgSrc) {
 </style></head><body><main>
 ${headerBlock(row)}
 <p class="meta">${meta}</p>
-${paid ? '<p class="paid-stamp">ĐÃ THANH TOÁN</p>' : ''}
+${paid ? `<p class="paid-stamp">ĐÃ THANH TOÁN<span class="paid-method">${escHtml(payMethodCaption(row))}</span></p>` : ''}
 ${address ? `<p class="addr-line">${address}</p>` : ''}
 ${linesHtml(row)}
 <img src="${escHtml(imgSrc || '')}" alt="Hoá đơn ${code}">
@@ -326,7 +339,7 @@ async function render(invoice) {
   const addressLine = invoice.delivery_address ? String(invoice.delivery_address) : '';
   const headerSlots = layoutHeader(measure, invoice, WIDTH);
   const extraHeader = headerSlots.pay && headerSlots.pay.row === 2 ? 28 : 0;
-  const bankAndQr = paidOff ? 110 : (210 + 340);
+  const bankAndQr = paidOff ? 150 : (210 + 340);
   const height = 168 + 96 + extraHeader + tableH + bankAndQr + (invoice.link ? 72 : 36) + (addressLine ? 28 : 0) + 24;
   const img = PImage.make(WIDTH, height);
   const ctx = img.getContext('2d');
@@ -407,11 +420,13 @@ async function render(invoice) {
   if (paidOff) {
     ctx.strokeStyle = '#0f5a35';
     ctx.lineWidth = 4;
-    ctx.strokeRect(32, y, WIDTH - 64, 64);
+    ctx.strokeRect(32, y, WIDTH - 64, 96);
     ctx.fillStyle = '#0f5a35';
     ctx.font = '28px NotoBold';
-    ctx.fillText('ĐÃ THANH TOÁN', 48, y + 42);
-    y += 88;
+    ctx.fillText('ĐÃ THANH TOÁN', 48, y + 40);
+    ctx.font = '18px Noto';
+    ctx.fillText(payMethodCaption(invoice), 48, y + 72);
+    y += 120;
   } else {
     const boxTop = y;
     ctx.fillStyle = '#f6f3ee';
@@ -443,4 +458,4 @@ async function render(invoice) {
   return pngBuffer(img);
 }
 
-module.exports = { render, headerHtml, headerBlock, linesHtml, pageHtml, layoutHeader, isPaid, payLabel, FARM, WIDTH };
+module.exports = { render, headerHtml, headerBlock, linesHtml, pageHtml, layoutHeader, isPaid, payLabel, payMethodCaption, FARM, WIDTH };

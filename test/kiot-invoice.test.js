@@ -76,6 +76,14 @@ function installMocks() {
   payment = { ok: true, amount_paid: 0, payment_status: 'chua_tt', kiot_status: 1 };
   kiotviet.addInvoicePayment = async (input) => {
     paymentPosts.push(input);
+    payment = {
+      ok: true,
+      amount_paid: input.amount,
+      payment_status: 'da_tt',
+      payment_method: input.method === 'cash' ? 'cash' : 'transfer',
+      total: 85000,
+      kiot_status: 1,
+    };
     return {
       ok: true,
       paymentId: '9001',

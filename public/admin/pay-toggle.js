@@ -17,6 +17,31 @@
     return false;
   }
 
+  function chipLabel(status, method, due) {
+    if (status === 'mot_phan') {
+      const n = Math.max(0, Math.round(Number(due) || 0));
+      return 'Còn nợ ' + n.toLocaleString('vi-VN') + 'đ';
+    }
+    if (status !== 'da_tt') return 'Chưa TT';
+    if (method === 'cash') return 'Đã TT · Tiền mặt';
+    if (method === 'card') return 'Đã TT · Thẻ';
+    if (method === 'mixed') return 'Đã TT · Nhiều cách';
+    return 'Đã TT · CK';
+  }
+
+  function choices(status) {
+    if (status === 'da_tt') return [];
+    return [
+      { status: 'da_tt', method: 'cash', label: 'Tiền mặt' },
+      { status: 'da_tt', method: 'transfer', label: 'CK' },
+    ];
+  }
+
+  function toastText(status, method) {
+    if (status !== 'da_tt') return 'Đã chuyển sang Chưa TT. ';
+    return method === 'cash' ? 'Đã chuyển sang Đã TT · Tiền mặt. ' : 'Đã chuyển sang Đã TT · CK. ';
+  }
+
   function schedule(id, opts) {
     opts = opts || {};
     const ms = opts.ms == null ? UNDO_MS : opts.ms;
@@ -42,5 +67,5 @@
     };
   }
 
-  return { UNDO_MS, needsConfirm, schedule };
+  return { UNDO_MS, needsConfirm, chipLabel, choices, toastText, schedule };
 });

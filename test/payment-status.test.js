@@ -42,7 +42,7 @@ const sample = {
 
 function calls() {
   const posted = [];
-  const real = { call: kiotviet.call, enabled: kiotviet.enabled };
+  const real = { call: kiotviet.call, enabled: kiotviet.enabled, readInvoicePayment: kiotviet.readInvoicePayment };
   kiotviet.enabled = () => true;
   kiotviet.call = async (method, apiPath, opts) => {
     posted.push({ method, path: apiPath, data: opts && opts.data });
@@ -54,11 +54,21 @@ function calls() {
       invoiceId: opts && opts.data && opts.data.invoiceId,
     };
   };
+  kiotviet.readInvoicePayment = async () => {
+    const last = posted.filter(row => row.path === '/payments').pop();
+    return {
+      ok: true,
+      amount_paid: last ? last.data.amount : 0,
+      payment_method: last && last.data.method === 'Cash' ? 'cash' : 'transfer',
+      total: last ? last.data.amount : 0,
+    };
+  };
   return {
     posted,
     restore() {
       kiotviet.call = real.call;
       kiotviet.enabled = real.enabled;
+      kiotviet.readInvoicePayment = real.readInvoicePayment;
     },
   };
 }
@@ -83,6 +93,24 @@ test('orders send no deposit; a paid invoice sends totalPayment and method', () 
   });
   assert.equal(transfer.totalPayment, 85000);
   assert.equal(transfer.method, 'Transfer');
+  assert.equal(transfer.accountId, undefined);
+  process.env.KIOTVIET_ACCOUNT_ID = '321';
+  try {
+    const withAccount = kiotviet.invoicePaymentFields(true, 'transfer', 85000);
+    assert.equal(withAccount.method, 'Transfer');
+    assert.equal(withAccount.accountId, 321);
+    assert.equal(withAccount.totalPayment, 85000);
+    const cashFields = kiotviet.invoicePaymentFields(true, 'cash', 85000);
+    assert.equal(cashFields.method, 'Cash');
+    assert.equal(cashFields.accountId, undefined);
+    const orderFields = kiotviet.salePayload({
+      kind: 'order', branchId: 1, customerId: 2, details: [], paid: true, paymentMethod: 'transfer', total: 85000,
+    });
+    assert.equal(orderFields.totalPayment, 0);
+    assert.equal(orderFields.accountId, undefined);
+  } finally {
+    delete process.env.KIOTVIET_ACCOUNT_ID;
+  }
 
   const unpaid = kiotviet.salePayload({
     kind: 'invoice', branchId: 1, customerId: 2, details: [], paid: false, total: 85000,
@@ -146,17 +174,15 @@ test('toggle stores payment, audits, and posts to Kiot once', async () => {
     assert.equal(stub.posted[0].data.method, 'Transfer');
 
     const again = await invoices.setPaymentStatus('HD100', { status: 'da_tt', method: 'cash', actor: 'manager' });
-    assert.equal(again.invoice.payment_method, 'cash');
+    assert.equal(again.error, undefined);
+    assert.equal(again.invoice.payment_method, 'transfer');
     assert.equal(again.invoice.kiot_payment_id, '42');
     assert.equal(stub.posted.length, 1);
 
     const off = await invoices.setPaymentStatus('HD100', { status: 'chua_tt', actor: 'manager' });
-    assert.equal(off.invoice.payment_status, 'chua_tt');
-    assert.equal(off.invoice.amount_paid, 0);
-    assert.equal(off.invoice.paid_at, null);
-    assert.equal(off.invoice.paid_by, null);
-    assert.equal(off.invoice.payment_method, null);
-    assert.equal(off.invoice.kiot_payment_id, '42');
+    assert.match(off.error, /phiếu thu/);
+    assert.equal(off.invoice.payment_status, 'da_tt');
+    assert.equal(off.invoice.payment_method, 'transfer');
     assert.equal(stub.posted.length, 1);
 
     await invoices.recordSale({
@@ -168,25 +194,77 @@ test('toggle stores payment, audits, and posts to Kiot once', async () => {
       items: [{ name: 'Xúc xích', quantity: 1, price: 50000, amount: 50000 }],
     });
     const order = await invoices.setPaymentStatus('DH100', { status: 'da_tt', method: 'cash', actor: 'Phước' });
-    assert.equal(order.invoice.payment_status, 'da_tt');
-    assert.equal(order.invoice.kiot_payment_id, null);
+    assert.match(order.error, /Chưa có hoá đơn/);
+    assert.equal(order.invoice.payment_status, 'chua_tt');
     assert.equal(stub.posted.length, 1);
 
+    const storedOrder = await invoices.recordSale({
+      code: 'DH200',
+      documentType: 'order',
+      total: 50000,
+      paymentStatus: 'da_tt',
+      paymentMethod: 'cash',
+    });
+    assert.equal(storedOrder.payment_status, 'chua_tt');
+    assert.equal(storedOrder.amount_paid, 0);
+    assert.equal(storedOrder.payment_method, null);
+
+    await invoices.recordSale({
+      code: 'HD101',
+      kiotId: '78',
+      documentType: 'invoice',
+      customerName: 'Anh Minh',
+      total: 180000,
+      paymentStatus: 'da_tt',
+      paymentMethod: 'cash',
+      paidBy: 'manager',
+      items: [{ name: 'Trứng', quantity: 1, price: 180000, amount: 180000 }],
+    });
+
     const paidOnly = await invoices.search({ payment: 'da_tt' });
-    assert.ok(paidOnly.some(row => row.code === 'DH100'));
-    assert.equal(paidOnly.some(row => row.code === 'HD100'), false);
+    assert.ok(paidOnly.some(row => row.code === 'HD100'));
+    assert.ok(paidOnly.some(row => row.code === 'HD101'));
+    assert.equal(paidOnly.some(row => row.code === 'DH100'), false);
+    const cashOnly = await invoices.search({ payment: 'cash' });
+    assert.ok(cashOnly.some(row => row.code === 'HD101' && row.payment_method === 'cash'));
+    assert.equal(cashOnly.some(row => row.code === 'HD100'), false);
+    const transferOnly = await invoices.search({ payment: 'transfer' });
+    assert.ok(transferOnly.some(row => row.code === 'HD100' && row.payment_method === 'transfer'));
     const openOnly = await invoices.search({ payment: 'chua_tt' });
-    assert.ok(openOnly.some(row => row.code === 'HD100'));
-    assert.equal(openOnly.some(row => row.code === 'DH100'), false);
+    assert.ok(openOnly.some(row => row.code === 'DH100'));
+    assert.equal(openOnly.some(row => row.code === 'HD100'), false);
+    const toggleLog = (await audit.list({ action: 'invoice.payment', entity_id: 'HD100' })).logs[0];
+    assert.equal(toggleLog.actor, 'manager');
+    assert.ok(toggleLog.at);
+    assert.equal(toggleLog.after.payment_method, 'transfer');
+    assert.equal(toggleLog.before.payment_method, null);
+    assert.equal(toggleLog.meta.source, 'toggle');
+    assert.equal(toggleLog.meta.kiot.method, 'Transfer');
+
+    const mapped = kiotviet.paymentFromInvoice({
+      total: 100000,
+      totalPayment: 100000,
+      payments: [{ method: 'Cash', amount: 40000 }, { method: 'Transfer', amount: 60000 }],
+    });
+    assert.equal(mapped.payment_status, 'da_tt');
+    assert.equal(mapped.payment_method, 'mixed');
+    const partial = kiotviet.paymentFromInvoice({
+      total: 100000,
+      totalPayment: 40000,
+      payments: [{ method: 'Cash', amount: 40000 }],
+    });
+    assert.equal(partial.payment_status, 'mot_phan');
+    assert.equal(partial.payment_method, 'cash');
 
     const csv = invoices.toCsv(await invoices.search({}));
     assert.match(csv, /paid_at,paid_by,method/);
     assert.match(csv, /Tiền mặt/);
+    assert.match(csv, /Chuyển khoản/);
     assert.match(csv, /HD100/);
     assert.match(csv, /chua_tt/);
 
     const logs = await audit.list({ action: 'invoice.payment', entity_id: 'HD100' });
-    assert.ok(logs.logs.length >= 2);
+    assert.ok(logs.logs.length >= 1);
     assert.ok(logs.logs.some(row => row.meta && row.meta.source === 'toggle'));
   } finally {
     stub.restore();
@@ -216,11 +294,32 @@ test('paid invoice page stamps ĐÃ THANH TOÁN and hides the VCB line', () => {
   const paidRow = paid.slice(paid.indexOf('<div class="id-row">'), paid.indexOf('</div>'));
   assert.equal((paid.match(/class="id-row"/g) || []).length, 1);
   assert.doesNotMatch(paidRow, /Đã TT/);
-  assert.match(paid, /class="pay-chip is-paid">Đã TT</);
+  assert.match(paid, /class="pay-chip is-paid">Đã TT · CK</);
   assert.match(paid, /ĐÃ THANH TOÁN/);
+  assert.match(paid, /class="paid-method">Chuyển khoản</);
   assert.doesNotMatch(paid, /1058437590/);
   assert.doesNotMatch(paid, /nội dung CK/);
   assert.doesNotMatch(paid, /Giá đã gồm VAT/);
+
+  const cashPage = invoiceImage.pageHtml({
+    ...sample,
+    payment_status: 'da_tt',
+    amount_paid: 265000,
+    payment_method: 'cash',
+  }, '/hd/x.png');
+  assert.match(cashPage, /Đã TT · Tiền mặt/);
+  assert.match(cashPage, /class="paid-method">Tiền mặt</);
+  assert.doesNotMatch(cashPage, /1058437590/);
+  assert.doesNotMatch(cashPage, /Chuyển khoản/);
+
+  const cardPage = invoiceImage.pageHtml({
+    ...sample,
+    payment_status: 'da_tt',
+    amount_paid: 265000,
+    payment_method: 'card',
+  }, '/hd/x.png');
+  assert.match(cardPage, /Đã TT · Thẻ/);
+  assert.match(cardPage, /class="paid-method">Thẻ</);
 });
 
 test('header chip shares the row when it fits and drops to the next row when it does not', async () => {
@@ -235,6 +334,7 @@ test('header chip shares the row when it fits and drops to the next row when it 
   assert.equal(wide.pay.row, 1);
   assert.equal(wide.pay.y, 0);
   assert.equal(wide.pay.text, 'Chưa TT');
+  assert.equal(invoiceImage.payMethodCaption(sample), '');
 
   const tight = invoiceImage.layoutHeader(ctx, {
     ...sample,
@@ -245,7 +345,7 @@ test('header chip shares the row when it fits and drops to the next row when it 
   assert.equal(tight.kh.y, tight.hd.y);
   assert.equal(tight.pay.row, 2);
   assert.equal(tight.pay.y, 28);
-  assert.equal(tight.pay.text, 'Đã TT');
+  assert.equal(tight.pay.text, 'Đã TT · CK');
   assert.equal(tight.pay.paid, true);
 });
 
@@ -273,7 +373,7 @@ test('chip is one tap, 3 seconds, no confirm, and the list filter is wired', () 
   assert.match(reviewJs, /Đã TT/);
   assert.match(reviewJs, /Hoàn tác/);
   assert.match(reviewJs, /payToggle/);
-  assert.match(reviewJs, /payment_status: payState\(d\)\.status/);
+  assert.match(reviewJs, /committedPay\(d\)\.status/);
   assert.doesNotMatch(reviewJs, /Xuất hoá đơn để có mã QR/);
   const payFn = reviewJs.slice(reviewJs.indexOf('function schedulePay'), reviewJs.indexOf('function payControls'));
   assert.doesNotMatch(payFn, /confirm\(/);
@@ -287,7 +387,22 @@ test('chip is one tap, 3 seconds, no confirm, and the list filter is wired', () 
   assert.doesNotMatch(invoicesJs, /confirm\(/);
   assert.match(invoicesHtml, /Tất cả/);
   assert.match(invoicesHtml, /data-pay="chua_tt"/);
-  assert.match(invoicesHtml, /data-pay="da_tt"/);
+  assert.match(invoicesHtml, /Đã TT-Tiền mặt/);
+  assert.match(invoicesHtml, /data-pay="cash"/);
+  assert.match(invoicesHtml, /Đã TT-CK/);
+  assert.match(invoicesHtml, /data-pay="transfer"/);
+  assert.equal(payToggle.chipLabel('chua_tt', null), 'Chưa TT');
+  assert.equal(payToggle.chipLabel('da_tt', 'cash'), 'Đã TT · Tiền mặt');
+  assert.equal(payToggle.chipLabel('da_tt', 'transfer'), 'Đã TT · CK');
+  assert.deepEqual(payToggle.choices('chua_tt').map(row => row.label), ['Tiền mặt', 'CK']);
+  assert.deepEqual(payToggle.choices('mot_phan').map(row => row.label), ['Tiền mặt', 'CK']);
+  assert.deepEqual(payToggle.choices('da_tt'), []);
+  assert.equal(payToggle.chipLabel('mot_phan', 'cash', 20000), 'Còn nợ 20.000đ');
+  assert.equal(payToggle.chipLabel('da_tt', 'card'), 'Đã TT · Thẻ');
+  assert.equal(payToggle.needsConfirm(), false);
+  const menuFn = reviewJs.slice(reviewJs.indexOf('function togglePayMenu'), reviewJs.indexOf('function payControls'));
+  assert.doesNotMatch(menuFn, /confirm\(/);
+  assert.match(reviewJs, /Đã TT · Tiền mặt|chipLabel/);
   assert.match(invoicesHtml, /pay-toggle\.js/);
 
   const imageSrc = fs.readFileSync(path.join(root, 'services', 'invoiceImage.js'), 'utf8');

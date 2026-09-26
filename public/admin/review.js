@@ -97,6 +97,7 @@
   const settledDeletes = new Set();
   let me = { role: 'manager', canSend: true, canDelete: true, canKiot: true, canManageUsers: true };
   const pendingPay = new Map();
+  const openPay = new Set();
   let listScrollY = 0;
   let detailPushed = false;
   let advanceTo = null;
@@ -1170,12 +1171,20 @@
   }
 
   function payState(d) {
-    const pending = pendingPay.get(d && d.id);
-    if (pending) return { status: pending.status, method: pending.method };
+    const id = d && d.id;
+    const pending = pendingPay.get(id);
+    const open = !!(id && openPay.has(id));
+    if (pending) {
+      const status = pending.status === 'da_tt' ? 'da_tt' : 'chua_tt';
+      return { status, method: status === 'da_tt' ? (pending.method === 'cash' ? 'cash' : 'transfer') : null, open };
+    }
     const f = formOf(d);
+    const status = f.payment_status === 'da_tt' || f.payment_status === 'mot_phan' ? f.payment_status : 'chua_tt';
     return {
-      status: f.payment_status === 'da_tt' ? 'da_tt' : 'chua_tt',
-      method: f.payment_method === 'cash' ? 'cash' : 'transfer',
+      status,
+      method: status === 'da_tt' || status === 'mot_phan' ? (f.payment_method || null) : null,
+      due: Math.max(0, Math.round(Number(f.kiot_total) || 0) - Math.round(Number(f.amount_paid) || 0)),
+      open,
     };
   }
 
@@ -1191,10 +1200,12 @@
   function commitPay(d, status, method) {
     const f = formOf(d);
     d.review_form = Object.assign({}, f, {
-      payment_status: status,
-      payment_method: method === 'cash' ? 'cash' : 'transfer',
-      paid_at: status === 'da_tt' ? (f.paid_at || new Date().toISOString()) : null,
-      paid_by: status === 'da_tt' ? (actorName() || 'manager') : null,
+      payment_status: status === 'mot_phan' ? 'mot_phan' : (status === 'da_tt' ? 'da_tt' : 'chua_tt'),
+      payment_method: status === 'da_tt' || status === 'mot_phan'
+        ? (method === 'cash' || method === 'card' || method === 'mixed' ? method : (method ? 'transfer' : null))
+        : null,
+      paid_at: status === 'da_tt' || status === 'mot_phan' ? (f.paid_at || new Date().toISOString()) : null,
+      paid_by: status === 'da_tt' || status === 'mot_phan' ? (actorName() || 'manager') : null,
     });
   }
 
@@ -1207,7 +1218,11 @@
     const host = document.getElementById('undo-toasts');
     const node = el('div', { class: 'toast', role: 'status' });
     node.dataset.pay = id;
-    node.appendChild(document.createTextNode(status === 'da_tt' ? 'Đã chuyển sang Đã TT. ' : 'Đã chuyển sang Chưa TT. '));
+    const pending = pendingPay.get(id);
+    const text = window.payToggle && pending
+      ? window.payToggle.toastText(pending.status, pending.method)
+      : (status === 'da_tt' ? 'Đã chuyển sang Đã TT. ' : 'Đã chuyển sang Chưa TT. ');
+    node.appendChild(document.createTextNode(text));
     const b = el('button', { type: 'button', class: 'linkish', text: 'Hoàn tác' });
     b.addEventListener('click', () => undoPay(id));
     node.appendChild(b);
@@ -1232,11 +1247,22 @@
     if (!pending) return;
     pendingPay.delete(id);
     clearPayToast(id);
+    const d = drafts.find(item => item.id === id);
+    const form = formOf(d);
+    const code = form.kiot_code;
+    if (!d || form.kiot_kind !== 'invoice' || !code || pending.status !== 'da_tt') return;
     try {
-      await api('/admin/api/drafts/' + encodeURIComponent(id) + '/payment', {
+      const data = await api('/admin/api/invoices/' + encodeURIComponent(code) + '/paid', {
         method: 'POST',
-        body: JSON.stringify({ status: pending.status, method: pending.method }),
+        body: JSON.stringify({ status: 'da_tt', method: pending.method }),
       });
+      if (data.invoice) {
+        commitPay(d, data.invoice.payment_status, data.invoice.payment_method);
+        d.review_form.amount_paid = data.invoice.amount_paid;
+        d.review_form.kiot_total = String(data.invoice.total);
+        renderList();
+        if (selectedId === id) renderDetail();
+      }
     } catch (err) {
       const d = drafts.find(item => item.id === id);
       if (d) {
@@ -1252,8 +1278,12 @@
     const policy = window.payToggle;
     if (!policy || !d) return;
     const now = payState(d);
-    const methodName = method === 'cash' ? 'cash' : 'transfer';
-    if (now.status === status && now.method === methodName && !pendingPay.get(d.id)) return;
+    const methodName = status === 'da_tt' ? (method === 'cash' ? 'cash' : 'transfer') : null;
+    if (now.status === status && now.method === methodName && !pendingPay.get(d.id)) {
+      renderList();
+      if (selectedId === d.id) renderDetail();
+      return;
+    }
     const held = pendingPay.get(d.id);
     const previous = held ? held.previous : { status: now.status, method: now.method };
     if (held && held.timer) held.timer.undo();
@@ -1261,40 +1291,65 @@
     commitPay(d, status, methodName);
     const timer = policy.schedule(d.id, { onFinalize: () => finalizePay(d.id) });
     pendingPay.set(d.id, { status, method: methodName, previous, timer });
-    if (status !== previous.status) pushPayToast(d.id, status);
+    if (status !== previous.status || methodName !== previous.method) pushPayToast(d.id, status);
     renderList();
     if (selectedId === d.id) renderDetail();
+  }
+
+  function committedPay(d) {
+    const pending = pendingPay.get(d && d.id);
+    if (pending) return { status: pending.previous.status, method: pending.previous.method };
+    return payState(d);
+  }
+
+  function togglePayMenu(d) {
+    if (!d) return;
+    const state = payState(d);
+    if (window.payToggle && window.payToggle.choices(state.status).length === 0) return;
+    if (openPay.has(d.id)) openPay.delete(d.id);
+    else openPay.add(d.id);
+    renderList();
+    if (selectedId === d.id) renderDetail();
+  }
+
+  function choosePay(d, status, method) {
+    openPay.delete(d.id);
+    schedulePay(d, status, method);
   }
 
   function payControls(d) {
     const state = payState(d);
     const wrap = el('div', { class: 'pay-controls' });
+    const label = window.payToggle ? window.payToggle.chipLabel(state.status, state.method, state.due) : (state.status === 'da_tt' ? 'Đã TT' : 'Chưa TT');
     const chip = el('button', {
       type: 'button',
       class: 'pay-chip' + (state.status === 'da_tt' ? ' is-paid' : ''),
-      text: state.status === 'da_tt' ? 'Đã TT' : 'Chưa TT',
+      text: label,
     });
     chip.setAttribute('aria-pressed', state.status === 'da_tt' ? 'true' : 'false');
+    chip.setAttribute('aria-expanded', state.open ? 'true' : 'false');
     chip.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      const current = payState(d);
-      schedulePay(d, current.status === 'da_tt' ? 'chua_tt' : 'da_tt', current.method);
+      togglePayMenu(d);
     });
     wrap.appendChild(chip);
-    [['transfer', 'Chuyển khoản'], ['cash', 'Tiền mặt']].forEach(([method, label]) => {
-      const b = el('button', {
-        type: 'button',
-        class: 'pay-method' + (state.method === method ? ' is-on' : ''),
-        text: label,
+    if (state.open && window.payToggle) {
+      window.payToggle.choices(state.status).forEach(choice => {
+        const on = state.status === 'da_tt' && choice.method && state.method === choice.method;
+        const b = el('button', {
+          type: 'button',
+          class: 'pay-method' + (choice.status === 'chua_tt' ? ' is-clear' : '') + (on ? ' is-on' : ''),
+          text: choice.label,
+        });
+        b.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          choosePay(d, choice.status, choice.method);
+        });
+        wrap.appendChild(b);
       });
-      b.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        schedulePay(d, payState(d).status, method);
-      });
-      wrap.appendChild(b);
-    });
+    }
     return wrap;
   }
 
@@ -2332,6 +2387,28 @@
     };
   }
 
+  const refreshedPay = new Set();
+
+  async function ensureKiotPay(d) {
+    if (!d || pendingPay.has(d.id)) return;
+    const form = formOf(d);
+    const code = String(form.kiot_code || d.invoice_code || '').trim();
+    if (!/^HD/i.test(code) || refreshedPay.has(d.id + ':' + code)) return;
+    refreshedPay.add(d.id + ':' + code);
+    try {
+      const data = await api('/admin/api/invoices?q=' + encodeURIComponent(code));
+      if (pendingPay.has(d.id)) return;
+      const row = (data.invoices || []).find(item => item && item.code === code);
+      const current = drafts.find(item => item.id === d.id);
+      if (!row || !current) return;
+      commitPay(current, row.payment_status, row.payment_method);
+      current.review_form.amount_paid = row.amount_paid;
+      if (row.total != null) current.review_form.kiot_total = String(row.total);
+      renderList();
+      if (selectedId === d.id) renderDetail();
+    } catch (_) {}
+  }
+
   function openDraft(id, opts) {
     opts = opts || {};
     if (!opts.fromPop && dirty && selectedId !== id && !confirm('Bạn đang sửa dở. Chuyển tin khác sẽ bỏ phần chưa lưu?')) return;
@@ -2353,6 +2430,7 @@
     if (opening) scrollDetailToTop = true;
     renderList();
     renderDetail();
+    ensureKiotPay(row);
     if (opts.focusKiot) {
       const fold = detailEl.querySelector('details.kiot-fold');
       if (fold) fold.open = true;
@@ -2589,9 +2667,14 @@
       showError('');
       button.disabled = true;
       try {
+        const pay = committedPay(d);
         const data = await api('/admin/api/drafts/' + d.id + '/kiotviet/invoice', {
           method: 'POST',
-          body: JSON.stringify({ actor_name: actorName() }),
+          body: JSON.stringify({
+            actor_name: actorName(),
+            payment_status: pay.status,
+            payment_method: pay.method,
+          }),
         });
         const reply = detailEl.querySelector('#draft-reply');
         if (reply && data.draft && data.draft.draft_reply && d.approval_status !== 'SENT') {
@@ -2986,8 +3069,8 @@
         lines,
         actor_name: actorName(),
         acknowledge_existing: state.acknowledge === true,
-        payment_status: payState(d).status,
-        payment_method: payState(d).method,
+        payment_status: committedPay(d).status,
+        payment_method: committedPay(d).method,
       };
       if (confirm && state.quote && state.quote.total != null) body.expected_total = state.quote.total;
       const matched = state.kiotCustomer;

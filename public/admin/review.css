@@ -1250,6 +1250,13 @@ body.inbox .pay-method.is-on {
   border-color: var(--green);
   color: var(--green);
 }
+body.hitl .pay-method.is-clear,
+body.inbox .pay-method.is-clear {
+  border-color: #e7c4c0;
+  color: #8f1810;
+}
+body.hitl .pay-chip,
+body.inbox .pay-chip { white-space: nowrap; }
 body.inbox .card-chips {
   display: flex;
   flex-wrap: wrap;

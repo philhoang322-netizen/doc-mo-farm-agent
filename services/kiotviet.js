@@ -661,6 +661,28 @@ function kiotMethod(method) {
   return 'Transfer';
 }
 
+/** Kiot bank-account id. Official create/payment docs mark accountId optional and say to send it for Transfer or Card. */
+function bankAccountId() {
+  const account = String(process.env.KIOTVIET_ACCOUNT_ID || '').trim();
+  return /^\d+$/.test(account) ? Number(account) : null;
+}
+
+/**
+ * Payment fields for POST /invoices (public API 2.12.3).
+ * totalPayment is what the customer has already paid. method is Cash or Transfer.
+ * accountId is attached for Transfer only when KIOTVIET_ACCOUNT_ID is set.
+ */
+function invoicePaymentFields(paid, paymentMethod, total) {
+  const amount = paid ? Math.max(0, Math.round(Number(total) || 0)) : 0;
+  const method = amount > 0 ? kiotMethod(paymentMethod) : 'Transfer';
+  const fields = { totalPayment: amount, method };
+  if (amount > 0 && method === 'Transfer') {
+    const accountId = bankAccountId();
+    if (accountId) fields.accountId = accountId;
+  }
+  return fields;
+}
+
 /**
  * Build the Public API body for an invoice (HĐ) or an order (Đặt hàng).
  * Orders always send totalPayment 0: no deposit.
@@ -697,13 +719,12 @@ function salePayload({
     if (delivery) payload.orderDelivery = delivery;
     return payload;
   }
-  const amount = paid ? Math.max(0, Math.round(Number(total) || 0)) : 0;
+  const pay = invoicePaymentFields(paid, paymentMethod, total);
   const payload = {
     branchId,
     purchaseDate: new Date().toISOString(),
     discount: off,
-    totalPayment: amount,
-    method: amount > 0 ? kiotMethod(paymentMethod) : 'Transfer',
+    ...pay,
     usingCod: false,
     description: description || '',
     invoiceDetails: details,
@@ -856,6 +877,15 @@ async function fetchSaleDoc(collection, { id, code } = {}) {
   }
 }
 
+function localMethod(method) {
+  const raw = String(method || '').toLowerCase();
+  if (raw === 'cash' || raw === 'tien mat' || raw === 'tiền mặt') return 'cash';
+  if (raw === 'transfer' || raw === 'ck' || raw === 'chuyen khoan' || raw === 'chuyển khoản') return 'transfer';
+  if (raw === 'card' || raw === 'the' || raw === 'thẻ') return 'card';
+  if (raw === 'mixed') return 'mixed';
+  return null;
+}
+
 function paymentFromInvoice(doc) {
   const total = Math.round(Number(doc && doc.total) || 0);
   const paidRaw = doc && (doc.totalPayment != null ? doc.totalPayment : doc.totalPaid);
@@ -863,9 +893,22 @@ function paymentFromInvoice(doc) {
   let payment_status = 'chua_tt';
   if (paid > 0 && total > 0 && paid < total) payment_status = 'mot_phan';
   else if (paid > 0 && (total === 0 || paid >= total)) payment_status = 'da_tt';
+  const seen = [];
+  const rows = Array.isArray(doc && doc.payments) ? doc.payments : [];
+  for (const payment of rows) {
+    const method = localMethod(payment && payment.method);
+    if (method && !seen.includes(method)) seen.push(method);
+  }
+  let payment_method = null;
+  if (paid > 0) {
+    if (seen.length > 1) payment_method = 'mixed';
+    else if (seen.length === 1) payment_method = seen[0];
+    else payment_method = localMethod(doc && doc.method);
+  }
   return {
     payment_status,
     amount_paid: paid,
+    payment_method,
     total,
     kiot_status: doc && doc.status != null ? doc.status : null,
     id: doc && doc.id != null ? String(doc.id) : null,
@@ -888,8 +931,10 @@ async function addInvoicePayment({ invoiceId, amount, method } = {}) {
     amount: Math.max(0, Math.round(Number(amount) || 0)),
     method: kiotMethod(method),
   };
-  const account = String(process.env.KIOTVIET_ACCOUNT_ID || '').trim();
-  if (body.method === 'Transfer' && /^\d+$/.test(account)) body.accountId = Number(account);
+  if (body.method === 'Transfer') {
+    const accountId = bankAccountId();
+    if (accountId) body.accountId = accountId;
+  }
   try {
     const created = await module.exports.call('post', '/payments', { data: body });
     const paymentId = created && (created.paymentId || created.id);
@@ -959,8 +1004,7 @@ async function issueInvoiceFromOrder({ orderId, orderCode, paid = false, payment
       purchaseDate: new Date().toISOString(),
       customerId: order.customerId,
       discount: moneyAmount(order.discount),
-      totalPayment: paid ? moneyAmount(order.total) : 0,
-      method: paid ? kiotMethod(paymentMethod) : 'Transfer',
+      ...invoicePaymentFields(paid, paymentMethod, order.total),
       description: order.description || '',
       invoiceDetails: details,
     };
@@ -1015,7 +1059,7 @@ module.exports = {
   listProductsForMatch, findCustomerByPhone, findOrCreateCustomer, getCustomer,
   ensureSaleCustomerCode, listInvoicesByCustomer,
   explainKiotError, paymentFromInvoice, readInvoicePayment, issueInvoiceFromOrder,
-  addInvoicePayment, kiotMethod,
+  addInvoicePayment, kiotMethod, bankAccountId, invoicePaymentFields,
   cleanCustomerCode, MISSING_CUSTOMER_CODE, call,
   DEFAULT_SALE_BRANCH_ID,
 };

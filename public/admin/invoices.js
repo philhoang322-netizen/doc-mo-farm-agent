@@ -8,6 +8,7 @@
   const csv = document.getElementById('csv');
   const channels = { zalo: 'Zalo', fb: 'Facebook' };
   const pending = new Map();
+  const openCodes = new Set();
   let paymentFilter = '';
   let rows = [];
 
@@ -48,10 +49,17 @@
 
   function viewOf(row) {
     const held = pending.get(row.code);
-    if (held) return { status: held.status, method: held.method };
+    const open = openCodes.has(row.code);
+    if (held) {
+      const status = held.status === 'da_tt' ? 'da_tt' : 'chua_tt';
+      return { status, method: status === 'da_tt' ? (held.method === 'cash' ? 'cash' : 'transfer') : null, open };
+    }
+    const status = row.payment_status === 'da_tt' || row.payment_status === 'mot_phan' ? row.payment_status : 'chua_tt';
     return {
-      status: row.payment_status === 'da_tt' ? 'da_tt' : 'chua_tt',
-      method: row.payment_method === 'cash' ? 'cash' : 'transfer',
+      status,
+      method: status === 'chua_tt' ? null : (row.payment_method || null),
+      due: Math.max(0, Math.round(Number(row.total) || 0) - Math.round(Number(row.amount_paid) || 0)),
+      open,
     };
   }
 
@@ -66,7 +74,11 @@
     node.className = 'toast';
     node.setAttribute('role', 'status');
     node.dataset.pay = code;
-    node.appendChild(document.createTextNode(status === 'da_tt' ? 'Đã chuyển sang Đã TT. ' : 'Đã chuyển sang Chưa TT. '));
+    const held = pending.get(code);
+    const text = window.payToggle && held
+      ? window.payToggle.toastText(held.status, held.method)
+      : (status === 'da_tt' ? 'Đã chuyển sang Đã TT. ' : 'Đã chuyển sang Chưa TT. ');
+    node.appendChild(document.createTextNode(text));
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'linkish';
@@ -107,16 +119,32 @@
     const policy = window.payToggle;
     if (!policy || !row) return;
     const now = viewOf(row);
-    const methodName = method === 'cash' ? 'cash' : 'transfer';
-    if (now.status === status && now.method === methodName && !pending.get(row.code)) return;
+    const methodName = status === 'da_tt' ? (method === 'cash' ? 'cash' : 'transfer') : null;
+    if (now.status === status && now.method === methodName && !pending.get(row.code)) {
+      paint();
+      return;
+    }
     const held = pending.get(row.code);
     const previous = held ? held.previous : { status: now.status, method: now.method };
     if (held && held.timer) held.timer.undo();
     clearToast(row.code);
     const timer = policy.schedule(row.code, { onFinalize: () => finalize(row.code) });
     pending.set(row.code, { status, method: methodName, previous, timer });
-    if (status !== previous.status) pushToast(row.code, status);
+    if (status !== previous.status || methodName !== previous.method) pushToast(row.code, status);
     paint();
+  }
+
+  function toggleMenu(row) {
+    const state = viewOf(row);
+    if (window.payToggle && window.payToggle.choices(state.status).length === 0) return;
+    if (openCodes.has(row.code)) openCodes.delete(row.code);
+    else openCodes.add(row.code);
+    paint();
+  }
+
+  function choose(row, status, method) {
+    openCodes.delete(row.code);
+    schedule(row, status, method);
   }
 
   function payControls(row) {
@@ -126,27 +154,32 @@
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'pay-chip' + (state.status === 'da_tt' ? ' is-paid' : '');
-    chip.textContent = state.status === 'da_tt' ? 'Đã TT' : 'Chưa TT';
+    chip.textContent = window.payToggle
+      ? window.payToggle.chipLabel(state.status, state.method, state.due)
+      : (state.status === 'da_tt' ? 'Đã TT' : 'Chưa TT');
     chip.setAttribute('aria-pressed', state.status === 'da_tt' ? 'true' : 'false');
+    chip.setAttribute('aria-expanded', state.open ? 'true' : 'false');
     chip.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      const current = viewOf(row);
-      schedule(row, current.status === 'da_tt' ? 'chua_tt' : 'da_tt', current.method);
+      toggleMenu(row);
     });
     wrap.appendChild(chip);
-    [['transfer', 'Chuyển khoản'], ['cash', 'Tiền mặt']].forEach(([method, label]) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'pay-method' + (state.method === method ? ' is-on' : '');
-      b.textContent = label;
-      b.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        schedule(row, viewOf(row).status, method);
+    if (state.open && window.payToggle) {
+      window.payToggle.choices(state.status).forEach(choice => {
+        const on = state.status === 'da_tt' && choice.method && state.method === choice.method;
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'pay-method' + (choice.status === 'chua_tt' ? ' is-clear' : '') + (on ? ' is-on' : '');
+        b.textContent = choice.label;
+        b.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          choose(row, choice.status, choice.method);
+        });
+        wrap.appendChild(b);
       });
-      wrap.appendChild(b);
-    });
+    }
     return wrap;
   }
 
